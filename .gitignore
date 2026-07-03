@@ -1,0 +1,14 @@
+# Build output
+/bin/
+/dist/
+glyphuxd
+!cmd/glyphuxd/
+
+# Runtime state
+/data/
+*.db
+*.db-wal
+*.db-shm
+
+# Editor / OS
+.DS_Store
