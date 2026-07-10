@@ -81,6 +81,16 @@ func (s *Store) getByID(ctx context.Context, typeName, id string) (record, error
 	return r, nil
 }
 
+func (s *Store) exists(ctx context.Context, typeName, id string) (bool, error) {
+	var n int
+	err := s.db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM content_items WHERE type = ? AND id = ?`, typeName, id).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("check content item: %w", err)
+	}
+	return n > 0, nil
+}
+
 func (s *Store) listByType(ctx context.Context, typeName string) ([]record, error) {
 	rows, err := s.db.Query(ctx,
 		`SELECT id, type, data, created_at, updated_at FROM content_items WHERE type = ? ORDER BY created_at, id`,

@@ -52,6 +52,9 @@ func (a *API) Create(ctx context.Context, typeName string, data map[string]any) 
 	if err := validate(typeName, ct, data); err != nil {
 		return nil, err
 	}
+	if err := a.checkRelations(ctx, typeName, ct, data); err != nil {
+		return nil, err
+	}
 	now := time.Now().UTC()
 	item := &Item{ID: newID(), Type: typeName, Data: data, CreatedAt: now, UpdatedAt: now}
 	encoded, err := json.Marshal(data)
@@ -107,6 +110,9 @@ func (a *API) Update(ctx context.Context, typeName, id string, data map[string]a
 	if err := validate(typeName, ct, data); err != nil {
 		return nil, err
 	}
+	if err := a.checkRelations(ctx, typeName, ct, data); err != nil {
+		return nil, err
+	}
 	encoded, err := json.Marshal(data)
 	if err != nil {
 		return nil, fmt.Errorf("encode content data: %w", err)
@@ -124,6 +130,39 @@ func (a *API) Delete(ctx context.Context, typeName, id string) error {
 		return err
 	}
 	return a.items.delete(ctx, typeName, id)
+}
+
+// checkRelations verifies that every present relation field references an
+// existing item of its declared target type. Referential integrity is a
+// Layer-1 concern enforced at the domain boundary, not left to the storage
+// adapter. Kind (string) is already checked structurally by validate.
+func (a *API) checkRelations(ctx context.Context, typeName string, ct contract.ContentType, data map[string]any) error {
+	var issues []string
+	for name, f := range ct.Fields {
+		if f.Type != contract.FieldRelation {
+			continue
+		}
+		v, ok := data[name]
+		if !ok || v == nil {
+			continue
+		}
+		target, ok := v.(string)
+		if !ok {
+			continue // wrong kind already reported by validate
+		}
+		exists, err := a.items.exists(ctx, f.To, target)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			issues = append(issues, fmt.Sprintf("relation %q references missing %s %q", name, f.To, target))
+		}
+	}
+	if len(issues) > 0 {
+		sort.Strings(issues)
+		return &ValidationError{Type: typeName, Issues: issues}
+	}
+	return nil
 }
 
 // contentType resolves a declared content type from the composition, or an

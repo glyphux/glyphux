@@ -172,6 +172,38 @@ func TestDeleteRemoves(t *testing.T) {
 	}
 }
 
+func relationTypes() map[string]contract.ContentType {
+	return map[string]contract.ContentType{
+		"author": {Fields: map[string]contract.Field{
+			"name": {Type: contract.FieldString, Required: true},
+		}},
+		"article": {Fields: map[string]contract.Field{
+			"title":  {Type: contract.FieldString, Required: true},
+			"author": {Type: contract.FieldRelation, To: "author"},
+		}},
+	}
+}
+
+func TestRelationMustReferenceExistingTarget(t *testing.T) {
+	api := testAPI(t, relationTypes())
+	ctx := context.Background()
+	author := mustCreate(t, api, "author", map[string]any{"name": "Ada"})
+
+	// Valid reference to an existing author.
+	if _, err := api.Create(ctx, "article", map[string]any{"title": "T", "author": author.ID}); err != nil {
+		t.Errorf("valid relation rejected: %v", err)
+	}
+	// Dangling reference is a validation failure.
+	if _, err := api.Create(ctx, "article", map[string]any{"title": "T", "author": "does-not-exist"}); !errors.Is(err, ErrValidation) {
+		t.Errorf("dangling relation: got %v, want ErrValidation", err)
+	}
+	// Update is enforced too.
+	art := mustCreate(t, api, "article", map[string]any{"title": "T"})
+	if _, err := api.Update(ctx, "article", art.ID, map[string]any{"title": "T", "author": "nope"}); !errors.Is(err, ErrValidation) {
+		t.Errorf("dangling relation on update: got %v, want ErrValidation", err)
+	}
+}
+
 func mustCreate(t *testing.T, api *API, typeName string, data map[string]any) *Item {
 	t.Helper()
 	it, err := api.Create(context.Background(), typeName, data)
