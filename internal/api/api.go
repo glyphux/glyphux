@@ -12,18 +12,28 @@ import (
 
 	"github.com/glyphux/glyphux/internal/composition"
 	"github.com/glyphux/glyphux/internal/content"
+	"github.com/glyphux/glyphux/internal/identity"
 )
 
-// Server exposes the Phase-0 API surface.
+// Server exposes the API surface. It is a client of the domain APIs — it holds
+// no privileged kernel access of its own.
 type Server struct {
 	compositions *composition.Store
 	content      *content.API
+	identities   *identity.Service
+	sessions     *identity.Sessions
 	log          *slog.Logger
 }
 
 // New builds the API transport over the given domain APIs.
-func New(comps *composition.Store, contentAPI *content.API, log *slog.Logger) *Server {
-	return &Server{compositions: comps, content: contentAPI, log: log}
+func New(comps *composition.Store, contentAPI *content.API, identities *identity.Service, sessions *identity.Sessions, log *slog.Logger) *Server {
+	return &Server{
+		compositions: comps,
+		content:      contentAPI,
+		identities:   identities,
+		sessions:     sessions,
+		log:          log,
+	}
 }
 
 // Routes registers the API endpoints on mux.
@@ -31,6 +41,11 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /api/v0/composition", s.handleComposition)
 	mux.HandleFunc("GET /api/v0/content/ping", s.handlePing)
+
+	// Authentication (slice 1.7).
+	mux.HandleFunc("POST /api/v0/auth/login", s.handleLogin)
+	mux.HandleFunc("POST /api/v0/auth/logout", s.handleLogout)
+	mux.HandleFunc("GET /api/v0/auth/me", s.handleMe)
 
 	// Content CRUD (slice 1.2). The literal /ping route above is more specific
 	// than {type}, so ServeMux prefers it — no shadowing.

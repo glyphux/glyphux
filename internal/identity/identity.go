@@ -83,34 +83,54 @@ func (s *Service) CreateAdmin(ctx context.Context, email, password string) error
 }
 
 // Verify checks credentials, returning ErrInvalidCredentials on any mismatch.
+// It is a thin wrapper over Authenticate for callers that need only a yes/no.
 func (s *Service) Verify(ctx context.Context, email, password string) error {
+	_, err := s.Authenticate(ctx, email, password)
+	return err
+}
+
+// User is an authenticated principal — the identity the permission engine and
+// domain APIs reason about. It never carries credentials.
+type User struct {
+	ID    int64  `json:"id"`
+	Email string `json:"email"`
+	Role  string `json:"role"`
+}
+
+// Authenticate verifies credentials and returns the matching user, or
+// ErrInvalidCredentials. Unlike Verify it yields the principal, so a caller can
+// open a session.
+func (s *Service) Authenticate(ctx context.Context, email, password string) (*User, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
-	var hashHex, saltHex string
+	var (
+		u                User
+		hashHex, saltHex string
+	)
 	err := s.db.QueryRow(ctx,
-		`SELECT password_hash, password_salt FROM users WHERE email = ?`, email).
-		Scan(&hashHex, &saltHex)
+		`SELECT id, email, role, password_hash, password_salt FROM users WHERE email = ?`, email).
+		Scan(&u.ID, &u.Email, &u.Role, &hashHex, &saltHex)
 	if errors.Is(err, sql.ErrNoRows) {
-		return ErrInvalidCredentials
+		return nil, ErrInvalidCredentials
 	}
 	if err != nil {
-		return fmt.Errorf("verify credentials: %w", err)
+		return nil, fmt.Errorf("authenticate: %w", err)
 	}
 	salt, err := hex.DecodeString(saltHex)
 	if err != nil {
-		return fmt.Errorf("decode salt: %w", err)
+		return nil, fmt.Errorf("decode salt: %w", err)
 	}
 	want, err := hex.DecodeString(hashHex)
 	if err != nil {
-		return fmt.Errorf("decode hash: %w", err)
+		return nil, fmt.Errorf("decode hash: %w", err)
 	}
 	got, err := pbkdf2.Key(sha256.New, password, salt, pbkdf2Iterations, keyBytes)
 	if err != nil {
-		return fmt.Errorf("hash password: %w", err)
+		return nil, fmt.Errorf("hash password: %w", err)
 	}
 	if subtle.ConstantTimeCompare(got, want) != 1 {
-		return ErrInvalidCredentials
+		return nil, ErrInvalidCredentials
 	}
-	return nil
+	return &u, nil
 }
 
 // UserCount reports how many accounts exist (0 means setup has not run).

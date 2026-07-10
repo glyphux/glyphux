@@ -2,51 +2,17 @@ package api_test
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
-
-	"github.com/glyphux/glyphux/internal/api"
-	"github.com/glyphux/glyphux/internal/composition"
-	"github.com/glyphux/glyphux/internal/content"
-	"github.com/glyphux/glyphux/internal/db"
-	"github.com/glyphux/glyphux/pkg/contract"
 )
 
 func testServer(t *testing.T) http.Handler {
 	t.Helper()
-	d, err := db.OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { d.Close() })
-	migs := append(append([]db.Migration{}, composition.Migrations...), content.Migrations...)
-	if err := d.Migrate(context.Background(), migs); err != nil {
-		t.Fatal(err)
-	}
-	comps := composition.NewStore(d)
-	if err := comps.Save(context.Background(), &contract.Composition{
-		ContractVersion: contract.ContentCompositionV0,
-		Site:            contract.Site{Name: "Test"},
-		ContentTypes: map[string]contract.ContentType{
-			"article": {Fields: map[string]contract.Field{
-				"title": {Type: contract.FieldString, Required: true},
-				"body":  {Type: contract.FieldRichText},
-			}},
-		},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := api.New(comps, content.NewAPI(comps, content.NewStore(d)), log)
-	mux := http.NewServeMux()
-	srv.Routes(mux)
-	return mux
+	h, _ := testServerWithAuth(t)
+	return h
 }
 
 func do(t *testing.T, h http.Handler, method, path string, body any) *httptest.ResponseRecorder {

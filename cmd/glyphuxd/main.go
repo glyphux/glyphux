@@ -64,6 +64,7 @@ func run() error {
 	// Kernel + domain APIs.
 	compositions := composition.NewStore(database)
 	identities := identity.NewService(database)
+	sessions := identity.NewSessions(database)
 	contentAPI := content.NewAPI(compositions, content.NewStore(database))
 
 	// Clients of the contract: the API transport and the first-run wizard.
@@ -71,7 +72,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	apiServer := api.New(compositions, contentAPI, log)
+	apiServer := api.New(compositions, contentAPI, identities, sessions, log)
 
 	srv := server.New(cfg.Addr, apiServer, wizard, log)
 	return srv.Run(ctx, cfg.ShutdownTimeout)

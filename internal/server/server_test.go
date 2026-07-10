@@ -46,11 +46,12 @@ func boot(t *testing.T, dbPath string) http.Handler {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	compositions := composition.NewStore(database)
 	identities := identity.NewService(database)
+	sessions := identity.NewSessions(database)
 	wizard, err := setup.New(ctx, compositions, identities, log)
 	if err != nil {
 		t.Fatal(err)
 	}
-	apiServer := api.New(compositions, content.NewAPI(compositions, content.NewStore(database)), log)
+	apiServer := api.New(compositions, content.NewAPI(compositions, content.NewStore(database)), identities, sessions, log)
 	return server.Handler(apiServer, wizard)
 }
 
