@@ -411,6 +411,97 @@ func TestListLocalizedResolvesEachItem(t *testing.T) {
 	}
 }
 
+func TestGetPublishedHidesDrafts(t *testing.T) {
+	api := testAPI(t, articleTypes())
+	ctx := context.Background()
+	created := mustCreate(t, api, "article", map[string]any{"title": "Draft"})
+
+	if _, err := api.GetPublished(ctx, "article", created.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("GetPublished on draft: got %v, want ErrNotFound", err)
+	}
+
+	if _, err := api.Publish(ctx, "article", created.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := api.GetPublished(ctx, "article", created.ID)
+	if err != nil {
+		t.Fatalf("GetPublished after publish: %v", err)
+	}
+	if got.Data["title"] != "Draft" {
+		t.Errorf("title = %v, want Draft", got.Data["title"])
+	}
+
+	// Admin Get still sees it regardless of status.
+	if _, err := api.Get(ctx, "article", created.ID); err != nil {
+		t.Errorf("Get (admin view): %v", err)
+	}
+}
+
+func TestListPublishedExcludesDrafts(t *testing.T) {
+	api := testAPI(t, articleTypes())
+	ctx := context.Background()
+	published := mustCreate(t, api, "article", map[string]any{"title": "Published"})
+	mustCreate(t, api, "article", map[string]any{"title": "Draft"})
+	if _, err := api.Publish(ctx, "article", published.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := api.ListPublished(ctx, "article")
+	if err != nil {
+		t.Fatalf("ListPublished: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != published.ID {
+		t.Fatalf("ListPublished = %+v, want only the published item", items)
+	}
+
+	// Admin List still sees both.
+	all, err := api.List(ctx, "article")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Errorf("List (admin view) = %d items, want 2", len(all))
+	}
+}
+
+func TestGetLocalizedPublishedHidesDrafts(t *testing.T) {
+	api := testAPI(t, localizedArticleTypes())
+	ctx := context.Background()
+	created := mustCreate(t, api, "article", map[string]any{"title": map[string]any{"en": "Hi"}})
+
+	if _, err := api.GetLocalizedPublished(ctx, "article", created.ID, "en"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("GetLocalizedPublished on draft: got %v, want ErrNotFound", err)
+	}
+	if _, err := api.Publish(ctx, "article", created.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := api.GetLocalizedPublished(ctx, "article", created.ID, "en")
+	if err != nil {
+		t.Fatalf("GetLocalizedPublished after publish: %v", err)
+	}
+	if got.Data["title"] != "Hi" {
+		t.Errorf("title = %v, want Hi", got.Data["title"])
+	}
+}
+
+func TestListLocalizedPublishedExcludesDrafts(t *testing.T) {
+	api := testAPI(t, localizedArticleTypes())
+	ctx := context.Background()
+	published := mustCreate(t, api, "article", map[string]any{"title": map[string]any{"en": "Pub"}})
+	mustCreate(t, api, "article", map[string]any{"title": map[string]any{"en": "Draft"}})
+	if _, err := api.Publish(ctx, "article", published.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := api.ListLocalizedPublished(ctx, "article", "en")
+	if err != nil {
+		t.Fatalf("ListLocalizedPublished: %v", err)
+	}
+	if len(items) != 1 || items[0].Data["title"] != "Pub" {
+		t.Fatalf("ListLocalizedPublished = %+v, want only the published item", items)
+	}
+}
+
 func TestCreateAndGet(t *testing.T) {
 	api := testAPI(t, articleTypes())
 	ctx := context.Background()

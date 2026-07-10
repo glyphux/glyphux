@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/glyphux/glyphux/internal/db"
+	"github.com/glyphux/glyphux/internal/permission"
 )
 
 // Migrations is the Phase-0 schema baseline for identity.
@@ -69,28 +70,68 @@ var ErrInvalidCredentials = errors.New("invalid credentials")
 
 // CreateAdmin creates the initial admin account. Called once by the wizard.
 func (s *Service) CreateAdmin(ctx context.Context, email, password string) error {
+	_, err := s.createAccount(ctx, email, password, permission.RoleAdmin)
+	return err
+}
+
+// CreateUser creates an account with the given role, one of v1's fixed
+// roles (admin/editor/viewer per the internal/permission matrix). Intended
+// for an admin to provision editor/viewer accounts.
+func (s *Service) CreateUser(ctx context.Context, email, password, role string) (*User, error) {
+	if !permission.ValidRole(role) {
+		return nil, fmt.Errorf("unknown role %q", role)
+	}
+	return s.createAccount(ctx, email, password, role)
+}
+
+func (s *Service) createAccount(ctx context.Context, email, password, role string) (*User, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	if email == "" || !strings.Contains(email, "@") {
-		return fmt.Errorf("invalid email address")
+		return nil, fmt.Errorf("invalid email address")
 	}
 	if len(password) < 8 {
-		return fmt.Errorf("password must be at least 8 characters")
+		return nil, fmt.Errorf("password must be at least 8 characters")
 	}
 	salt := make([]byte, saltBytes)
 	if _, err := rand.Read(salt); err != nil {
-		return fmt.Errorf("generate salt: %w", err)
+		return nil, fmt.Errorf("generate salt: %w", err)
 	}
 	hash, err := pbkdf2.Key(sha256.New, password, salt, pbkdf2Iterations, keyBytes)
 	if err != nil {
-		return fmt.Errorf("hash password: %w", err)
+		return nil, fmt.Errorf("hash password: %w", err)
 	}
+	// Query the id back explicitly rather than via Result.LastInsertId, which
+	// Postgres's driver does not implement (§11.6: the db abstraction must
+	// work identically on both engines).
 	_, err = s.db.Exec(ctx,
-		`INSERT INTO users (email, password_hash, password_salt, role, created_at) VALUES (?, ?, ?, 'admin', ?)`,
-		email, hex.EncodeToString(hash), hex.EncodeToString(salt), time.Now().UTC().Format(time.RFC3339Nano))
+		`INSERT INTO users (email, password_hash, password_salt, role, created_at) VALUES (?, ?, ?, ?, ?)`,
+		email, hex.EncodeToString(hash), hex.EncodeToString(salt), role, time.Now().UTC().Format(time.RFC3339Nano))
 	if err != nil {
-		return fmt.Errorf("create admin: %w", err)
+		return nil, fmt.Errorf("create account: %w", err)
 	}
-	return nil
+	var id int64
+	if err := s.db.QueryRow(ctx, `SELECT id FROM users WHERE email = ?`, email).Scan(&id); err != nil {
+		return nil, fmt.Errorf("account id: %w", err)
+	}
+	return &User{ID: id, Email: email, Role: role}, nil
+}
+
+// ListUsers returns every account, oldest first.
+func (s *Service) ListUsers(ctx context.Context) ([]*User, error) {
+	rows, err := s.db.Query(ctx, `SELECT id, email, role FROM users ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
+	defer rows.Close()
+	var out []*User
+	for rows.Next() {
+		var u User
+		if err := rows.Scan(&u.ID, &u.Email, &u.Role); err != nil {
+			return nil, fmt.Errorf("scan user: %w", err)
+		}
+		out = append(out, &u)
+	}
+	return out, rows.Err()
 }
 
 // Verify checks credentials, returning ErrInvalidCredentials on any mismatch.

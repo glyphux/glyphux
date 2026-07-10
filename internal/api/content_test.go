@@ -96,8 +96,10 @@ func TestContentCRUDOverHTTP(t *testing.T) {
 		t.Fatalf("created item has no id: %v", created)
 	}
 
-	// Get.
-	rec = do(t, h, http.MethodGet, "/api/v0/content/article/"+id, nil)
+	// Get (as the authenticated admin — new items are drafts, invisible to
+	// anonymous reads; that's covered separately by
+	// TestDraftContentHiddenFromPublicReads).
+	rec = doWithCookieBody(t, h, http.MethodGet, "/api/v0/content/article/"+id, cookie, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET status = %d", rec.Code)
 	}
@@ -108,7 +110,7 @@ func TestContentCRUDOverHTTP(t *testing.T) {
 	}
 
 	// List.
-	rec = do(t, h, http.MethodGet, "/api/v0/content/article", nil)
+	rec = doWithCookieBody(t, h, http.MethodGet, "/api/v0/content/article", cookie, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("LIST status = %d", rec.Code)
 	}
@@ -227,7 +229,7 @@ func TestContentLocaleQueryParamResolvesLocalizedFields(t *testing.T) {
 	}))
 	id, _ := created["id"].(string)
 
-	rec := do(t, h, http.MethodGet, "/api/v0/content/article/"+id+"?locale=fr", nil)
+	rec := doWithCookieBody(t, h, http.MethodGet, "/api/v0/content/article/"+id+"?locale=fr", cookie, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET locale=fr = %d", rec.Code)
 	}
@@ -236,7 +238,7 @@ func TestContentLocaleQueryParamResolvesLocalizedFields(t *testing.T) {
 		t.Errorf("title = %v, want Bonjour", data["title"])
 	}
 
-	rec = do(t, h, http.MethodGet, "/api/v0/content/article?locale=en", nil)
+	rec = doWithCookieBody(t, h, http.MethodGet, "/api/v0/content/article?locale=en", cookie, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("LIST locale=en = %d", rec.Code)
 	}
@@ -251,11 +253,92 @@ func TestContentLocaleQueryParamResolvesLocalizedFields(t *testing.T) {
 	}
 
 	// Without ?locale=, the raw locale map passes through.
-	rec = do(t, h, http.MethodGet, "/api/v0/content/article/"+id, nil)
+	rec = doWithCookieBody(t, h, http.MethodGet, "/api/v0/content/article/"+id, cookie, nil)
 	data, _ = decode(t, rec)["data"].(map[string]any)
 	title, _ := data["title"].(map[string]any)
 	if title["en"] != "Hello" || title["fr"] != "Bonjour" {
 		t.Errorf("unresolved title = %v", title)
+	}
+}
+
+// Anonymous reads only see published content; an editor (content:read_drafts)
+// sees drafts too (slice 1.5 fix: publish state must gate visibility).
+func TestDraftContentHiddenFromPublicReads(t *testing.T) {
+	h, deps := testServerWithAuth(t)
+	ctx := t.Context()
+	if err := deps.identities.CreateAdmin(ctx, "admin@example.com", "correct horse battery"); err != nil {
+		t.Fatal(err)
+	}
+	adminCookie := sessionCookie(t, do(t, h, http.MethodPost, "/api/v0/auth/login", map[string]any{
+		"email": "admin@example.com", "password": "correct horse battery",
+	}))
+
+	draft := decode(t, doWithCookieBody(t, h, http.MethodPost, "/api/v0/content/article", adminCookie, map[string]any{"title": "Draft"}))
+	draftID, _ := draft["id"].(string)
+	published := decode(t, doWithCookieBody(t, h, http.MethodPost, "/api/v0/content/article", adminCookie, map[string]any{"title": "Published"}))
+	publishedID, _ := published["id"].(string)
+	doWithCookieBody(t, h, http.MethodPost, "/api/v0/content/article/"+publishedID+"/publish", adminCookie, nil)
+
+	// Anonymous: the draft is invisible; the published item is visible.
+	if rec := do(t, h, http.MethodGet, "/api/v0/content/article/"+draftID, nil); rec.Code != http.StatusNotFound {
+		t.Errorf("anon GET draft = %d, want 404", rec.Code)
+	}
+	if rec := do(t, h, http.MethodGet, "/api/v0/content/article/"+publishedID, nil); rec.Code != http.StatusOK {
+		t.Errorf("anon GET published = %d, want 200", rec.Code)
+	}
+	rec := do(t, h, http.MethodGet, "/api/v0/content/article", nil)
+	items, _ := decode(t, rec)["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("anon LIST returned %d items, want 1 (published only)", len(items))
+	}
+
+	// Admin (content:read_drafts): both are visible.
+	if rec := doWithCookieBody(t, h, http.MethodGet, "/api/v0/content/article/"+draftID, adminCookie, nil); rec.Code != http.StatusOK {
+		t.Errorf("admin GET draft = %d, want 200", rec.Code)
+	}
+	rec = doWithCookieBody(t, h, http.MethodGet, "/api/v0/content/article", adminCookie, nil)
+	items, _ = decode(t, rec)["items"].([]any)
+	if len(items) != 2 {
+		t.Fatalf("admin LIST returned %d items, want 2", len(items))
+	}
+
+	// A viewer (content:read only, no drafts) also can't see the draft.
+	if _, err := deps.identities.CreateUser(ctx, "viewer@example.com", "correct horse battery", "viewer"); err != nil {
+		t.Fatal(err)
+	}
+	viewerCookie := sessionCookie(t, do(t, h, http.MethodPost, "/api/v0/auth/login", map[string]any{
+		"email": "viewer@example.com", "password": "correct horse battery",
+	}))
+	if rec := doWithCookieBody(t, h, http.MethodGet, "/api/v0/content/article/"+draftID, viewerCookie, nil); rec.Code != http.StatusNotFound {
+		t.Errorf("viewer GET draft = %d, want 404", rec.Code)
+	}
+}
+
+// An editor can write content but cannot publish it — content:publish is
+// admin-only in v1's capability matrix (slice 1.8 fix: real role model).
+func TestEditorCanWriteButNotPublish(t *testing.T) {
+	h, deps := testServerWithAuth(t)
+	ctx := t.Context()
+	if err := deps.identities.CreateAdmin(ctx, "admin@example.com", "correct horse battery"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := deps.identities.CreateUser(ctx, "editor@example.com", "correct horse battery", "editor"); err != nil {
+		t.Fatal(err)
+	}
+	loginRec := do(t, h, http.MethodPost, "/api/v0/auth/login", map[string]any{
+		"email": "editor@example.com", "password": "correct horse battery",
+	})
+	cookie := sessionCookie(t, loginRec)
+
+	rec := doWithCookieBody(t, h, http.MethodPost, "/api/v0/content/article", cookie, map[string]any{"title": "Hi"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("editor create = %d, body %s", rec.Code, rec.Body.String())
+	}
+	id, _ := decode(t, rec)["id"].(string)
+
+	rec = doWithCookieBody(t, h, http.MethodPost, "/api/v0/content/article/"+id+"/publish", cookie, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("editor publish = %d, want 403", rec.Code)
 	}
 }
 

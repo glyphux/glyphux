@@ -33,12 +33,22 @@ POST   /api/v0/auth/login              email+password → sets session cookie �
 POST   /api/v0/auth/logout             revoke session (cookie or bearer)    → 204
 GET    /api/v0/auth/me                 current principal                    → 200 / 401
 
+User management (Phase 1, admin-only via users:manage):
+POST   /api/v0/users                   create an account with a role → 201 / 401 / 403 / 422
+GET    /api/v0/users                   list every account            → 200 / 401 / 403
+
+Roles and capabilities (v1's fixed matrix — no dynamic role editing yet):
+  admin:  content:read, content:read_drafts, content:write, content:publish, media:write, users:manage
+  editor: content:read, content:read_drafts, content:write, media:write   (cannot publish or manage users)
+  viewer: content:read only (cannot see drafts, cannot write)
+
 Content CRUD (Phase 1) — every write validated against the composition-declared type.
-Reads are public; mutations require an authenticated session holding the
-content:write capability (admin role, v1):
+Reads without content:read_drafts (anonymous, or an authenticated viewer) only
+see published items — drafts are invisible, not just unlisted. Mutations
+require content:write; publish/unpublish require content:publish:
 POST   /api/v0/content/{type}          create an item        → 201 / 401 / 403
-GET    /api/v0/content/{type}          list items of a type  → 200
-GET    /api/v0/content/{type}/{id}     read one item         → 200 / 404
+GET    /api/v0/content/{type}          list items of a type  → 200 (published-only unless content:read_drafts)
+GET    /api/v0/content/{type}/{id}     read one item         → 200 / 404 (404 for a draft you can't see)
 PUT    /api/v0/content/{type}/{id}     replace an item       → 200 / 401 / 403 / 404 / 422
 DELETE /api/v0/content/{type}/{id}     delete an item        → 204 / 401 / 403 / 404
 
@@ -59,7 +69,7 @@ available locale if the requested one is missing.
 
 Media pipeline + library (Phase 1) — images only in v1 (png/jpeg/gif),
 stored on a local-FS adapter under `<data-dir>/media`; upload/delete require
-content:write, reads are public:
+media:write, reads are public:
 POST   /api/v0/media                   upload (multipart "file" field) → 201 / 400 / 401 / 403 / 413 / 415
 GET    /api/v0/media                   list metadata                    → 200
 GET    /api/v0/media/{id}              one item's metadata              → 200 / 404

@@ -127,6 +127,68 @@ func (a *API) List(ctx context.Context, typeName string) ([]*Item, error) {
 	return items, nil
 }
 
+// GetPublished returns the item like Get, but reports ErrNotFound if it is
+// not published — drafts are invisible to public/unprivileged reads (slice
+// 1.5 fix: publish state must actually gate visibility, not just be a label).
+func (a *API) GetPublished(ctx context.Context, typeName, id string) (*Item, error) {
+	item, err := a.Get(ctx, typeName, id)
+	if err != nil {
+		return nil, err
+	}
+	if item.Status != StatusPublished {
+		return nil, ErrNotFound
+	}
+	return item, nil
+}
+
+// ListPublished returns every published item of the given type, oldest
+// first, excluding drafts.
+func (a *API) ListPublished(ctx context.Context, typeName string) ([]*Item, error) {
+	items, err := a.List(ctx, typeName)
+	if err != nil {
+		return nil, err
+	}
+	published := items[:0]
+	for _, item := range items {
+		if item.Status == StatusPublished {
+			published = append(published, item)
+		}
+	}
+	return published, nil
+}
+
+// GetLocalizedPublished composes GetPublished with locale resolution, like
+// GetLocalized does for Get.
+func (a *API) GetLocalizedPublished(ctx context.Context, typeName, id, locale string) (*Item, error) {
+	ct, err := a.contentType(ctx, typeName)
+	if err != nil {
+		return nil, err
+	}
+	item, err := a.GetPublished(ctx, typeName, id)
+	if err != nil {
+		return nil, err
+	}
+	resolveLocale(item, ct, locale)
+	return item, nil
+}
+
+// ListLocalizedPublished composes ListPublished with locale resolution, like
+// ListLocalized does for List.
+func (a *API) ListLocalizedPublished(ctx context.Context, typeName, locale string) ([]*Item, error) {
+	ct, err := a.contentType(ctx, typeName)
+	if err != nil {
+		return nil, err
+	}
+	items, err := a.ListPublished(ctx, typeName)
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range items {
+		resolveLocale(item, ct, locale)
+	}
+	return items, nil
+}
+
 // GetLocalized returns the item like Get, but resolves every localized field
 // to a single value for locale: the value at that locale if present, else an
 // arbitrary available locale as a fallback rather than leaving the field

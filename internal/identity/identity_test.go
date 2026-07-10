@@ -47,6 +47,53 @@ func TestCreateAndVerifyAdmin(t *testing.T) {
 	}
 }
 
+func TestCreateUserWithRole(t *testing.T) {
+	s := testService(t)
+	ctx := context.Background()
+
+	u, err := s.CreateUser(ctx, "editor@example.com", "correct horse battery", "editor")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if u.Role != "editor" {
+		t.Errorf("Role = %q, want editor", u.Role)
+	}
+
+	got, err := s.Authenticate(ctx, "editor@example.com", "correct horse battery")
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if got.Role != "editor" {
+		t.Errorf("authenticated role = %q, want editor", got.Role)
+	}
+}
+
+func TestCreateUserRejectsUnknownRole(t *testing.T) {
+	s := testService(t)
+	if _, err := s.CreateUser(context.Background(), "x@example.com", "correct horse battery", "superuser"); err == nil {
+		t.Error("accepted unknown role")
+	}
+}
+
+func TestListUsersReturnsEveryAccount(t *testing.T) {
+	s := testService(t)
+	ctx := context.Background()
+	if err := s.CreateAdmin(ctx, "admin@example.com", "correct horse battery"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateUser(ctx, "editor@example.com", "correct horse battery", "editor"); err != nil {
+		t.Fatal(err)
+	}
+
+	users, err := s.ListUsers(ctx)
+	if err != nil {
+		t.Fatalf("ListUsers: %v", err)
+	}
+	if len(users) != 2 {
+		t.Fatalf("ListUsers returned %d, want 2", len(users))
+	}
+}
+
 func TestCreateAdminRejectsWeakInput(t *testing.T) {
 	s := testService(t)
 	ctx := context.Background()

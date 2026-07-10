@@ -7,16 +7,42 @@ package permission
 type Capability string
 
 const (
-	ContentRead  Capability = "content:read"
-	ContentWrite Capability = "content:write"
+	ContentRead       Capability = "content:read"
+	ContentReadDrafts Capability = "content:read_drafts"
+	ContentWrite      Capability = "content:write"
+	ContentPublish    Capability = "content:publish"
+	MediaWrite        Capability = "media:write"
+	UsersManage       Capability = "users:manage"
+)
+
+// Roles known to v1's fixed capability matrix.
+const (
+	RoleAdmin  = "admin"
+	RoleEditor = "editor"
+	RoleViewer = "viewer"
 )
 
 // roleCapabilities maps roles to the capabilities they hold.
 var roleCapabilities = map[string]map[Capability]bool{
-	"admin": {ContentRead: true, ContentWrite: true},
+	RoleAdmin: {
+		ContentRead: true, ContentReadDrafts: true, ContentWrite: true,
+		ContentPublish: true, MediaWrite: true, UsersManage: true,
+	},
+	RoleEditor: {
+		ContentRead: true, ContentReadDrafts: true, ContentWrite: true, MediaWrite: true,
+	},
+	RoleViewer: {
+		ContentRead: true,
+	},
 }
 
 // Allows reports whether role holds capability. Unknown roles hold nothing.
 func Allows(role string, capability Capability) bool {
 	return roleCapabilities[role][capability]
+}
+
+// ValidRole reports whether role is one v1's fixed matrix recognizes.
+func ValidRole(role string) bool {
+	_, ok := roleCapabilities[role]
+	return ok
 }

@@ -54,6 +54,10 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v0/auth/logout", s.handleLogout)
 	mux.HandleFunc("GET /api/v0/auth/me", s.handleMe)
 
+	// User management (admin-only; slice 1.8).
+	mux.HandleFunc("POST /api/v0/users", s.requireCapability(permission.UsersManage, s.handleCreateUser))
+	mux.HandleFunc("GET /api/v0/users", s.requireCapability(permission.UsersManage, s.handleListUsers))
+
 	// Content CRUD (slice 1.2). The literal /ping route above is more specific
 	// than {type}, so ServeMux prefers it — no shadowing. Reads are public;
 	// mutations require the content:write capability (slice 1.8).
@@ -64,18 +68,18 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/v0/content/{type}/{id}", s.requireCapability(permission.ContentWrite, s.handleContentDelete))
 
 	// Drafts, publish, versioning (slice 1.5).
-	mux.HandleFunc("POST /api/v0/content/{type}/{id}/publish", s.requireCapability(permission.ContentWrite, s.handleContentPublish))
-	mux.HandleFunc("POST /api/v0/content/{type}/{id}/unpublish", s.requireCapability(permission.ContentWrite, s.handleContentUnpublish))
+	mux.HandleFunc("POST /api/v0/content/{type}/{id}/publish", s.requireCapability(permission.ContentPublish, s.handleContentPublish))
+	mux.HandleFunc("POST /api/v0/content/{type}/{id}/unpublish", s.requireCapability(permission.ContentPublish, s.handleContentUnpublish))
 	mux.HandleFunc("GET /api/v0/content/{type}/{id}/versions", s.handleContentListVersions)
 	mux.HandleFunc("POST /api/v0/content/{type}/{id}/rollback/{version}", s.requireCapability(permission.ContentWrite, s.handleContentRollback))
 
 	// Media pipeline + library (slice 1.6). Reads are public; upload/delete
-	// require content:write, matching the content mutation policy.
-	mux.HandleFunc("POST /api/v0/media", s.requireCapability(permission.ContentWrite, s.handleMediaUpload))
+	// require media:write.
+	mux.HandleFunc("POST /api/v0/media", s.requireCapability(permission.MediaWrite, s.handleMediaUpload))
 	mux.HandleFunc("GET /api/v0/media", s.handleMediaList)
 	mux.HandleFunc("GET /api/v0/media/{id}", s.handleMediaGet)
 	mux.HandleFunc("GET /api/v0/media/{id}/file", s.handleMediaFile)
-	mux.HandleFunc("DELETE /api/v0/media/{id}", s.requireCapability(permission.ContentWrite, s.handleMediaDelete))
+	mux.HandleFunc("DELETE /api/v0/media/{id}", s.requireCapability(permission.MediaWrite, s.handleMediaDelete))
 }
 
 func (s *Server) handleContentCreate(w http.ResponseWriter, r *http.Request) {
@@ -91,16 +95,32 @@ func (s *Server) handleContentCreate(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusCreated, item)
 }
 
+// canReadDrafts reports whether the request's principal, if any, holds
+// content:read_drafts — the gate between the admin view (every status) and
+// the public view (published only) of content reads.
+func (s *Server) canReadDrafts(r *http.Request) bool {
+	user, ok := s.currentUser(r)
+	return ok && permission.Allows(user.Role, permission.ContentReadDrafts)
+}
+
 func (s *Server) handleContentList(w http.ResponseWriter, r *http.Request) {
 	typeName := r.PathValue("type")
+	locale := r.URL.Query().Get("locale")
+	drafts := s.canReadDrafts(r)
+
 	var (
 		items any
 		err   error
 	)
-	if locale := r.URL.Query().Get("locale"); locale != "" {
+	switch {
+	case locale != "" && drafts:
 		items, err = s.content.ListLocalized(r.Context(), typeName, locale)
-	} else {
+	case locale != "" && !drafts:
+		items, err = s.content.ListLocalizedPublished(r.Context(), typeName, locale)
+	case drafts:
 		items, err = s.content.List(r.Context(), typeName)
+	default:
+		items, err = s.content.ListPublished(r.Context(), typeName)
 	}
 	if err != nil {
 		s.writeContentError(w, err)
@@ -111,14 +131,22 @@ func (s *Server) handleContentList(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleContentGet(w http.ResponseWriter, r *http.Request) {
 	typeName, id := r.PathValue("type"), r.PathValue("id")
+	locale := r.URL.Query().Get("locale")
+	drafts := s.canReadDrafts(r)
+
 	var (
 		item *content.Item
 		err  error
 	)
-	if locale := r.URL.Query().Get("locale"); locale != "" {
+	switch {
+	case locale != "" && drafts:
 		item, err = s.content.GetLocalized(r.Context(), typeName, id, locale)
-	} else {
+	case locale != "" && !drafts:
+		item, err = s.content.GetLocalizedPublished(r.Context(), typeName, id, locale)
+	case drafts:
 		item, err = s.content.Get(r.Context(), typeName, id)
+	default:
+		item, err = s.content.GetPublished(r.Context(), typeName, id)
 	}
 	if err != nil {
 		s.writeContentError(w, err)
