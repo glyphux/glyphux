@@ -161,6 +161,43 @@ func TestWizardRequiresTokenForRemoteAccess(t *testing.T) {
 	}
 }
 
+// Oversized request bodies are rejected before they reach a handler — a DoS
+// defense (slice 1.9: security primitives).
+func TestOversizedRequestBodyRejected(t *testing.T) {
+	h := boot(t, filepath.Join(t.TempDir(), "glyphux.db"))
+
+	huge := strings.Repeat("a", 2<<20) // 2 MiB, well over the request cap
+	body := `{"email":"admin@example.com","password":"` + huge + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v0/auth/login", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized body = %d, want 413", rec.Code)
+	}
+}
+
+// Every response carries baseline security headers, and cross-origin
+// requests are not granted CORS access by default (slice 1.9).
+func TestSecurityHeadersAndNoCORSByDefault(t *testing.T) {
+	h := boot(t, filepath.Join(t.TempDir(), "glyphux.db"))
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.Header.Set("Origin", "https://evil.example")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+	if got := rec.Header().Get("X-Frame-Options"); got != "DENY" {
+		t.Errorf("X-Frame-Options = %q, want DENY", got)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want unset for an unconfigured cross-origin request", got)
+	}
+}
+
 func TestWizardRejectsPostgresInPhaseZero(t *testing.T) {
 	h := boot(t, filepath.Join(t.TempDir(), "glyphux.db"))
 	form := url.Values{

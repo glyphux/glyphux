@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -19,17 +18,23 @@ type ctxKey int
 const userKey ctxKey = iota
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	key := remoteKey(r)
+	if !s.loginLimiter.allow(key) {
+		s.writeError(w, http.StatusTooManyRequests, "too many login attempts; try again later")
+		return
+	}
+
 	var body struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		s.writeError(w, http.StatusBadRequest, "request body must be a JSON object")
+	if !s.decodeJSON(w, r, &body) {
 		return
 	}
 	user, err := s.identities.Authenticate(r.Context(), body.Email, body.Password)
 	if err != nil {
 		// Unknown user and wrong password are indistinguishable.
+		s.loginLimiter.recordFailure(key)
 		s.writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}

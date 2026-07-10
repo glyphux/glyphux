@@ -48,6 +48,12 @@ content type or missing item returns `404`; malformed JSON returns `400`.
 Sessions are sent as an `Authorization: Bearer <token>` header or the
 `glyphux_session` HttpOnly cookie set at login.
 
+Security baseline (Phase 1): every response carries `X-Content-Type-Options`,
+`X-Frame-Options`, and `Referrer-Policy` headers; there is no CORS opt-in, so
+browsers deny cross-origin reads by default; request bodies are capped at 1
+MiB (`413` over the limit); and repeated failed logins from one address are
+throttled (`429` after 10 failures/minute).
+
 Configuration via environment: `GLYPHUX_ADDR` (default `:8080`),
 `GLYPHUX_DATA_DIR` (default `data/`). On a remote server, first-run requires
 the setup token printed to the log at boot.

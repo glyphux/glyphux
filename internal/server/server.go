@@ -23,6 +23,11 @@ type Server struct {
 	listenerReady chan string // resolved address once listening
 }
 
+// maxRequestBodyBytes bounds any single request body — a DoS defense so an
+// oversized payload cannot exhaust memory before a handler ever runs it
+// through JSON decoding or validation (slice 1.9).
+const maxRequestBodyBytes = 1 << 20 // 1 MiB
+
 // Handler assembles the daemon's full route table: API transport, wizard,
 // and the root redirect.
 func Handler(apiServer *api.Server, wizard *setup.Wizard) http.Handler {
@@ -37,7 +42,30 @@ func Handler(apiServer *api.Server, wizard *setup.Wizard) http.Handler {
 		}
 		http.Redirect(w, r, "/api/v0/content/ping", http.StatusTemporaryRedirect)
 	})
-	return mux
+	return limitBody(securityHeaders(mux))
+}
+
+// limitBody caps every request body at maxRequestBodyBytes. A handler that
+// reads past the cap gets an *http.MaxBytesError it can map to 413.
+func limitBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+		next.ServeHTTP(w, r)
+	})
+}
+
+// securityHeaders sets baseline hardening headers on every response. There is
+// no Access-Control-Allow-Origin here or anywhere else in the daemon, so
+// browsers deny cross-origin reads by default — CORS is opt-in only, and
+// nothing currently opts in (slice 1.9).
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "same-origin")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // New assembles the full route table.

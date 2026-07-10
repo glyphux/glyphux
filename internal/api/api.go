@@ -24,6 +24,7 @@ type Server struct {
 	identities   *identity.Service
 	sessions     *identity.Sessions
 	log          *slog.Logger
+	loginLimiter *loginLimiter
 }
 
 // New builds the API transport over the given domain APIs.
@@ -34,6 +35,7 @@ func New(comps *composition.Store, contentAPI *content.API, identities *identity
 		identities:   identities,
 		sessions:     sessions,
 		log:          log,
+		loginLimiter: newLoginLimiter(),
 	}
 }
 
@@ -110,15 +112,29 @@ func (s *Server) handleContentDelete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// decodeData reads a JSON object body into a data map, writing a 400 and
-// returning false on malformed input.
+// decodeData reads a JSON object body into a data map, writing a 400 (or 413
+// if the body exceeded the request size cap) and returning false on failure.
 func (s *Server) decodeData(w http.ResponseWriter, r *http.Request) (map[string]any, bool) {
 	var data map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
-		s.writeError(w, http.StatusBadRequest, "request body must be a JSON object")
+	if !s.decodeJSON(w, r, &data) {
 		return nil, false
 	}
 	return data, true
+}
+
+// decodeJSON decodes a JSON request body into v, writing 413 for a body that
+// exceeded the request size cap or 400 for any other malformed input.
+func (s *Server) decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
+	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			s.writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return false
+		}
+		s.writeError(w, http.StatusBadRequest, "request body must be a JSON object")
+		return false
+	}
+	return true
 }
 
 // writeContentError maps domain errors to HTTP status codes. Unknown type and
