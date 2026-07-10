@@ -213,6 +213,104 @@ func mustCreate(t *testing.T, api *API, typeName string, data map[string]any) *I
 	return it
 }
 
+func TestCreateStartsAsDraftAtVersionOne(t *testing.T) {
+	api := testAPI(t, articleTypes())
+	created := mustCreate(t, api, "article", map[string]any{"title": "Hello"})
+	if created.Status != "draft" {
+		t.Errorf("Status = %q, want draft", created.Status)
+	}
+	if created.Version != 1 {
+		t.Errorf("Version = %d, want 1", created.Version)
+	}
+}
+
+func TestPublishAndUnpublish(t *testing.T) {
+	api := testAPI(t, articleTypes())
+	ctx := context.Background()
+	created := mustCreate(t, api, "article", map[string]any{"title": "Hello"})
+
+	published, err := api.Publish(ctx, "article", created.ID)
+	if err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if published.Status != "published" {
+		t.Errorf("Status after Publish = %q, want published", published.Status)
+	}
+	got, _ := api.Get(ctx, "article", created.ID)
+	if got.Status != "published" {
+		t.Errorf("persisted status = %q, want published", got.Status)
+	}
+
+	unpublished, err := api.Unpublish(ctx, "article", created.ID)
+	if err != nil {
+		t.Fatalf("Unpublish: %v", err)
+	}
+	if unpublished.Status != "draft" {
+		t.Errorf("Status after Unpublish = %q, want draft", unpublished.Status)
+	}
+
+	if _, err := api.Publish(ctx, "article", "nope"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("publish missing item: got %v, want ErrNotFound", err)
+	}
+}
+
+func TestUpdateBumpsVersionAndRecordsHistory(t *testing.T) {
+	api := testAPI(t, articleTypes())
+	ctx := context.Background()
+	created := mustCreate(t, api, "article", map[string]any{"title": "V1"})
+
+	updated, err := api.Update(ctx, "article", created.ID, map[string]any{"title": "V2"})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if updated.Version != 2 {
+		t.Errorf("Version after Update = %d, want 2", updated.Version)
+	}
+
+	versions, err := api.ListVersions(ctx, "article", created.ID)
+	if err != nil {
+		t.Fatalf("ListVersions: %v", err)
+	}
+	if len(versions) != 2 {
+		t.Fatalf("ListVersions returned %d entries, want 2", len(versions))
+	}
+	if versions[0].Version != 1 || versions[0].Data["title"] != "V1" {
+		t.Errorf("versions[0] = %+v, want version 1 with title V1", versions[0])
+	}
+	if versions[1].Version != 2 || versions[1].Data["title"] != "V2" {
+		t.Errorf("versions[1] = %+v, want version 2 with title V2", versions[1])
+	}
+
+	if _, err := api.ListVersions(ctx, "article", "nope"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("ListVersions missing item: got %v, want ErrNotFound", err)
+	}
+}
+
+func TestRollbackRestoresOlderVersion(t *testing.T) {
+	api := testAPI(t, articleTypes())
+	ctx := context.Background()
+	created := mustCreate(t, api, "article", map[string]any{"title": "V1"})
+	_, err := api.Update(ctx, "article", created.ID, map[string]any{"title": "V2"})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	rolled, err := api.Rollback(ctx, "article", created.ID, 1)
+	if err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	if rolled.Data["title"] != "V1" {
+		t.Errorf("Rollback data = %v, want title V1", rolled.Data)
+	}
+	if rolled.Version != 3 {
+		t.Errorf("Rollback Version = %d, want 3 (rollback is itself a new version)", rolled.Version)
+	}
+
+	if _, err := api.Rollback(ctx, "article", created.ID, 99); !errors.Is(err, ErrNotFound) {
+		t.Errorf("rollback to missing version: got %v, want ErrNotFound", err)
+	}
+}
+
 func TestCreateAndGet(t *testing.T) {
 	api := testAPI(t, articleTypes())
 	ctx := context.Background()

@@ -153,6 +153,55 @@ func TestPingStillRoutes(t *testing.T) {
 	}
 }
 
+// Publish, unpublish, list-versions, and rollback are reachable over HTTP;
+// publish/unpublish/rollback are mutations gated behind auth (slice 1.5).
+func TestContentPublishVersionsRollbackOverHTTP(t *testing.T) {
+	h, cookie := authedServer(t)
+
+	created := decode(t, doWithCookieBody(t, h, http.MethodPost, "/api/v0/content/article", cookie, map[string]any{"title": "V1"}))
+	id, _ := created["id"].(string)
+
+	// Anonymous publish is rejected.
+	if rec := do(t, h, http.MethodPost, "/api/v0/content/article/"+id+"/publish", nil); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("anon publish = %d, want 401", rec.Code)
+	}
+
+	rec := doWithCookieBody(t, h, http.MethodPost, "/api/v0/content/article/"+id+"/publish", cookie, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("publish = %d, body %s", rec.Code, rec.Body.String())
+	}
+	if decode(t, rec)["status"] != "published" {
+		t.Errorf("status after publish = %v, want published", decode(t, rec)["status"])
+	}
+
+	doWithCookieBody(t, h, http.MethodPut, "/api/v0/content/article/"+id, cookie, map[string]any{"title": "V2"})
+
+	// Versions are readable without auth.
+	rec = do(t, h, http.MethodGet, "/api/v0/content/article/"+id+"/versions", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list versions = %d", rec.Code)
+	}
+	versions, _ := decode(t, rec)["versions"].([]any)
+	if len(versions) != 2 {
+		t.Fatalf("versions returned %d entries, want 2", len(versions))
+	}
+
+	rec = doWithCookieBody(t, h, http.MethodPost, "/api/v0/content/article/"+id+"/rollback/1", cookie, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rollback = %d, body %s", rec.Code, rec.Body.String())
+	}
+	got := decode(t, rec)
+	data, _ := got["data"].(map[string]any)
+	if data["title"] != "V1" {
+		t.Errorf("rollback title = %v, want V1", data["title"])
+	}
+
+	rec = doWithCookieBody(t, h, http.MethodPost, "/api/v0/content/article/"+id+"/unpublish", cookie, nil)
+	if rec.Code != http.StatusOK || decode(t, rec)["status"] != "draft" {
+		t.Fatalf("unpublish = %d, status %v", rec.Code, decode(t, rec)["status"])
+	}
+}
+
 // Content mutations require an authenticated admin session; reads stay
 // public (slice 1.8: permission engine + auth enforcement).
 func TestContentMutationsRequireAuth(t *testing.T) {

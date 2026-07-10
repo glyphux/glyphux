@@ -9,6 +9,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 
 	"github.com/glyphux/glyphux/internal/composition"
 	"github.com/glyphux/glyphux/internal/content"
@@ -58,6 +59,12 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v0/content/{type}/{id}", s.handleContentGet)
 	mux.HandleFunc("PUT /api/v0/content/{type}/{id}", s.requireCapability(permission.ContentWrite, s.handleContentUpdate))
 	mux.HandleFunc("DELETE /api/v0/content/{type}/{id}", s.requireCapability(permission.ContentWrite, s.handleContentDelete))
+
+	// Drafts, publish, versioning (slice 1.5).
+	mux.HandleFunc("POST /api/v0/content/{type}/{id}/publish", s.requireCapability(permission.ContentWrite, s.handleContentPublish))
+	mux.HandleFunc("POST /api/v0/content/{type}/{id}/unpublish", s.requireCapability(permission.ContentWrite, s.handleContentUnpublish))
+	mux.HandleFunc("GET /api/v0/content/{type}/{id}/versions", s.handleContentListVersions)
+	mux.HandleFunc("POST /api/v0/content/{type}/{id}/rollback/{version}", s.requireCapability(permission.ContentWrite, s.handleContentRollback))
 }
 
 func (s *Server) handleContentCreate(w http.ResponseWriter, r *http.Request) {
@@ -110,6 +117,47 @@ func (s *Server) handleContentDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleContentPublish(w http.ResponseWriter, r *http.Request) {
+	item, err := s.content.Publish(r.Context(), r.PathValue("type"), r.PathValue("id"))
+	if err != nil {
+		s.writeContentError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) handleContentUnpublish(w http.ResponseWriter, r *http.Request) {
+	item, err := s.content.Unpublish(r.Context(), r.PathValue("type"), r.PathValue("id"))
+	if err != nil {
+		s.writeContentError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) handleContentListVersions(w http.ResponseWriter, r *http.Request) {
+	versions, err := s.content.ListVersions(r.Context(), r.PathValue("type"), r.PathValue("id"))
+	if err != nil {
+		s.writeContentError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"versions": versions})
+}
+
+func (s *Server) handleContentRollback(w http.ResponseWriter, r *http.Request) {
+	version, err := strconv.Atoi(r.PathValue("version"))
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "version must be an integer")
+		return
+	}
+	item, err := s.content.Rollback(r.Context(), r.PathValue("type"), r.PathValue("id"), version)
+	if err != nil {
+		s.writeContentError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, item)
 }
 
 // decodeData reads a JSON object body into a data map, writing a 400 (or 413

@@ -32,18 +32,35 @@ func NewAPI(comps *composition.Store, items *Store) *API {
 	return &API{compositions: comps, items: items}
 }
 
-// Item is a single piece of content: a typed, identified JSON document with
-// lifecycle timestamps.
+// Status values for an item's publication lifecycle (slice 1.5).
+const (
+	StatusDraft     = "draft"
+	StatusPublished = "published"
+)
+
+// Item is a single piece of content: a typed, identified JSON document with a
+// publication status, a version number, and lifecycle timestamps.
 type Item struct {
 	ID        string         `json:"id"`
 	Type      string         `json:"type"`
 	Data      map[string]any `json:"data"`
+	Status    string         `json:"status"`
+	Version   int            `json:"version"`
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
 }
 
+// Version is one immutable historical snapshot of an item.
+type Version struct {
+	Version   int            `json:"version"`
+	Data      map[string]any `json:"data"`
+	Status    string         `json:"status"`
+	CreatedAt time.Time      `json:"created_at"`
+}
+
 // Create validates data against the declared content type and persists a new
-// item, returning it with a generated id and timestamps.
+// item as a draft at version 1, returning it with a generated id and
+// timestamps.
 func (a *API) Create(ctx context.Context, typeName string, data map[string]any) (*Item, error) {
 	ct, err := a.contentType(ctx, typeName)
 	if err != nil {
@@ -56,14 +73,24 @@ func (a *API) Create(ctx context.Context, typeName string, data map[string]any) 
 		return nil, err
 	}
 	now := time.Now().UTC()
-	item := &Item{ID: newID(), Type: typeName, Data: data, CreatedAt: now, UpdatedAt: now}
+	item := &Item{
+		ID: newID(), Type: typeName, Data: data,
+		Status: StatusDraft, Version: 1,
+		CreatedAt: now, UpdatedAt: now,
+	}
 	encoded, err := json.Marshal(data)
 	if err != nil {
 		return nil, fmt.Errorf("encode content data: %w", err)
 	}
 	if err := a.items.insert(ctx, record{
 		ID: item.ID, Type: typeName, Data: string(encoded),
+		Status: StatusDraft, Version: 1,
 		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		return nil, err
+	}
+	if err := a.items.insertVersion(ctx, item.ID, versionRecord{
+		Version: 1, Type: typeName, Data: string(encoded), Status: StatusDraft, CreatedAt: now,
 	}); err != nil {
 		return nil, err
 	}
@@ -100,8 +127,9 @@ func (a *API) List(ctx context.Context, typeName string) ([]*Item, error) {
 	return items, nil
 }
 
-// Update validates data against the declared type and replaces the item's data,
-// returning ErrNotFound if the item does not exist.
+// Update validates data against the declared type, replaces the item's data,
+// and records a new version snapshot. Status is left unchanged. Returns
+// ErrNotFound if the item does not exist.
 func (a *API) Update(ctx context.Context, typeName, id string, data map[string]any) (*Item, error) {
 	ct, err := a.contentType(ctx, typeName)
 	if err != nil {
@@ -113,12 +141,22 @@ func (a *API) Update(ctx context.Context, typeName, id string, data map[string]a
 	if err := a.checkRelations(ctx, typeName, ct, data); err != nil {
 		return nil, err
 	}
+	existing, err := a.items.getByID(ctx, typeName, id)
+	if err != nil {
+		return nil, err
+	}
 	encoded, err := json.Marshal(data)
 	if err != nil {
 		return nil, fmt.Errorf("encode content data: %w", err)
 	}
 	now := time.Now().UTC()
-	if err := a.items.update(ctx, typeName, id, string(encoded), now); err != nil {
+	nextVersion := existing.Version + 1
+	if err := a.items.setData(ctx, typeName, id, string(encoded), nextVersion, now); err != nil {
+		return nil, err
+	}
+	if err := a.items.insertVersion(ctx, id, versionRecord{
+		Version: nextVersion, Type: typeName, Data: string(encoded), Status: existing.Status, CreatedAt: now,
+	}); err != nil {
 		return nil, err
 	}
 	return a.Get(ctx, typeName, id)
@@ -130,6 +168,90 @@ func (a *API) Delete(ctx context.Context, typeName, id string) error {
 		return err
 	}
 	return a.items.delete(ctx, typeName, id)
+}
+
+// Publish marks an item as published, making it the item's live status.
+// Returns ErrNotFound if the item does not exist.
+func (a *API) Publish(ctx context.Context, typeName, id string) (*Item, error) {
+	return a.setStatus(ctx, typeName, id, StatusPublished)
+}
+
+// Unpublish reverts a published item to draft. Returns ErrNotFound if the
+// item does not exist.
+func (a *API) Unpublish(ctx context.Context, typeName, id string) (*Item, error) {
+	return a.setStatus(ctx, typeName, id, StatusDraft)
+}
+
+func (a *API) setStatus(ctx context.Context, typeName, id, status string) (*Item, error) {
+	if _, err := a.contentType(ctx, typeName); err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	if err := a.items.setStatus(ctx, typeName, id, status, now); err != nil {
+		return nil, err
+	}
+	return a.Get(ctx, typeName, id)
+}
+
+// ListVersions returns an item's full version history, oldest first. Returns
+// ErrNotFound if the item does not exist.
+func (a *API) ListVersions(ctx context.Context, typeName, id string) ([]*Version, error) {
+	if _, err := a.items.getByID(ctx, typeName, id); err != nil {
+		return nil, err
+	}
+	records, err := a.items.listVersions(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	versions := make([]*Version, 0, len(records))
+	for _, vr := range records {
+		v, err := recordToVersion(vr)
+		if err != nil {
+			return nil, err
+		}
+		versions = append(versions, v)
+	}
+	return versions, nil
+}
+
+// Rollback restores an item's data to an earlier version, validating it
+// against the current content type and recording the restore as a new
+// version. Status is left unchanged. Returns ErrNotFound if the item or the
+// requested version does not exist.
+func (a *API) Rollback(ctx context.Context, typeName, id string, version int) (*Item, error) {
+	ct, err := a.contentType(ctx, typeName)
+	if err != nil {
+		return nil, err
+	}
+	existing, err := a.items.getByID(ctx, typeName, id)
+	if err != nil {
+		return nil, err
+	}
+	target, err := a.items.getVersion(ctx, id, version)
+	if err != nil {
+		return nil, err
+	}
+	var data map[string]any
+	if err := json.Unmarshal([]byte(target.Data), &data); err != nil {
+		return nil, fmt.Errorf("decode content data: %w", err)
+	}
+	if err := validate(typeName, ct, data); err != nil {
+		return nil, err
+	}
+	if err := a.checkRelations(ctx, typeName, ct, data); err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	nextVersion := existing.Version + 1
+	if err := a.items.setData(ctx, typeName, id, target.Data, nextVersion, now); err != nil {
+		return nil, err
+	}
+	if err := a.items.insertVersion(ctx, id, versionRecord{
+		Version: nextVersion, Type: typeName, Data: target.Data, Status: existing.Status, CreatedAt: now,
+	}); err != nil {
+		return nil, err
+	}
+	return a.Get(ctx, typeName, id)
 }
 
 // checkRelations verifies that every present relation field references an
@@ -184,7 +306,19 @@ func recordToItem(r record) (*Item, error) {
 	if err := json.Unmarshal([]byte(r.Data), &data); err != nil {
 		return nil, fmt.Errorf("decode content data: %w", err)
 	}
-	return &Item{ID: r.ID, Type: r.Type, Data: data, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt}, nil
+	return &Item{
+		ID: r.ID, Type: r.Type, Data: data,
+		Status: r.Status, Version: r.Version,
+		CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
+	}, nil
+}
+
+func recordToVersion(vr versionRecord) (*Version, error) {
+	var data map[string]any
+	if err := json.Unmarshal([]byte(vr.Data), &data); err != nil {
+		return nil, fmt.Errorf("decode content version data: %w", err)
+	}
+	return &Version{Version: vr.Version, Data: data, Status: vr.Status, CreatedAt: vr.CreatedAt}, nil
 }
 
 func newID() string {

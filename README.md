@@ -41,6 +41,13 @@ GET    /api/v0/content/{type}          list items of a type  → 200
 GET    /api/v0/content/{type}/{id}     read one item         → 200 / 404
 PUT    /api/v0/content/{type}/{id}     replace an item       → 200 / 401 / 403 / 404 / 422
 DELETE /api/v0/content/{type}/{id}     delete an item        → 204 / 401 / 403 / 404
+
+Drafts, publish, versioning (Phase 1) — every write is recorded as an immutable
+version; items are created as drafts:
+POST /api/v0/content/{type}/{id}/publish            mark published        → 200 / 401 / 403 / 404
+POST /api/v0/content/{type}/{id}/unpublish           revert to draft       → 200 / 401 / 403 / 404
+GET  /api/v0/content/{type}/{id}/versions            full version history  → 200 / 404
+POST /api/v0/content/{type}/{id}/rollback/{version}  restore an old version → 200 / 401 / 403 / 404 / 422
 ```
 
 Validation failures return `422` with the offending field issues; an undeclared
