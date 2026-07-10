@@ -50,6 +50,12 @@ func validate(typeName string, ct contract.ContentType, data map[string]any) err
 			}
 			continue
 		}
+		if f.Localized {
+			if msg := checkLocalizedKind(name, f, v); msg != "" {
+				issues = append(issues, msg)
+			}
+			continue
+		}
 		if msg := checkKind(name, f.Type, v); msg != "" {
 			issues = append(issues, msg)
 		}
@@ -78,6 +84,26 @@ func checkKind(name string, ft contract.FieldType, v any) string {
 	}
 	if !ok {
 		return fmt.Sprintf("field %q must be %s", name, ft)
+	}
+	return ""
+}
+
+// checkLocalizedKind validates a localized field's value: it must be a JSON
+// object keyed by locale code, with each per-locale value matching the
+// field's underlying kind. A required localized field must have at least one
+// locale populated.
+func checkLocalizedKind(name string, f contract.Field, v any) string {
+	locales, ok := v.(map[string]any)
+	if !ok {
+		return fmt.Sprintf("field %q must be an object of locale to value", name)
+	}
+	if f.Required && len(locales) == 0 {
+		return fmt.Sprintf("field %q is required", name)
+	}
+	for locale, lv := range locales {
+		if msg := checkKind(name, f.Type, lv); msg != "" {
+			return fmt.Sprintf("field %q locale %q: %s", name, locale, f.Type)
+		}
 	}
 	return ""
 }

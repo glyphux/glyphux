@@ -127,6 +127,62 @@ func (a *API) List(ctx context.Context, typeName string) ([]*Item, error) {
 	return items, nil
 }
 
+// GetLocalized returns the item like Get, but resolves every localized field
+// to a single value for locale: the value at that locale if present, else an
+// arbitrary available locale as a fallback rather than leaving the field
+// empty. Non-localized fields pass through unchanged.
+func (a *API) GetLocalized(ctx context.Context, typeName, id, locale string) (*Item, error) {
+	ct, err := a.contentType(ctx, typeName)
+	if err != nil {
+		return nil, err
+	}
+	item, err := a.Get(ctx, typeName, id)
+	if err != nil {
+		return nil, err
+	}
+	resolveLocale(item, ct, locale)
+	return item, nil
+}
+
+// ListLocalized returns every item of the given type, resolved to locale like
+// GetLocalized.
+func (a *API) ListLocalized(ctx context.Context, typeName, locale string) ([]*Item, error) {
+	ct, err := a.contentType(ctx, typeName)
+	if err != nil {
+		return nil, err
+	}
+	items, err := a.List(ctx, typeName)
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range items {
+		resolveLocale(item, ct, locale)
+	}
+	return items, nil
+}
+
+// resolveLocale flattens every localized field on item in place: the value at
+// locale if present, else an arbitrary available locale.
+func resolveLocale(item *Item, ct contract.ContentType, locale string) {
+	for name, f := range ct.Fields {
+		if !f.Localized {
+			continue
+		}
+		locales, ok := item.Data[name].(map[string]any)
+		if !ok {
+			continue
+		}
+		if v, ok := locales[locale]; ok {
+			item.Data[name] = v
+			continue
+		}
+		for _, v := range locales {
+			item.Data[name] = v
+			break
+		}
+	}
+}
+
 // Update validates data against the declared type, replaces the item's data,
 // and records a new version snapshot. Status is left unchanged. Returns
 // ErrNotFound if the item does not exist.

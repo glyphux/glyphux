@@ -50,6 +50,40 @@ func testServerWithAuth(t *testing.T) (http.Handler, authDeps) {
 	return mux, deps
 }
 
+// testServerWithLocalizedContentType is like testServerWithAuth but declares
+// an article type with a localized title field, for slice 1.4 tests.
+func testServerWithLocalizedContentType(t *testing.T) (http.Handler, authDeps) {
+	t.Helper()
+	d, err := db.OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+	migs := append(append([]db.Migration{}, composition.Migrations...), identity.Migrations...)
+	migs = append(migs, content.Migrations...)
+	if err := d.Migrate(context.Background(), migs); err != nil {
+		t.Fatal(err)
+	}
+	comps := composition.NewStore(d)
+	if err := comps.Save(context.Background(), &contract.Composition{
+		ContractVersion: contract.ContentCompositionV0,
+		Site:            contract.Site{Name: "Test"},
+		ContentTypes: map[string]contract.ContentType{
+			"article": {Fields: map[string]contract.Field{
+				"title": {Type: contract.FieldString, Required: true, Localized: true},
+			}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	deps := authDeps{identities: identity.NewService(d), sessions: identity.NewSessions(d)}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := api.New(comps, content.NewAPI(comps, content.NewStore(d)), deps.identities, deps.sessions, log)
+	mux := http.NewServeMux()
+	srv.Routes(mux)
+	return mux, deps
+}
+
 func TestAuthLoginMeLogout(t *testing.T) {
 	h, deps := testServerWithAuth(t)
 	ctx := context.Background()

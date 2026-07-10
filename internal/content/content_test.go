@@ -311,6 +311,106 @@ func TestRollbackRestoresOlderVersion(t *testing.T) {
 	}
 }
 
+func localizedArticleTypes() map[string]contract.ContentType {
+	return map[string]contract.ContentType{
+		"article": {Fields: map[string]contract.Field{
+			"title": {Type: contract.FieldString, Required: true, Localized: true},
+			"body":  {Type: contract.FieldRichText},
+		}},
+	}
+}
+
+func TestCreateAcceptsLocalizedFieldAsLocaleMap(t *testing.T) {
+	api := testAPI(t, localizedArticleTypes())
+	created, err := api.Create(context.Background(), "article", map[string]any{
+		"title": map[string]any{"en": "Hello", "fr": "Bonjour"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	title, _ := created.Data["title"].(map[string]any)
+	if title["en"] != "Hello" || title["fr"] != "Bonjour" {
+		t.Errorf("title = %v", title)
+	}
+}
+
+func TestCreateRejectsLocalizedFieldNotAMap(t *testing.T) {
+	api := testAPI(t, localizedArticleTypes())
+	_, err := api.Create(context.Background(), "article", map[string]any{"title": "not a locale map"})
+	if !errors.Is(err, ErrValidation) {
+		t.Errorf("got %v, want ErrValidation", err)
+	}
+}
+
+func TestCreateRejectsWrongKindWithinLocaleMap(t *testing.T) {
+	api := testAPI(t, localizedArticleTypes())
+	_, err := api.Create(context.Background(), "article", map[string]any{
+		"title": map[string]any{"en": 42},
+	})
+	if !errors.Is(err, ErrValidation) {
+		t.Errorf("got %v, want ErrValidation", err)
+	}
+}
+
+func TestCreateRejectsEmptyLocaleMapForRequiredField(t *testing.T) {
+	api := testAPI(t, localizedArticleTypes())
+	_, err := api.Create(context.Background(), "article", map[string]any{
+		"title": map[string]any{},
+	})
+	if !errors.Is(err, ErrValidation) {
+		t.Errorf("got %v, want ErrValidation", err)
+	}
+}
+
+func TestGetLocalizedResolvesRequestedLocaleWithFallback(t *testing.T) {
+	api := testAPI(t, localizedArticleTypes())
+	ctx := context.Background()
+	created := mustCreate(t, api, "article", map[string]any{
+		"title": map[string]any{"en": "Hello", "fr": "Bonjour"},
+		"body":  "shared body",
+	})
+
+	fr, err := api.GetLocalized(ctx, "article", created.ID, "fr")
+	if err != nil {
+		t.Fatalf("GetLocalized(fr): %v", err)
+	}
+	if fr.Data["title"] != "Bonjour" {
+		t.Errorf("fr title = %v, want Bonjour", fr.Data["title"])
+	}
+	if fr.Data["body"] != "shared body" {
+		t.Errorf("fr body = %v, want shared body (non-localized field passes through)", fr.Data["body"])
+	}
+
+	// Missing locale falls back to any available value rather than erroring.
+	de, err := api.GetLocalized(ctx, "article", created.ID, "de")
+	if err != nil {
+		t.Fatalf("GetLocalized(de): %v", err)
+	}
+	if de.Data["title"] != "Hello" && de.Data["title"] != "Bonjour" {
+		t.Errorf("de title = %v, want a fallback value", de.Data["title"])
+	}
+}
+
+func TestListLocalizedResolvesEachItem(t *testing.T) {
+	api := testAPI(t, localizedArticleTypes())
+	ctx := context.Background()
+	mustCreate(t, api, "article", map[string]any{"title": map[string]any{"en": "A"}})
+	mustCreate(t, api, "article", map[string]any{"title": map[string]any{"en": "B"}})
+
+	items, err := api.ListLocalized(ctx, "article", "en")
+	if err != nil {
+		t.Fatalf("ListLocalized: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("ListLocalized returned %d items, want 2", len(items))
+	}
+	for _, it := range items {
+		if it.Data["title"] != "A" && it.Data["title"] != "B" {
+			t.Errorf("item title = %v, want resolved scalar", it.Data["title"])
+		}
+	}
+}
+
 func TestCreateAndGet(t *testing.T) {
 	api := testAPI(t, articleTypes())
 	ctx := context.Background()

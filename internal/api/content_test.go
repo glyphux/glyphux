@@ -67,6 +67,21 @@ func decode(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 	return m
 }
 
+// localizedServer boots a server whose article type declares a localized
+// title field, with an admin already logged in.
+func localizedServer(t *testing.T) (http.Handler, *http.Cookie) {
+	t.Helper()
+	h, deps := testServerWithLocalizedContentType(t)
+	ctx := context.Background()
+	if err := deps.identities.CreateAdmin(ctx, "admin@example.com", "correct horse battery"); err != nil {
+		t.Fatal(err)
+	}
+	rec := do(t, h, http.MethodPost, "/api/v0/auth/login", map[string]any{
+		"email": "admin@example.com", "password": "correct horse battery",
+	})
+	return h, sessionCookie(t, rec)
+}
+
 func TestContentCRUDOverHTTP(t *testing.T) {
 	h, cookie := authedServer(t)
 
@@ -199,6 +214,48 @@ func TestContentPublishVersionsRollbackOverHTTP(t *testing.T) {
 	rec = doWithCookieBody(t, h, http.MethodPost, "/api/v0/content/article/"+id+"/unpublish", cookie, nil)
 	if rec.Code != http.StatusOK || decode(t, rec)["status"] != "draft" {
 		t.Fatalf("unpublish = %d, status %v", rec.Code, decode(t, rec)["status"])
+	}
+}
+
+// The ?locale= query param resolves localized fields to a single value on
+// both single-item and list reads (slice 1.4: localization).
+func TestContentLocaleQueryParamResolvesLocalizedFields(t *testing.T) {
+	h, cookie := localizedServer(t)
+
+	created := decode(t, doWithCookieBody(t, h, http.MethodPost, "/api/v0/content/article", cookie, map[string]any{
+		"title": map[string]any{"en": "Hello", "fr": "Bonjour"},
+	}))
+	id, _ := created["id"].(string)
+
+	rec := do(t, h, http.MethodGet, "/api/v0/content/article/"+id+"?locale=fr", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET locale=fr = %d", rec.Code)
+	}
+	data, _ := decode(t, rec)["data"].(map[string]any)
+	if data["title"] != "Bonjour" {
+		t.Errorf("title = %v, want Bonjour", data["title"])
+	}
+
+	rec = do(t, h, http.MethodGet, "/api/v0/content/article?locale=en", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("LIST locale=en = %d", rec.Code)
+	}
+	items, _ := decode(t, rec)["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("LIST returned %d items, want 1", len(items))
+	}
+	first, _ := items[0].(map[string]any)
+	firstData, _ := first["data"].(map[string]any)
+	if firstData["title"] != "Hello" {
+		t.Errorf("list title = %v, want Hello", firstData["title"])
+	}
+
+	// Without ?locale=, the raw locale map passes through.
+	rec = do(t, h, http.MethodGet, "/api/v0/content/article/"+id, nil)
+	data, _ = decode(t, rec)["data"].(map[string]any)
+	title, _ := data["title"].(map[string]any)
+	if title["en"] != "Hello" || title["fr"] != "Bonjour" {
+		t.Errorf("unresolved title = %v", title)
 	}
 }
 

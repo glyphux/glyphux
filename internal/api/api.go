@@ -81,7 +81,16 @@ func (s *Server) handleContentCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleContentList(w http.ResponseWriter, r *http.Request) {
-	items, err := s.content.List(r.Context(), r.PathValue("type"))
+	typeName := r.PathValue("type")
+	var (
+		items any
+		err   error
+	)
+	if locale := r.URL.Query().Get("locale"); locale != "" {
+		items, err = s.content.ListLocalized(r.Context(), typeName, locale)
+	} else {
+		items, err = s.content.List(r.Context(), typeName)
+	}
 	if err != nil {
 		s.writeContentError(w, err)
 		return
@@ -90,7 +99,16 @@ func (s *Server) handleContentList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleContentGet(w http.ResponseWriter, r *http.Request) {
-	item, err := s.content.Get(r.Context(), r.PathValue("type"), r.PathValue("id"))
+	typeName, id := r.PathValue("type"), r.PathValue("id")
+	var (
+		item *content.Item
+		err  error
+	)
+	if locale := r.URL.Query().Get("locale"); locale != "" {
+		item, err = s.content.GetLocalized(r.Context(), typeName, id, locale)
+	} else {
+		item, err = s.content.Get(r.Context(), typeName, id)
+	}
 	if err != nil {
 		s.writeContentError(w, err)
 		return

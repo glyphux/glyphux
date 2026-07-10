@@ -50,6 +50,13 @@ GET  /api/v0/content/{type}/{id}/versions            full version history  → 2
 POST /api/v0/content/{type}/{id}/rollback/{version}  restore an old version → 200 / 401 / 403 / 404 / 422
 ```
 
+Localization (Phase 1): a field declared `"localized": true` in the composition
+stores a JSON object of locale → value (e.g. `{"en": "Hello", "fr": "Bonjour"}`).
+Reads without `?locale=` return that raw locale map; add `?locale=xx` to a
+`GET .../content/{type}` or `GET .../content/{type}/{id}` request to resolve
+every localized field to a single value for that locale, falling back to any
+available locale if the requested one is missing.
+
 Validation failures return `422` with the offending field issues; an undeclared
 content type or missing item returns `404`; malformed JSON returns `400`.
 Sessions are sent as an `Authorization: Bearer <token>` header or the
