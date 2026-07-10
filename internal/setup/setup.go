@@ -112,9 +112,8 @@ func (w *Wizard) handleSubmit(rw http.ResponseWriter, r *http.Request) {
 		w.renderError(rw, needToken, "Site name is required.")
 		return
 	}
-	if driver != "" && driver != "sqlite" {
-		// Scope discipline (§6.6): the Postgres adapter lands in Phase 1.
-		w.renderError(rw, needToken, "Only the embedded SQLite database is available in this release; Postgres support arrives in Phase 1.")
+	if driver != "" && driver != "sqlite" && driver != "postgres" {
+		w.renderError(rw, needToken, fmt.Sprintf("Unknown database %q (want sqlite or postgres).", driver))
 		return
 	}
 
@@ -204,8 +203,9 @@ var formTemplate = template.Must(template.New("setup").Parse(`<!doctype html>
   <label>Database
     <select name="database">
       <option value="sqlite" selected>SQLite (embedded, recommended)</option>
-      <option value="postgres">Postgres (coming in Phase 1)</option>
+      <option value="postgres">Postgres</option>
     </select>
+    <span class="hint">The active backend is chosen at daemon startup (GLYPHUX_DB_DRIVER); this only records your choice.</span>
   </label>
   {{if .NeedToken}}
   <label>Setup token

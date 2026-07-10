@@ -37,6 +37,12 @@ type Config struct {
 type DatabaseConfig struct {
 	Driver string `json:"driver"` // "sqlite" | "postgres"
 	DSN    string `json:"dsn"`    // for postgres; ignored for sqlite
+
+	// Pool sizes and bounds the Postgres connection pool (§11.6); ignored for
+	// sqlite, which always runs single-connection. Zero fields auto-size.
+	MaxOpenConns    int           `json:"max_open_conns"`
+	MaxIdleConns    int           `json:"max_idle_conns"`
+	ConnMaxLifetime time.Duration `json:"-"`
 }
 
 // Default returns the zero-config defaults.
@@ -76,6 +82,27 @@ func Load(path string) (Config, error) {
 	}
 	if v := os.Getenv("GLYPHUX_DB_DSN"); v != "" {
 		cfg.Database.DSN = v
+	}
+	if v := os.Getenv("GLYPHUX_DB_MAX_OPEN_CONNS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return cfg, fmt.Errorf("GLYPHUX_DB_MAX_OPEN_CONNS: %w", err)
+		}
+		cfg.Database.MaxOpenConns = n
+	}
+	if v := os.Getenv("GLYPHUX_DB_MAX_IDLE_CONNS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return cfg, fmt.Errorf("GLYPHUX_DB_MAX_IDLE_CONNS: %w", err)
+		}
+		cfg.Database.MaxIdleConns = n
+	}
+	if v := os.Getenv("GLYPHUX_DB_CONN_MAX_LIFETIME"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return cfg, fmt.Errorf("GLYPHUX_DB_CONN_MAX_LIFETIME: %w", err)
+		}
+		cfg.Database.ConnMaxLifetime = d
 	}
 	if v := os.Getenv("GLYPHUX_OPEN_BROWSER"); v != "" {
 		b, err := strconv.ParseBool(v)

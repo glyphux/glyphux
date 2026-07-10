@@ -235,7 +235,10 @@ func TestMediaUploadExemptFromGlobalBodyCap(t *testing.T) {
 	}
 }
 
-func TestWizardRejectsPostgresInPhaseZero(t *testing.T) {
+// The wizard's "database" field records a choice for the record; it does not
+// itself switch backends (that happens via GLYPHUX_DB_DRIVER before the
+// daemon boots, slice 1.10), so "postgres" is an accepted value here.
+func TestWizardAcceptsPostgresChoice(t *testing.T) {
 	h := boot(t, filepath.Join(t.TempDir(), "glyphux.db"))
 	form := url.Values{
 		"site_name":      {"PG Site"},
@@ -244,7 +247,21 @@ func TestWizardRejectsPostgresInPhaseZero(t *testing.T) {
 		"database":       {"postgres"},
 	}
 	rec := postForm(t, h, "/setup", form, "127.0.0.1:9")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("postgres choice = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestWizardRejectsUnknownDatabaseChoice(t *testing.T) {
+	h := boot(t, filepath.Join(t.TempDir(), "glyphux.db"))
+	form := url.Values{
+		"site_name":      {"Bad DB Site"},
+		"admin_email":    {"admin@example.com"},
+		"admin_password": {"strong password"},
+		"database":       {"mysql"},
+	}
+	rec := postForm(t, h, "/setup", form, "127.0.0.1:9")
 	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("postgres choice = %d, want 422", rec.Code)
+		t.Fatalf("unknown db choice = %d, want 422", rec.Code)
 	}
 }

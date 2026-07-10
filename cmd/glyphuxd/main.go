@@ -44,10 +44,17 @@ func run() error {
 		return err
 	}
 
-	if cfg.Database.Driver != "sqlite" {
-		return fmt.Errorf("only the sqlite driver is available in this release (got %q)", cfg.Database.Driver)
+	var database *db.DB
+	switch cfg.Database.Driver {
+	case "postgres":
+		database, err = db.OpenPostgres(cfg.Database.DSN, db.PoolConfig{
+			MaxOpenConns:    cfg.Database.MaxOpenConns,
+			MaxIdleConns:    cfg.Database.MaxIdleConns,
+			ConnMaxLifetime: cfg.Database.ConnMaxLifetime,
+		})
+	default:
+		database, err = db.OpenSQLite(cfg.SQLitePath())
 	}
-	database, err := db.OpenSQLite(cfg.SQLitePath())
 	if err != nil {
 		return err
 	}

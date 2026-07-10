@@ -83,6 +83,16 @@ Configuration via environment: `GLYPHUX_ADDR` (default `:8080`),
 `GLYPHUX_DATA_DIR` (default `data/`). On a remote server, first-run requires
 the setup token printed to the log at boot.
 
+Database backend: SQLite (embedded, default) or Postgres, selected before
+boot — `GLYPHUX_DB_DRIVER=postgres` and `GLYPHUX_DB_DSN=postgres://...`. Pool
+sizing is auto-sized but tunable: `GLYPHUX_DB_MAX_OPEN_CONNS` (default 20),
+`GLYPHUX_DB_MAX_IDLE_CONNS` (default 5), `GLYPHUX_DB_CONN_MAX_LIFETIME`
+(default 30m, Go duration syntax e.g. `1h`). Every domain package writes
+portable `?`-placeholder SQL; the db package rewrites placeholders and swaps
+in dialect-specific migration SQL where the two engines diverge (e.g.
+`AUTOINCREMENT` vs. `GENERATED ALWAYS AS IDENTITY`) — nothing above the db
+package needs to know which engine is running.
+
 The optional developer CLI:
 
 ```sh

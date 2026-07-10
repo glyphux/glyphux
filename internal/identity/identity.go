@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/glyphux/glyphux/internal/db"
 )
@@ -30,7 +31,17 @@ var Migrations = []db.Migration{
 				password_hash TEXT NOT NULL,
 				password_salt TEXT NOT NULL,
 				role          TEXT NOT NULL DEFAULT 'admin',
-				created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+				created_at    TEXT NOT NULL
+			);
+		`,
+		PostgresSQL: `
+			CREATE TABLE users (
+				id            INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+				email         TEXT NOT NULL UNIQUE,
+				password_hash TEXT NOT NULL,
+				password_salt TEXT NOT NULL,
+				role          TEXT NOT NULL DEFAULT 'admin',
+				created_at    TEXT NOT NULL
 			);
 		`,
 	},
@@ -74,8 +85,8 @@ func (s *Service) CreateAdmin(ctx context.Context, email, password string) error
 		return fmt.Errorf("hash password: %w", err)
 	}
 	_, err = s.db.Exec(ctx,
-		`INSERT INTO users (email, password_hash, password_salt, role) VALUES (?, ?, ?, 'admin')`,
-		email, hex.EncodeToString(hash), hex.EncodeToString(salt))
+		`INSERT INTO users (email, password_hash, password_salt, role, created_at) VALUES (?, ?, ?, 'admin', ?)`,
+		email, hex.EncodeToString(hash), hex.EncodeToString(salt), time.Now().UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return fmt.Errorf("create admin: %w", err)
 	}

@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/glyphux/glyphux/internal/db"
 	"github.com/glyphux/glyphux/pkg/contract"
@@ -25,7 +26,7 @@ var Migrations = []db.Migration{
 			CREATE TABLE composition (
 				id         INTEGER PRIMARY KEY CHECK (id = 1),
 				document   TEXT NOT NULL,
-				updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+				updated_at TEXT NOT NULL
 			);
 		`,
 	},
@@ -66,9 +67,9 @@ func (s *Store) Save(ctx context.Context, c *contract.Composition) error {
 		return fmt.Errorf("encode composition: %w", err)
 	}
 	_, err = s.db.Exec(ctx, `
-		INSERT INTO composition (id, document, updated_at) VALUES (1, ?, datetime('now'))
+		INSERT INTO composition (id, document, updated_at) VALUES (1, ?, ?)
 		ON CONFLICT (id) DO UPDATE SET document = excluded.document, updated_at = excluded.updated_at`,
-		string(doc))
+		string(doc), time.Now().UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return fmt.Errorf("save composition: %w", err)
 	}
