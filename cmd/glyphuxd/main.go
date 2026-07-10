@@ -56,6 +56,7 @@ func run() error {
 
 	// Schema baseline: idempotent, ordered, recorded (slice 0.3).
 	migrations := append(append([]db.Migration{}, composition.Migrations...), identity.Migrations...)
+	migrations = append(migrations, content.Migrations...)
 	if err := database.Migrate(ctx, migrations); err != nil {
 		return err
 	}
@@ -63,7 +64,7 @@ func run() error {
 	// Kernel + domain APIs.
 	compositions := composition.NewStore(database)
 	identities := identity.NewService(database)
-	contentAPI := content.NewAPI(compositions)
+	contentAPI := content.NewAPI(compositions, content.NewStore(database))
 
 	// Clients of the contract: the API transport and the first-run wizard.
 	wizard, err := setup.New(ctx, compositions, identities, log)

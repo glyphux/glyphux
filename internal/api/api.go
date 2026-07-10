@@ -31,6 +31,101 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /api/v0/composition", s.handleComposition)
 	mux.HandleFunc("GET /api/v0/content/ping", s.handlePing)
+
+	// Content CRUD (slice 1.2). The literal /ping route above is more specific
+	// than {type}, so ServeMux prefers it — no shadowing.
+	mux.HandleFunc("POST /api/v0/content/{type}", s.handleContentCreate)
+	mux.HandleFunc("GET /api/v0/content/{type}", s.handleContentList)
+	mux.HandleFunc("GET /api/v0/content/{type}/{id}", s.handleContentGet)
+	mux.HandleFunc("PUT /api/v0/content/{type}/{id}", s.handleContentUpdate)
+	mux.HandleFunc("DELETE /api/v0/content/{type}/{id}", s.handleContentDelete)
+}
+
+func (s *Server) handleContentCreate(w http.ResponseWriter, r *http.Request) {
+	data, ok := s.decodeData(w, r)
+	if !ok {
+		return
+	}
+	item, err := s.content.Create(r.Context(), r.PathValue("type"), data)
+	if err != nil {
+		s.writeContentError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusCreated, item)
+}
+
+func (s *Server) handleContentList(w http.ResponseWriter, r *http.Request) {
+	items, err := s.content.List(r.Context(), r.PathValue("type"))
+	if err != nil {
+		s.writeContentError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) handleContentGet(w http.ResponseWriter, r *http.Request) {
+	item, err := s.content.Get(r.Context(), r.PathValue("type"), r.PathValue("id"))
+	if err != nil {
+		s.writeContentError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) handleContentUpdate(w http.ResponseWriter, r *http.Request) {
+	data, ok := s.decodeData(w, r)
+	if !ok {
+		return
+	}
+	item, err := s.content.Update(r.Context(), r.PathValue("type"), r.PathValue("id"), data)
+	if err != nil {
+		s.writeContentError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) handleContentDelete(w http.ResponseWriter, r *http.Request) {
+	if err := s.content.Delete(r.Context(), r.PathValue("type"), r.PathValue("id")); err != nil {
+		s.writeContentError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// decodeData reads a JSON object body into a data map, writing a 400 and
+// returning false on malformed input.
+func (s *Server) decodeData(w http.ResponseWriter, r *http.Request) (map[string]any, bool) {
+	var data map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+		s.writeError(w, http.StatusBadRequest, "request body must be a JSON object")
+		return nil, false
+	}
+	return data, true
+}
+
+// writeContentError maps domain errors to HTTP status codes. Unknown type and
+// missing item are 404; validation failures are 422 with the field issues.
+func (s *Server) writeContentError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, content.ErrUnknownType), errors.Is(err, content.ErrNotFound):
+		s.writeError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, content.ErrValidation):
+		var ve *content.ValidationError
+		if errors.As(err, &ve) {
+			s.writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+				"error":  "validation failed",
+				"issues": ve.Issues,
+			})
+			return
+		}
+		s.writeError(w, http.StatusUnprocessableEntity, err.Error())
+	case errors.Is(err, composition.ErrNotFound):
+		s.writeError(w, http.StatusConflict, "setup not completed; visit /setup")
+	default:
+		s.log.Error("content request", "error", err)
+		s.writeError(w, http.StatusInternalServerError, "internal error")
+	}
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

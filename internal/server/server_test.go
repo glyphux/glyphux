@@ -38,6 +38,7 @@ func boot(t *testing.T, dbPath string) http.Handler {
 	t.Cleanup(func() { database.Close() })
 
 	migrations := append(append([]db.Migration{}, composition.Migrations...), identity.Migrations...)
+	migrations = append(migrations, content.Migrations...)
 	if err := database.Migrate(ctx, migrations); err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +50,7 @@ func boot(t *testing.T, dbPath string) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	apiServer := api.New(compositions, content.NewAPI(compositions), log)
+	apiServer := api.New(compositions, content.NewAPI(compositions, content.NewStore(database)), log)
 	return server.Handler(apiServer, wizard)
 }
 

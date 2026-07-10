@@ -24,10 +24,20 @@ and writes the initial composition, then locks itself permanently. After
 setup:
 
 ```
-GET /healthz                  liveness
-GET /api/v0/composition       the resolved composition document
-GET /api/v0/content/ping      contract-driven domain-API read
+GET    /healthz                        liveness
+GET    /api/v0/composition             the resolved composition document
+GET    /api/v0/content/ping            contract-driven domain-API read
+
+Content CRUD (Phase 1) — every write validated against the composition-declared type:
+POST   /api/v0/content/{type}          create an item        → 201
+GET    /api/v0/content/{type}          list items of a type  → 200
+GET    /api/v0/content/{type}/{id}     read one item         → 200 / 404
+PUT    /api/v0/content/{type}/{id}     replace an item       → 200 / 404 / 422
+DELETE /api/v0/content/{type}/{id}     delete an item        → 204 / 404
 ```
+
+Validation failures return `422` with the offending field issues; an undeclared
+content type or missing item returns `404`; malformed JSON returns `400`.
 
 Configuration via environment: `GLYPHUX_ADDR` (default `:8080`),
 `GLYPHUX_DATA_DIR` (default `data/`). On a remote server, first-run requires
