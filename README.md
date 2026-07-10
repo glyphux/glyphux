@@ -57,6 +57,17 @@ Reads without `?locale=` return that raw locale map; add `?locale=xx` to a
 every localized field to a single value for that locale, falling back to any
 available locale if the requested one is missing.
 
+Media pipeline + library (Phase 1) — images only in v1 (png/jpeg/gif),
+stored on a local-FS adapter under `<data-dir>/media`; upload/delete require
+content:write, reads are public:
+POST   /api/v0/media                   upload (multipart "file" field) → 201 / 400 / 401 / 403 / 413 / 415
+GET    /api/v0/media                   list metadata                    → 200
+GET    /api/v0/media/{id}              one item's metadata              → 200 / 404
+GET    /api/v0/media/{id}/file         serve the stored bytes           → 200 / 404
+GET    /api/v0/media/{id}/file?w=&h=   resize (aspect-preserving)        → 200 / 404
+DELETE /api/v0/media/{id}              delete metadata + file           → 204 / 401 / 403 / 404
+Uploads are capped at 10 MiB and exempt from the generic 1 MiB request cap.
+
 Validation failures return `422` with the offending field issues; an undeclared
 content type or missing item returns `404`; malformed JSON returns `400`.
 Sessions are sent as an `Authorization: Bearer <token>` header or the

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/glyphux/glyphux/internal/api"
@@ -46,10 +47,14 @@ func Handler(apiServer *api.Server, wizard *setup.Wizard) http.Handler {
 }
 
 // limitBody caps every request body at maxRequestBodyBytes. A handler that
-// reads past the cap gets an *http.MaxBytesError it can map to 413.
+// reads past the cap gets an *http.MaxBytesError it can map to 413. Media
+// uploads are exempt here — they carry real file bytes and apply their own,
+// larger cap directly in the handler (slice 1.6).
 func limitBody(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+		if !strings.HasPrefix(r.URL.Path, "/api/v0/media") {
+			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+		}
 		next.ServeHTTP(w, r)
 	})
 }

@@ -14,8 +14,17 @@ import (
 	"github.com/glyphux/glyphux/internal/content"
 	"github.com/glyphux/glyphux/internal/db"
 	"github.com/glyphux/glyphux/internal/identity"
+	"github.com/glyphux/glyphux/internal/media"
 	"github.com/glyphux/glyphux/pkg/contract"
 )
+
+func newTestMediaAPI(t *testing.T, d *db.DB) *media.API {
+	t.Helper()
+	if err := d.Migrate(context.Background(), media.Migrations); err != nil {
+		t.Fatal(err)
+	}
+	return media.NewAPI(media.NewStore(d), filepath.Join(t.TempDir(), "media"))
+}
 
 func testServerWithAuth(t *testing.T) (http.Handler, authDeps) {
 	t.Helper()
@@ -44,7 +53,7 @@ func testServerWithAuth(t *testing.T) (http.Handler, authDeps) {
 	}
 	deps := authDeps{identities: identity.NewService(d), sessions: identity.NewSessions(d)}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := api.New(comps, content.NewAPI(comps, content.NewStore(d)), deps.identities, deps.sessions, log)
+	srv := api.New(comps, content.NewAPI(comps, content.NewStore(d)), newTestMediaAPI(t, d), deps.identities, deps.sessions, log)
 	mux := http.NewServeMux()
 	srv.Routes(mux)
 	return mux, deps
@@ -78,7 +87,7 @@ func testServerWithLocalizedContentType(t *testing.T) (http.Handler, authDeps) {
 	}
 	deps := authDeps{identities: identity.NewService(d), sessions: identity.NewSessions(d)}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := api.New(comps, content.NewAPI(comps, content.NewStore(d)), deps.identities, deps.sessions, log)
+	srv := api.New(comps, content.NewAPI(comps, content.NewStore(d)), newTestMediaAPI(t, d), deps.identities, deps.sessions, log)
 	mux := http.NewServeMux()
 	srv.Routes(mux)
 	return mux, deps

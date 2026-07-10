@@ -6,10 +6,12 @@ package server_test
 // database (§16 Phase 0 definition of done).
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -22,6 +24,7 @@ import (
 	"github.com/glyphux/glyphux/internal/content"
 	"github.com/glyphux/glyphux/internal/db"
 	"github.com/glyphux/glyphux/internal/identity"
+	"github.com/glyphux/glyphux/internal/media"
 	"github.com/glyphux/glyphux/internal/server"
 	"github.com/glyphux/glyphux/internal/setup"
 )
@@ -39,6 +42,7 @@ func boot(t *testing.T, dbPath string) http.Handler {
 
 	migrations := append(append([]db.Migration{}, composition.Migrations...), identity.Migrations...)
 	migrations = append(migrations, content.Migrations...)
+	migrations = append(migrations, media.Migrations...)
 	if err := database.Migrate(ctx, migrations); err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +55,8 @@ func boot(t *testing.T, dbPath string) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	apiServer := api.New(compositions, content.NewAPI(compositions, content.NewStore(database)), identities, sessions, log)
+	mediaAPI := media.NewAPI(media.NewStore(database), filepath.Join(filepath.Dir(dbPath), "media"))
+	apiServer := api.New(compositions, content.NewAPI(compositions, content.NewStore(database)), mediaAPI, identities, sessions, log)
 	return server.Handler(apiServer, wizard)
 }
 
@@ -195,6 +200,38 @@ func TestSecurityHeadersAndNoCORSByDefault(t *testing.T) {
 	}
 	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
 		t.Errorf("Access-Control-Allow-Origin = %q, want unset for an unconfigured cross-origin request", got)
+	}
+}
+
+// Media uploads carry real file bytes and are exempt from the generic 1 MiB
+// request cap; a payload well over that cap must still reach the handler
+// rather than being rejected by the global body limiter (slice 1.6).
+func TestMediaUploadExemptFromGlobalBodyCap(t *testing.T) {
+	h := boot(t, filepath.Join(t.TempDir(), "glyphux.db"))
+
+	oversized := bytes.Repeat([]byte{0xFF}, 2<<20) // 2 MiB — over the generic 1 MiB cap
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	part, err := w.CreateFormFile("file", "big.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(oversized); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v0/media", &body)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	// Unauthenticated, so 401 — but critically not 413: the body was fully
+	// read and parsed rather than rejected by the global 1 MiB body limiter.
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("oversized media upload = %d, want 401 (not 413 — the body must not hit the global cap)", rec.Code)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/glyphux/glyphux/internal/api"
@@ -19,6 +20,7 @@ import (
 	"github.com/glyphux/glyphux/internal/content"
 	"github.com/glyphux/glyphux/internal/db"
 	"github.com/glyphux/glyphux/internal/identity"
+	"github.com/glyphux/glyphux/internal/media"
 	"github.com/glyphux/glyphux/internal/server"
 	"github.com/glyphux/glyphux/internal/setup"
 )
@@ -57,6 +59,7 @@ func run() error {
 	// Schema baseline: idempotent, ordered, recorded (slice 0.3).
 	migrations := append(append([]db.Migration{}, composition.Migrations...), identity.Migrations...)
 	migrations = append(migrations, content.Migrations...)
+	migrations = append(migrations, media.Migrations...)
 	if err := database.Migrate(ctx, migrations); err != nil {
 		return err
 	}
@@ -66,13 +69,14 @@ func run() error {
 	identities := identity.NewService(database)
 	sessions := identity.NewSessions(database)
 	contentAPI := content.NewAPI(compositions, content.NewStore(database))
+	mediaAPI := media.NewAPI(media.NewStore(database), filepath.Join(cfg.DataDir, "media"))
 
 	// Clients of the contract: the API transport and the first-run wizard.
 	wizard, err := setup.New(ctx, compositions, identities, log)
 	if err != nil {
 		return err
 	}
-	apiServer := api.New(compositions, contentAPI, identities, sessions, log)
+	apiServer := api.New(compositions, contentAPI, mediaAPI, identities, sessions, log)
 
 	srv := server.New(cfg.Addr, apiServer, wizard, log)
 	return srv.Run(ctx, cfg.ShutdownTimeout)

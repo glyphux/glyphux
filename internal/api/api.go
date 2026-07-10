@@ -14,6 +14,7 @@ import (
 	"github.com/glyphux/glyphux/internal/composition"
 	"github.com/glyphux/glyphux/internal/content"
 	"github.com/glyphux/glyphux/internal/identity"
+	"github.com/glyphux/glyphux/internal/media"
 	"github.com/glyphux/glyphux/internal/permission"
 )
 
@@ -22,6 +23,7 @@ import (
 type Server struct {
 	compositions *composition.Store
 	content      *content.API
+	media        *media.API
 	identities   *identity.Service
 	sessions     *identity.Sessions
 	log          *slog.Logger
@@ -29,10 +31,11 @@ type Server struct {
 }
 
 // New builds the API transport over the given domain APIs.
-func New(comps *composition.Store, contentAPI *content.API, identities *identity.Service, sessions *identity.Sessions, log *slog.Logger) *Server {
+func New(comps *composition.Store, contentAPI *content.API, mediaAPI *media.API, identities *identity.Service, sessions *identity.Sessions, log *slog.Logger) *Server {
 	return &Server{
 		compositions: comps,
 		content:      contentAPI,
+		media:        mediaAPI,
 		identities:   identities,
 		sessions:     sessions,
 		log:          log,
@@ -65,6 +68,14 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v0/content/{type}/{id}/unpublish", s.requireCapability(permission.ContentWrite, s.handleContentUnpublish))
 	mux.HandleFunc("GET /api/v0/content/{type}/{id}/versions", s.handleContentListVersions)
 	mux.HandleFunc("POST /api/v0/content/{type}/{id}/rollback/{version}", s.requireCapability(permission.ContentWrite, s.handleContentRollback))
+
+	// Media pipeline + library (slice 1.6). Reads are public; upload/delete
+	// require content:write, matching the content mutation policy.
+	mux.HandleFunc("POST /api/v0/media", s.requireCapability(permission.ContentWrite, s.handleMediaUpload))
+	mux.HandleFunc("GET /api/v0/media", s.handleMediaList)
+	mux.HandleFunc("GET /api/v0/media/{id}", s.handleMediaGet)
+	mux.HandleFunc("GET /api/v0/media/{id}/file", s.handleMediaFile)
+	mux.HandleFunc("DELETE /api/v0/media/{id}", s.requireCapability(permission.ContentWrite, s.handleMediaDelete))
 }
 
 func (s *Server) handleContentCreate(w http.ResponseWriter, r *http.Request) {
