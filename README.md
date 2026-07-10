@@ -28,16 +28,25 @@ GET    /healthz                        liveness
 GET    /api/v0/composition             the resolved composition document
 GET    /api/v0/content/ping            contract-driven domain-API read
 
-Content CRUD (Phase 1) — every write validated against the composition-declared type:
-POST   /api/v0/content/{type}          create an item        → 201
+Authentication (Phase 1):
+POST   /api/v0/auth/login              email+password → sets session cookie → 200 / 401
+POST   /api/v0/auth/logout             revoke session (cookie or bearer)    → 204
+GET    /api/v0/auth/me                 current principal                    → 200 / 401
+
+Content CRUD (Phase 1) — every write validated against the composition-declared type.
+Reads are public; mutations require an authenticated session holding the
+content:write capability (admin role, v1):
+POST   /api/v0/content/{type}          create an item        → 201 / 401 / 403
 GET    /api/v0/content/{type}          list items of a type  → 200
 GET    /api/v0/content/{type}/{id}     read one item         → 200 / 404
-PUT    /api/v0/content/{type}/{id}     replace an item       → 200 / 404 / 422
-DELETE /api/v0/content/{type}/{id}     delete an item        → 204 / 404
+PUT    /api/v0/content/{type}/{id}     replace an item       → 200 / 401 / 403 / 404 / 422
+DELETE /api/v0/content/{type}/{id}     delete an item        → 204 / 401 / 403 / 404
 ```
 
 Validation failures return `422` with the offending field issues; an undeclared
 content type or missing item returns `404`; malformed JSON returns `400`.
+Sessions are sent as an `Authorization: Bearer <token>` header or the
+`glyphux_session` HttpOnly cookie set at login.
 
 Configuration via environment: `GLYPHUX_ADDR` (default `:8080`),
 `GLYPHUX_DATA_DIR` (default `data/`). On a remote server, first-run requires

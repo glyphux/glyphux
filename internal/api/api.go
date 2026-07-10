@@ -13,6 +13,7 @@ import (
 	"github.com/glyphux/glyphux/internal/composition"
 	"github.com/glyphux/glyphux/internal/content"
 	"github.com/glyphux/glyphux/internal/identity"
+	"github.com/glyphux/glyphux/internal/permission"
 )
 
 // Server exposes the API surface. It is a client of the domain APIs — it holds
@@ -48,12 +49,13 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v0/auth/me", s.handleMe)
 
 	// Content CRUD (slice 1.2). The literal /ping route above is more specific
-	// than {type}, so ServeMux prefers it — no shadowing.
-	mux.HandleFunc("POST /api/v0/content/{type}", s.handleContentCreate)
+	// than {type}, so ServeMux prefers it — no shadowing. Reads are public;
+	// mutations require the content:write capability (slice 1.8).
+	mux.HandleFunc("POST /api/v0/content/{type}", s.requireCapability(permission.ContentWrite, s.handleContentCreate))
 	mux.HandleFunc("GET /api/v0/content/{type}", s.handleContentList)
 	mux.HandleFunc("GET /api/v0/content/{type}/{id}", s.handleContentGet)
-	mux.HandleFunc("PUT /api/v0/content/{type}/{id}", s.handleContentUpdate)
-	mux.HandleFunc("DELETE /api/v0/content/{type}/{id}", s.handleContentDelete)
+	mux.HandleFunc("PUT /api/v0/content/{type}/{id}", s.requireCapability(permission.ContentWrite, s.handleContentUpdate))
+	mux.HandleFunc("DELETE /api/v0/content/{type}/{id}", s.requireCapability(permission.ContentWrite, s.handleContentDelete))
 }
 
 func (s *Server) handleContentCreate(w http.ResponseWriter, r *http.Request) {

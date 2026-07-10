@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/glyphux/glyphux/internal/identity"
+	"github.com/glyphux/glyphux/internal/permission"
 )
 
 // sessionCookieName is the HttpOnly cookie carrying the session token for
@@ -92,6 +93,20 @@ func (s *Server) requireUser(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r.WithContext(context.WithValue(r.Context(), userKey, user)))
 	}
+}
+
+// requireCapability wraps a handler so it runs only for authenticated
+// requests whose role holds capability. Unauthenticated requests get 401;
+// authenticated but under-privileged requests get 403.
+func (s *Server) requireCapability(capability permission.Capability, next http.HandlerFunc) http.HandlerFunc {
+	return s.requireUser(func(w http.ResponseWriter, r *http.Request) {
+		user, _ := userFrom(r.Context())
+		if !permission.Allows(user.Role, capability) {
+			s.writeError(w, http.StatusForbidden, "insufficient permissions")
+			return
+		}
+		next(w, r)
+	})
 }
 
 // userFrom returns the principal stashed by requireUser, if any.
