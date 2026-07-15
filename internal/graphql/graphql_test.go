@@ -462,6 +462,97 @@ func TestRollbackContentItemMutation(t *testing.T) {
 	}
 }
 
+func TestDefineContentTypeMutationRequiresAdmin(t *testing.T) {
+	h, deps := testServer(t)
+	adminToken := loginAdmin(t, deps)
+	editorToken := loginRole(t, deps, "editor3@example.com", "editor")
+
+	const mutation = `mutation($fields: [FieldInput!]!) {
+		defineContentType(name: "product", fields: $fields) { name fields { name type required } }
+	}`
+	variables := map[string]any{"fields": []map[string]any{
+		{"name": "sku", "type": "string", "required": true},
+	}}
+
+	// Editor holds content:write but not content_types:manage — rejected.
+	_, resp := doGraphQL(t, h, editorToken, mutation, variables)
+	if len(resp.Errors) != 1 || resp.Errors[0].Extensions["code"] != "FORBIDDEN" {
+		t.Fatalf("editor defineContentType errors = %v, want 1 FORBIDDEN", resp.Errors)
+	}
+
+	// Admin succeeds.
+	_, resp = doGraphQL(t, h, adminToken, mutation, variables)
+	if len(resp.Errors) != 0 {
+		t.Fatalf("admin defineContentType errors = %v", resp.Errors)
+	}
+	defined, ok := resp.Data["defineContentType"].(map[string]any)
+	if !ok || defined["name"] != "product" {
+		t.Fatalf("defineContentType = %v, want name=product", resp.Data["defineContentType"])
+	}
+	fields, _ := defined["fields"].([]any)
+	if len(fields) != 1 {
+		t.Fatalf("defined fields = %v, want 1", fields)
+	}
+
+	// It shows up in a subsequent contentTypes query.
+	_, resp = doGraphQL(t, h, "", `{ contentTypes { name } }`, nil)
+	types, _ := resp.Data["contentTypes"].([]any)
+	found := false
+	for _, ty := range types {
+		if m, ok := ty.(map[string]any); ok && m["name"] == "product" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("contentTypes after define = %v, want product present", types)
+	}
+}
+
+func TestRemoveContentTypeMutationBlockedWhenItemsExist(t *testing.T) {
+	h, deps := testServer(t)
+	ctx := context.Background()
+	adminToken := loginAdmin(t, deps)
+	if _, err := deps.content.Create(ctx, "article", map[string]any{"title": "Keeps type alive", "body": "x"}); err != nil {
+		t.Fatal(err)
+	}
+
+	const mutation = `mutation { removeContentType(name: "article") }`
+	_, resp := doGraphQL(t, h, adminToken, mutation, nil)
+	if len(resp.Errors) != 1 || resp.Errors[0].Extensions["code"] != "CONFLICT" {
+		t.Fatalf("removeContentType with items errors = %v, want 1 CONFLICT", resp.Errors)
+	}
+
+	// The type must still be usable — the guard did not partially apply.
+	_, resp = doGraphQL(t, h, "", `{ contentTypes { name } }`, nil)
+	types, _ := resp.Data["contentTypes"].([]any)
+	found := false
+	for _, ty := range types {
+		if m, ok := ty.(map[string]any); ok && m["name"] == "article" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("contentTypes after blocked remove = %v, want article still present", types)
+	}
+}
+
+func TestRemoveContentTypeMutationRemovesEmptyType(t *testing.T) {
+	h, deps := testServer(t)
+	adminToken := loginAdmin(t, deps)
+	defineMutation := `mutation { defineContentType(name: "tag", fields: [{name: "name", type: "string", required: true}]) { name } }`
+	if _, resp := doGraphQL(t, h, adminToken, defineMutation, nil); len(resp.Errors) != 0 {
+		t.Fatalf("define errors = %v", resp.Errors)
+	}
+
+	_, resp := doGraphQL(t, h, adminToken, `mutation { removeContentType(name: "tag") }`, nil)
+	if len(resp.Errors) != 0 {
+		t.Fatalf("errors = %v", resp.Errors)
+	}
+	if resp.Data["removeContentType"] != true {
+		t.Fatalf("removeContentType = %v, want true", resp.Data["removeContentType"])
+	}
+}
+
 func TestContentTypesQueryIsPublic(t *testing.T) {
 	h, _ := testServer(t)
 	_, resp := doGraphQL(t, h, "", `{ contentTypes { name fields { name type required localized to } } }`, nil)

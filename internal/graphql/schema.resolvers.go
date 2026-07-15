@@ -91,6 +91,43 @@ func (r *mutationResolver) RollbackContentItem(ctx context.Context, typeArg stri
 	return contentItemModel(item), nil
 }
 
+// DefineContentType is the resolver for the defineContentType field. It
+// mirrors handleContentTypePut in internal/api/contenttypes.go: requires
+// content_types:manage (admin-only).
+func (r *mutationResolver) DefineContentType(ctx context.Context, name string, fields []*generated.FieldInput) (*generated.ContentTypeDef, error) {
+	if _, err := requireCapability(ctx, permission.ContentTypesManage); err != nil {
+		return nil, err
+	}
+	ct := contentTypeFromInput(fields)
+	comp, err := r.compositions.DefineContentType(ctx, name, ct)
+	if err != nil {
+		return nil, r.mapContentTypeError(err)
+	}
+	return contentTypeDef(name, comp.ContentTypes[name]), nil
+}
+
+// RemoveContentType is the resolver for the removeContentType field. It
+// mirrors handleContentTypeDelete: requires content_types:manage and
+// applies the same delete guard — rejected with CONFLICT if items of that
+// type still exist, so a removal never silently orphans content_items rows.
+func (r *mutationResolver) RemoveContentType(ctx context.Context, name string) (bool, error) {
+	if _, err := requireCapability(ctx, permission.ContentTypesManage); err != nil {
+		return false, err
+	}
+	count, err := r.content.CountItems(ctx, name)
+	if err != nil {
+		r.log.Error("count content items", "error", err)
+		return false, gqlErr("INTERNAL", "internal error")
+	}
+	if count > 0 {
+		return false, gqlErr("CONFLICT", "content type has existing items; delete or migrate them first")
+	}
+	if _, err := r.compositions.RemoveContentType(ctx, name); err != nil {
+		return false, r.mapContentTypeError(err)
+	}
+	return true, nil
+}
+
 // ContentTypes is the resolver for the contentTypes field. It mirrors GET
 // /api/v0/content-types — publicly readable, no capability required.
 func (r *queryResolver) ContentTypes(ctx context.Context) ([]*generated.ContentTypeDef, error) {

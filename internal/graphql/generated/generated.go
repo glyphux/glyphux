@@ -67,8 +67,10 @@ type ComplexityRoot struct {
 
 	Mutation struct {
 		CreateContentItem    func(childComplexity int, typeArg string, data map[string]any) int
+		DefineContentType    func(childComplexity int, name string, fields []*FieldInput) int
 		DeleteContentItem    func(childComplexity int, typeArg string, id string) int
 		PublishContentItem   func(childComplexity int, typeArg string, id string) int
+		RemoveContentType    func(childComplexity int, name string) int
 		RollbackContentItem  func(childComplexity int, typeArg string, id string, version int) int
 		UnpublishContentItem func(childComplexity int, typeArg string, id string) int
 		UpdateContentItem    func(childComplexity int, typeArg string, id string, data map[string]any) int
@@ -93,6 +95,8 @@ type MutationResolver interface {
 	PublishContentItem(ctx context.Context, typeArg string, id string) (*ContentItem, error)
 	UnpublishContentItem(ctx context.Context, typeArg string, id string) (*ContentItem, error)
 	RollbackContentItem(ctx context.Context, typeArg string, id string, version int) (*ContentItem, error)
+	DefineContentType(ctx context.Context, name string, fields []*FieldInput) (*ContentTypeDef, error)
+	RemoveContentType(ctx context.Context, name string) (bool, error)
 }
 type QueryResolver interface {
 	ContentTypes(ctx context.Context) ([]*ContentTypeDef, error)
@@ -242,6 +246,17 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.ComplexityRoot.Mutation.CreateContentItem(childComplexity, args["type"].(string), args["data"].(map[string]any)), true
+	case "Mutation.defineContentType":
+		if e.ComplexityRoot.Mutation.DefineContentType == nil {
+			break
+		}
+
+		args, err := ec.field_Mutation_defineContentType_args(ctx, rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.ComplexityRoot.Mutation.DefineContentType(childComplexity, args["name"].(string), args["fields"].([]*FieldInput)), true
 	case "Mutation.deleteContentItem":
 		if e.ComplexityRoot.Mutation.DeleteContentItem == nil {
 			break
@@ -264,6 +279,17 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.ComplexityRoot.Mutation.PublishContentItem(childComplexity, args["type"].(string), args["id"].(string)), true
+	case "Mutation.removeContentType":
+		if e.ComplexityRoot.Mutation.RemoveContentType == nil {
+			break
+		}
+
+		args, err := ec.field_Mutation_removeContentType_args(ctx, rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.ComplexityRoot.Mutation.RemoveContentType(childComplexity, args["name"].(string)), true
 	case "Mutation.rollbackContentItem":
 		if e.ComplexityRoot.Mutation.RollbackContentItem == nil {
 			break
@@ -345,7 +371,9 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 func (e *executableSchema) Exec(ctx context.Context) graphql.ResponseHandler {
 	opCtx := graphql.GetOperationContext(ctx)
 	ec := newExecutionContext(opCtx, e, make(chan graphql.DeferredResult))
-	inputUnmarshalMap := graphql.BuildUnmarshalerMap()
+	inputUnmarshalMap := graphql.BuildUnmarshalerMap(
+		ec.unmarshalInputFieldInput,
+	)
 	first := true
 
 	switch opCtx.Operation.Operation {
@@ -469,6 +497,29 @@ type Mutation {
 
   "Restore an item's data to an earlier version (requires content:write)."
   rollbackContentItem(type: String!, id: String!, version: Int!): ContentItem!
+
+  """
+  Create a content type or replace an existing one's field set (mirrors PUT
+  /api/v0/content-types/{name}; requires content_types:manage, admin-only).
+  """
+  defineContentType(name: String!, fields: [FieldInput!]!): ContentTypeDef!
+
+  """
+  Remove a content type (mirrors DELETE /api/v0/content-types/{name});
+  requires content_types:manage. Rejected if items of that type still
+  exist.
+  """
+  removeContentType(name: String!): Boolean!
+}
+
+"Input shape for one field of a content type definition."
+input FieldInput {
+  name: String!
+  type: String!
+  required: Boolean = false
+  localized: Boolean = false
+  "Target content type name, required for relation fields."
+  to: String
 }
 
 "A single piece of content: a typed, identified JSON document."
@@ -705,6 +756,28 @@ func (ec *executionContext) field_Mutation_createContentItem_args(ctx context.Co
 	return args, nil
 }
 
+func (ec *executionContext) field_Mutation_defineContentType_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
+	var err error
+	args := map[string]any{}
+	arg0, err := graphql.ProcessArgField(ctx, rawArgs, "name",
+		func(ctx context.Context, v any) (string, error) {
+			return ec.unmarshalNString2string(ctx, v)
+		})
+	if err != nil {
+		return nil, err
+	}
+	args["name"] = arg0
+	arg1, err := graphql.ProcessArgField(ctx, rawArgs, "fields",
+		func(ctx context.Context, v any) ([]*FieldInput, error) {
+			return ec.unmarshalNFieldInput2ᚕᚖgithubᚗcomᚋglyphuxᚋglyphuxᚋinternalᚋgraphqlᚋgeneratedᚐFieldInputᚄ(ctx, v)
+		})
+	if err != nil {
+		return nil, err
+	}
+	args["fields"] = arg1
+	return args, nil
+}
+
 func (ec *executionContext) field_Mutation_deleteContentItem_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
 	var err error
 	args := map[string]any{}
@@ -746,6 +819,20 @@ func (ec *executionContext) field_Mutation_publishContentItem_args(ctx context.C
 		return nil, err
 	}
 	args["id"] = arg1
+	return args, nil
+}
+
+func (ec *executionContext) field_Mutation_removeContentType_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
+	var err error
+	args := map[string]any{}
+	arg0, err := graphql.ProcessArgField(ctx, rawArgs, "name",
+		func(ctx context.Context, v any) (string, error) {
+			return ec.unmarshalNString2string(ctx, v)
+		})
+	if err != nil {
+		return nil, err
+	}
+	args["name"] = arg0
 	return args, nil
 }
 
@@ -1660,6 +1747,94 @@ func (ec *executionContext) fieldContext_Mutation_rollbackContentItem(ctx contex
 	}()
 	ctx = graphql.WithFieldContext(ctx, fc)
 	if fc.Args, err = ec.field_Mutation_rollbackContentItem_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
+		ec.Error(ctx, err)
+		return fc, err
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _Mutation_defineContentType(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_Mutation_defineContentType(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			fc := graphql.GetFieldContext(ctx)
+			return ec.Resolvers.Mutation().DefineContentType(ctx, fc.Args["name"].(string), fc.Args["fields"].([]*FieldInput))
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v *ContentTypeDef) graphql.Marshaler {
+			return ec.marshalNContentTypeDef2ᚖgithubᚗcomᚋglyphuxᚋglyphuxᚋinternalᚋgraphqlᚋgeneratedᚐContentTypeDef(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_Mutation_defineContentType(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Mutation",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.childFields_ContentTypeDef(ctx, field)
+		},
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = ec.Recover(ctx, r)
+			ec.Error(ctx, err)
+		}
+	}()
+	ctx = graphql.WithFieldContext(ctx, fc)
+	if fc.Args, err = ec.field_Mutation_defineContentType_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
+		ec.Error(ctx, err)
+		return fc, err
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _Mutation_removeContentType(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_Mutation_removeContentType(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			fc := graphql.GetFieldContext(ctx)
+			return ec.Resolvers.Mutation().RemoveContentType(ctx, fc.Args["name"].(string))
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v bool) graphql.Marshaler {
+			return ec.marshalNBoolean2bool(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_Mutation_removeContentType(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Mutation",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Boolean does not have child fields")
+		},
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = ec.Recover(ctx, r)
+			ec.Error(ctx, err)
+		}
+	}()
+	ctx = graphql.WithFieldContext(ctx, fc)
+	if fc.Args, err = ec.field_Mutation_removeContentType_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
 		ec.Error(ctx, err)
 		return fc, err
 	}
@@ -2965,6 +3140,71 @@ func (ec *executionContext) fieldContext___Type_isOneOf(_ context.Context, field
 
 // region    **************************** input.gotpl *****************************
 
+func (ec *executionContext) unmarshalInputFieldInput(ctx context.Context, obj any) (FieldInput, error) {
+	var it FieldInput
+	if obj == nil {
+		return it, nil
+	}
+
+	asMap := map[string]any{}
+	for k, v := range obj.(map[string]any) {
+		asMap[k] = v
+	}
+
+	if _, present := asMap["required"]; !present {
+		asMap["required"] = false
+	}
+	if _, present := asMap["localized"]; !present {
+		asMap["localized"] = false
+	}
+
+	fieldsInOrder := [...]string{"name", "type", "required", "localized", "to"}
+	for _, k := range fieldsInOrder {
+		v, ok := asMap[k]
+		if !ok {
+			continue
+		}
+		switch k {
+		case "name":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("name"))
+			data, err := ec.unmarshalNString2string(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.Name = data
+		case "type":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("type"))
+			data, err := ec.unmarshalNString2string(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.Type = data
+		case "required":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("required"))
+			data, err := ec.unmarshalOBoolean2ᚖbool(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.Required = data
+		case "localized":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("localized"))
+			data, err := ec.unmarshalOBoolean2ᚖbool(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.Localized = data
+		case "to":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("to"))
+			data, err := ec.unmarshalOString2ᚖstring(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.To = data
+		}
+	}
+	return it, nil
+}
+
 // endregion **************************** input.gotpl *****************************
 
 // region    ************************** interface.gotpl ***************************
@@ -3253,6 +3493,20 @@ func (ec *executionContext) _Mutation(ctx context.Context, sel ast.SelectionSet)
 		case "rollbackContentItem":
 			out.Values[i] = ec.OperationContext.RootResolverMiddleware(innerCtx, func(ctx context.Context) (res graphql.Marshaler) {
 				return ec._Mutation_rollbackContentItem(ctx, field)
+			})
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "defineContentType":
+			out.Values[i] = ec.OperationContext.RootResolverMiddleware(innerCtx, func(ctx context.Context) (res graphql.Marshaler) {
+				return ec._Mutation_defineContentType(ctx, field)
+			})
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "removeContentType":
+			out.Values[i] = ec.OperationContext.RootResolverMiddleware(innerCtx, func(ctx context.Context) (res graphql.Marshaler) {
+				return ec._Mutation_removeContentType(ctx, field)
 			})
 			if out.Values[i] == graphql.Null {
 				out.Invalids++
@@ -3859,6 +4113,10 @@ func (ec *executionContext) marshalNContentItem2ᚖgithubᚗcomᚋglyphuxᚋglyp
 	return ec._ContentItem(ctx, sel, v)
 }
 
+func (ec *executionContext) marshalNContentTypeDef2githubᚗcomᚋglyphuxᚋglyphuxᚋinternalᚋgraphqlᚋgeneratedᚐContentTypeDef(ctx context.Context, sel ast.SelectionSet, v ContentTypeDef) graphql.Marshaler {
+	return ec._ContentTypeDef(ctx, sel, &v)
+}
+
 func (ec *executionContext) marshalNContentTypeDef2ᚕᚖgithubᚗcomᚋglyphuxᚋglyphuxᚋinternalᚋgraphqlᚋgeneratedᚐContentTypeDefᚄ(ctx context.Context, sel ast.SelectionSet, v []*ContentTypeDef) graphql.Marshaler {
 	ret := graphql.MarshalSliceConcurrently(ctx, len(v), 0, false, func(ctx context.Context, i int) graphql.Marshaler {
 		fc := graphql.GetFieldContext(ctx)
@@ -3935,6 +4193,25 @@ func (ec *executionContext) marshalNFieldDef2ᚖgithubᚗcomᚋglyphuxᚋglyphux
 		return graphql.Null
 	}
 	return ec._FieldDef(ctx, sel, v)
+}
+
+func (ec *executionContext) unmarshalNFieldInput2ᚕᚖgithubᚗcomᚋglyphuxᚋglyphuxᚋinternalᚋgraphqlᚋgeneratedᚐFieldInputᚄ(ctx context.Context, v any) ([]*FieldInput, error) {
+	vSlice := graphql.CoerceList(v)
+	var err error
+	res := make([]*FieldInput, len(vSlice))
+	for i := range vSlice {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithIndex(i))
+		res[i], err = ec.unmarshalNFieldInput2ᚖgithubᚗcomᚋglyphuxᚋglyphuxᚋinternalᚋgraphqlᚋgeneratedᚐFieldInput(ctx, vSlice[i])
+		if err != nil {
+			return nil, err
+		}
+	}
+	return res, nil
+}
+
+func (ec *executionContext) unmarshalNFieldInput2ᚖgithubᚗcomᚋglyphuxᚋglyphuxᚋinternalᚋgraphqlᚋgeneratedᚐFieldInput(ctx context.Context, v any) (*FieldInput, error) {
+	res, err := ec.unmarshalInputFieldInput(ctx, v)
+	return &res, graphql.ErrorOnPath(ctx, err)
 }
 
 func (ec *executionContext) unmarshalNInt2int(ctx context.Context, v any) (int, error) {

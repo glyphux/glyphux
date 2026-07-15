@@ -37,6 +37,16 @@ type FieldDef struct {
 	To *string `json:"to,omitempty"`
 }
 
+// Input shape for one field of a content type definition.
+type FieldInput struct {
+	Name      string `json:"name"`
+	Type      string `json:"type"`
+	Required  *bool  `json:"required,omitempty"`
+	Localized *bool  `json:"localized,omitempty"`
+	// Target content type name, required for relation fields.
+	To *string `json:"to,omitempty"`
+}
+
 type Mutation struct {
 }
 

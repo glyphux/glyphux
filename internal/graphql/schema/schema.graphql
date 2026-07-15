@@ -47,6 +47,29 @@ type Mutation {
 
   "Restore an item's data to an earlier version (requires content:write)."
   rollbackContentItem(type: String!, id: String!, version: Int!): ContentItem!
+
+  """
+  Create a content type or replace an existing one's field set (mirrors PUT
+  /api/v0/content-types/{name}; requires content_types:manage, admin-only).
+  """
+  defineContentType(name: String!, fields: [FieldInput!]!): ContentTypeDef!
+
+  """
+  Remove a content type (mirrors DELETE /api/v0/content-types/{name});
+  requires content_types:manage. Rejected if items of that type still
+  exist.
+  """
+  removeContentType(name: String!): Boolean!
+}
+
+"Input shape for one field of a content type definition."
+input FieldInput {
+  name: String!
+  type: String!
+  required: Boolean = false
+  localized: Boolean = false
+  "Target content type name, required for relation fields."
+  to: String
 }
 
 "A single piece of content: a typed, identified JSON document."

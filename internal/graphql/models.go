@@ -63,6 +63,28 @@ func contentTypeDef(name string, ct contract.ContentType) *generated.ContentType
 	return &generated.ContentTypeDef{Name: name, Fields: fields}
 }
 
+// contentTypeFromInput converts GraphQL FieldInput values to a
+// contract.ContentType, the shape composition.Store.DefineContentType
+// expects — mirroring how REST's handleContentTypePut just JSON-decodes
+// the request body directly into a contract.ContentType.
+func contentTypeFromInput(fields []*generated.FieldInput) contract.ContentType {
+	ct := contract.ContentType{Fields: map[string]contract.Field{}}
+	for _, f := range fields {
+		field := contract.Field{Type: contract.FieldType(f.Type)}
+		if f.Required != nil {
+			field.Required = *f.Required
+		}
+		if f.Localized != nil {
+			field.Localized = *f.Localized
+		}
+		if f.To != nil {
+			field.To = *f.To
+		}
+		ct.Fields[f.Name] = field
+	}
+	return ct
+}
+
 func fieldDef(name string, f contract.Field) *generated.FieldDef {
 	def := &generated.FieldDef{
 		Name:      name,
