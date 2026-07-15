@@ -1,0 +1,45 @@
+# Glyphux GraphQL schema — a transport over the existing domain APIs
+# (internal/content, internal/composition, internal/media, internal/identity).
+# Grown incrementally, one query/mutation per TDD cycle; see
+# docs/implementation/active/0004-slice-1-12-graphql-transport.md.
+
+type Query {
+  "The declared content types (mirrors GET /api/v0/content-types)."
+  contentTypes: [ContentTypeDef!]!
+
+  """
+  A single content item (mirrors GET /api/v0/content/{type}/{id}). Drafts
+  are visible only to callers holding content:read_drafts; everyone else
+  sees published items only.
+  """
+  contentItem(type: String!, id: String!, locale: String): ContentItem
+}
+
+"A single piece of content: a typed, identified JSON document."
+type ContentItem {
+  id: String!
+  type: String!
+  data: Map!
+  status: String!
+  version: Int!
+  createdAt: String!
+  updatedAt: String!
+}
+
+"A declared content type and its fields."
+type ContentTypeDef {
+  name: String!
+  fields: [FieldDef!]!
+}
+
+"A single typed field on a content type."
+type FieldDef {
+  name: String!
+  type: String!
+  required: Boolean!
+  localized: Boolean!
+  "Target content type name, present only for relation fields."
+  to: String
+}
+
+scalar Map
