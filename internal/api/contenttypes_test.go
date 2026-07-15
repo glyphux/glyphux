@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -15,6 +16,32 @@ func TestContentTypesListIsPublic(t *testing.T) {
 	types, _ := body["content_types"].(map[string]any)
 	if _, ok := types["article"]; !ok {
 		t.Errorf("content_types = %v, want article present (seeded by testServerWithAuth)", types)
+	}
+}
+
+// TestContentTypesListReturnsEmptyObjectNotNull proves a composition with no
+// content types declared serializes content_types as {}, not JSON null — a
+// nil Go map and a genuinely-empty one are indistinguishable to callers
+// otherwise, and null broke non-Go clients expecting an iterable record
+// (found via the admin shell's real end-to-end pass; the JS SDK papers over
+// it client-side, but the wire contract itself should not emit null).
+func TestContentTypesListReturnsEmptyObjectNotNull(t *testing.T) {
+	h, cookie := authedServer(t)
+
+	// testServerWithAuth seeds one content type ("article"); remove it via
+	// the endpoint under test's own sibling route so the composition's
+	// ContentTypes map is genuinely empty for this request.
+	rec := doWithCookieBody(t, h, http.MethodDelete, "/api/v0/content-types/article", cookie, nil)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE article = %d, want 204, body %s", rec.Code, rec.Body.String())
+	}
+
+	rec = do(t, h, http.MethodGet, "/api/v0/content-types", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /content-types = %d, want 200", rec.Code)
+	}
+	if got := rec.Body.String(); !strings.Contains(got, `"content_types":{}`) {
+		t.Errorf("body = %s, want content_types to serialize as {} not null", got)
 	}
 }
 

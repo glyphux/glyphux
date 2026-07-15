@@ -19,7 +19,15 @@ func (s *Server) handleContentTypesList(w http.ResponseWriter, r *http.Request) 
 		s.writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"content_types": comp.ContentTypes})
+	types := comp.ContentTypes
+	if types == nil {
+		// A composition with no declared content types has a nil Go map;
+		// encoding/json serializes that as JSON null, which non-Go clients
+		// cannot safely treat as an iterable record. Normalize to {} at the
+		// wire boundary so content_types is always an object.
+		types = map[string]contract.ContentType{}
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"content_types": types})
 }
 
 func (s *Server) handleContentTypePut(w http.ResponseWriter, r *http.Request) {
