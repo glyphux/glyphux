@@ -50,11 +50,18 @@ type Timeouts struct {
 }
 
 // Handler assembles the daemon's full route table: API transport, wizard,
-// and the root redirect.
-func Handler(apiServer *api.Server, wizard *setup.Wizard) http.Handler {
+// and the root redirect. graphqlHandler is optional (slice 1.12) — pass
+// none to omit /graphql entirely, or exactly one to mount it at
+// POST /graphql. It is variadic rather than a plain parameter so every
+// existing caller (internal/bootstrap's tests included, which this package
+// must not require changes to) keeps compiling unchanged.
+func Handler(apiServer *api.Server, wizard *setup.Wizard, graphqlHandler ...http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	apiServer.Routes(mux)
 	wizard.Routes(mux)
+	if len(graphqlHandler) > 0 && graphqlHandler[0] != nil {
+		mux.Handle("POST /graphql", graphqlHandler[0])
+	}
 
 	// The admin shell (PRD §5.6 Surface 2) is mounted on this same
 	// long-lived mux, so — same reasoning as the root redirect below — it
