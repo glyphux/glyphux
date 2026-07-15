@@ -609,6 +609,56 @@ func TestMediaQueriesArePublicAndDeleteRequiresMediaWrite(t *testing.T) {
 	}
 }
 
+func TestUsersQueryAndCreateUserMutationAreAdminOnly(t *testing.T) {
+	h, deps := testServer(t)
+	adminToken := loginAdmin(t, deps)
+	editorToken := loginRole(t, deps, "editor5@example.com", "editor")
+
+	const usersQuery = `{ users { email role } }`
+
+	// Editor is rejected — users:manage is admin-only.
+	_, resp := doGraphQL(t, h, editorToken, usersQuery, nil)
+	if len(resp.Errors) != 1 || resp.Errors[0].Extensions["code"] != "FORBIDDEN" {
+		t.Fatalf("editor users query errors = %v, want 1 FORBIDDEN", resp.Errors)
+	}
+
+	// Anonymous is rejected with UNAUTHENTICATED.
+	_, resp = doGraphQL(t, h, "", usersQuery, nil)
+	if len(resp.Errors) != 1 || resp.Errors[0].Extensions["code"] != "UNAUTHENTICATED" {
+		t.Fatalf("anonymous users query errors = %v, want 1 UNAUTHENTICATED", resp.Errors)
+	}
+
+	// Admin succeeds and sees both accounts created so far.
+	_, resp = doGraphQL(t, h, adminToken, usersQuery, nil)
+	if len(resp.Errors) != 0 {
+		t.Fatalf("admin users query errors = %v", resp.Errors)
+	}
+	users, ok := resp.Data["users"].([]any)
+	if !ok || len(users) != 2 {
+		t.Fatalf("users = %v, want 2 accounts", resp.Data["users"])
+	}
+
+	// createUser: editor rejected, admin succeeds.
+	const createMutation = `mutation($email: String!, $password: String!, $role: String!) {
+		createUser(email: $email, password: $password, role: $role) { email role }
+	}`
+	variables := map[string]any{"email": "newbie@example.com", "password": "correct horse battery", "role": "viewer"}
+
+	_, resp = doGraphQL(t, h, editorToken, createMutation, variables)
+	if len(resp.Errors) != 1 || resp.Errors[0].Extensions["code"] != "FORBIDDEN" {
+		t.Fatalf("editor createUser errors = %v, want 1 FORBIDDEN", resp.Errors)
+	}
+
+	_, resp = doGraphQL(t, h, adminToken, createMutation, variables)
+	if len(resp.Errors) != 0 {
+		t.Fatalf("admin createUser errors = %v", resp.Errors)
+	}
+	created, ok := resp.Data["createUser"].(map[string]any)
+	if !ok || created["email"] != "newbie@example.com" || created["role"] != "viewer" {
+		t.Fatalf("createUser = %v, want newbie@example.com/viewer", resp.Data["createUser"])
+	}
+}
+
 func TestContentTypesQueryIsPublic(t *testing.T) {
 	h, _ := testServer(t)
 	_, resp := doGraphQL(t, h, "", `{ contentTypes { name fields { name type required localized to } } }`, nil)

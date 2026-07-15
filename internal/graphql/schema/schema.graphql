@@ -25,6 +25,16 @@ type Query {
 
   "Every stored media asset (mirrors GET /api/v0/media)."
   mediaItems: [MediaItem!]!
+
+  "Every account (mirrors GET /api/v0/users; requires users:manage, admin-only)."
+  users: [User!]!
+}
+
+"An authenticated principal. Never carries credentials."
+type User {
+  id: ID!
+  email: String!
+  role: String!
 }
 
 """
@@ -86,6 +96,9 @@ type Mutation {
 
   "Delete a media asset (mirrors DELETE /api/v0/media/{id}; requires media:write)."
   deleteMediaItem(id: String!): Boolean!
+
+  "Create an account (mirrors POST /api/v0/users; requires users:manage, admin-only)."
+  createUser(email: String!, password: String!, role: String!): User!
 }
 
 "Input shape for one field of a content type definition."

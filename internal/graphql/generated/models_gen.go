@@ -67,3 +67,10 @@ type Mutation struct {
 
 type Query struct {
 }
+
+// An authenticated principal. Never carries credentials.
+type User struct {
+	ID    string `json:"id"`
+	Email string `json:"email"`
+	Role  string `json:"role"`
+}

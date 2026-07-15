@@ -140,6 +140,20 @@ func (r *mutationResolver) DeleteMediaItem(ctx context.Context, id string) (bool
 	return true, nil
 }
 
+// CreateUser is the resolver for the createUser field. It mirrors
+// handleCreateUser in internal/api/users.go: requires users:manage
+// (admin-only).
+func (r *mutationResolver) CreateUser(ctx context.Context, email string, password string, role string) (*generated.User, error) {
+	if _, err := requireCapability(ctx, permission.UsersManage); err != nil {
+		return nil, err
+	}
+	u, err := r.identities.CreateUser(ctx, email, password, role)
+	if err != nil {
+		return nil, gqlErr("VALIDATION", err.Error())
+	}
+	return userModel(u), nil
+}
+
 // ContentTypes is the resolver for the contentTypes field. It mirrors GET
 // /api/v0/content-types — publicly readable, no capability required.
 func (r *queryResolver) ContentTypes(ctx context.Context) ([]*generated.ContentTypeDef, error) {
@@ -216,6 +230,24 @@ func (r *queryResolver) MediaItems(ctx context.Context) ([]*generated.MediaItem,
 	out := make([]*generated.MediaItem, len(items))
 	for i, item := range items {
 		out[i] = mediaItemModel(item)
+	}
+	return out, nil
+}
+
+// Users is the resolver for the users field. It mirrors handleListUsers in
+// internal/api/users.go: requires users:manage (admin-only).
+func (r *queryResolver) Users(ctx context.Context) ([]*generated.User, error) {
+	if _, err := requireCapability(ctx, permission.UsersManage); err != nil {
+		return nil, err
+	}
+	users, err := r.identities.ListUsers(ctx)
+	if err != nil {
+		r.log.Error("list users", "error", err)
+		return nil, gqlErr("INTERNAL", "internal error")
+	}
+	out := make([]*generated.User, len(users))
+	for i, u := range users {
+		out[i] = userModel(u)
 	}
 	return out, nil
 }

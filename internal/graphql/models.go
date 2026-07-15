@@ -6,10 +6,12 @@ package graphql
 
 import (
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/glyphux/glyphux/internal/content"
 	"github.com/glyphux/glyphux/internal/graphql/generated"
+	"github.com/glyphux/glyphux/internal/identity"
 	"github.com/glyphux/glyphux/internal/media"
 	"github.com/glyphux/glyphux/pkg/contract"
 )
@@ -62,6 +64,17 @@ func contentTypeDef(name string, ct contract.ContentType) *generated.ContentType
 		fields = append(fields, fieldDef(fname, ct.Fields[fname]))
 	}
 	return &generated.ContentTypeDef{Name: name, Fields: fields}
+}
+
+// userModel converts an identity.User to its GraphQL model. ID is rendered
+// as a string, matching the GraphQL ID scalar's wire representation, even
+// though identity.User.ID is an int64 internally.
+func userModel(u *identity.User) *generated.User {
+	return &generated.User{
+		ID:    strconv.FormatInt(u.ID, 10),
+		Email: u.Email,
+		Role:  u.Role,
+	}
 }
 
 // mediaItemModel converts a media.Item to its GraphQL model.
