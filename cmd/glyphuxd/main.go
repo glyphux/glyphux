@@ -21,6 +21,7 @@ import (
 	"github.com/glyphux/glyphux/internal/config"
 	"github.com/glyphux/glyphux/internal/content"
 	"github.com/glyphux/glyphux/internal/db"
+	"github.com/glyphux/glyphux/internal/graphql"
 	"github.com/glyphux/glyphux/internal/identity"
 	"github.com/glyphux/glyphux/internal/media"
 	"github.com/glyphux/glyphux/internal/server"
@@ -103,6 +104,11 @@ func buildFullHandler(cfg config.Config, log *slog.Logger) bootstrap.BuildFullHa
 		contentAPI := content.NewAPI(compositions, content.NewStore(database))
 		mediaAPI := media.NewAPI(media.NewStore(database), filepath.Join(cfg.DataDir, "media"))
 		apiServer := api.New(compositions, contentAPI, mediaAPI, identities, sessions, log)
-		return server.Handler(apiServer, wizard), nil
+		// GraphQL (slice 1.12) is a second transport over the same domain
+		// APIs the REST apiServer above was just built from — not a new
+		// privileged path.
+		graphqlResolver := graphql.NewResolver(compositions, contentAPI, mediaAPI, identities, sessions, log)
+		graphqlHandler := graphql.NewHandler(graphqlResolver)
+		return server.Handler(apiServer, wizard, graphqlHandler), nil
 	}
 }
