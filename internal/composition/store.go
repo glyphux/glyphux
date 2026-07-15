@@ -5,7 +5,6 @@ package composition
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -46,7 +45,7 @@ func NewStore(database *db.DB) *Store {
 func (s *Store) Load(ctx context.Context) (*contract.Composition, error) {
 	var doc string
 	err := s.db.QueryRow(ctx, `SELECT document FROM composition WHERE id = 1`).Scan(&doc)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, db.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
@@ -59,6 +58,14 @@ func (s *Store) Load(ctx context.Context) (*contract.Composition, error) {
 // rejected before touching storage — the store never holds a contract-invalid
 // document.
 func (s *Store) Save(ctx context.Context, c *contract.Composition) error {
+	return s.SaveWith(ctx, s.db, c)
+}
+
+// SaveWith validates and persists the composition using q instead of the
+// store's own database handle — q is typically a transaction from
+// db.WithTx, so bootstrap can save the initial composition and create the
+// admin account atomically: both commit together, or neither does.
+func (s *Store) SaveWith(ctx context.Context, q db.Queryer, c *contract.Composition) error {
 	if err := c.Validate(); err != nil {
 		return err
 	}
@@ -66,7 +73,7 @@ func (s *Store) Save(ctx context.Context, c *contract.Composition) error {
 	if err != nil {
 		return fmt.Errorf("encode composition: %w", err)
 	}
-	_, err = s.db.Exec(ctx, `
+	_, err = q.Exec(ctx, `
 		INSERT INTO composition (id, document, updated_at) VALUES (1, ?, ?)
 		ON CONFLICT (id) DO UPDATE SET document = excluded.document, updated_at = excluded.updated_at`,
 		string(doc), time.Now().UTC().Format(time.RFC3339Nano))
@@ -74,6 +81,12 @@ func (s *Store) Save(ctx context.Context, c *contract.Composition) error {
 		return fmt.Errorf("save composition: %w", err)
 	}
 	return nil
+}
+
+// Ping verifies the underlying database connection is reachable — the
+// readiness check's seam into the kernel.
+func (s *Store) Ping(ctx context.Context) error {
+	return s.db.Ping(ctx)
 }
 
 // Exists reports whether a composition has been written (setup completed).

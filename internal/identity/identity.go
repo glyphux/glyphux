@@ -9,7 +9,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
-	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -70,7 +69,16 @@ var ErrInvalidCredentials = errors.New("invalid credentials")
 
 // CreateAdmin creates the initial admin account. Called once by the wizard.
 func (s *Service) CreateAdmin(ctx context.Context, email, password string) error {
-	_, err := s.createAccount(ctx, email, password, permission.RoleAdmin)
+	_, err := s.createAccountWith(ctx, s.db, email, password, permission.RoleAdmin)
+	return err
+}
+
+// CreateAdminWith creates the initial admin account using q instead of the
+// service's own database handle — q is typically a transaction from
+// db.WithTx, so bootstrap can create the admin and save the initial
+// composition atomically: both commit together, or neither does.
+func (s *Service) CreateAdminWith(ctx context.Context, q db.Queryer, email, password string) error {
+	_, err := s.createAccountWith(ctx, q, email, password, permission.RoleAdmin)
 	return err
 }
 
@@ -81,10 +89,10 @@ func (s *Service) CreateUser(ctx context.Context, email, password, role string) 
 	if !permission.ValidRole(role) {
 		return nil, fmt.Errorf("unknown role %q", role)
 	}
-	return s.createAccount(ctx, email, password, role)
+	return s.createAccountWith(ctx, s.db, email, password, role)
 }
 
-func (s *Service) createAccount(ctx context.Context, email, password, role string) (*User, error) {
+func (s *Service) createAccountWith(ctx context.Context, q db.Queryer, email, password, role string) (*User, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	if email == "" || !strings.Contains(email, "@") {
 		return nil, fmt.Errorf("invalid email address")
@@ -103,14 +111,14 @@ func (s *Service) createAccount(ctx context.Context, email, password, role strin
 	// Query the id back explicitly rather than via Result.LastInsertId, which
 	// Postgres's driver does not implement (§11.6: the db abstraction must
 	// work identically on both engines).
-	_, err = s.db.Exec(ctx,
+	_, err = q.Exec(ctx,
 		`INSERT INTO users (email, password_hash, password_salt, role, created_at) VALUES (?, ?, ?, ?, ?)`,
 		email, hex.EncodeToString(hash), hex.EncodeToString(salt), role, time.Now().UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return nil, fmt.Errorf("create account: %w", err)
 	}
 	var id int64
-	if err := s.db.QueryRow(ctx, `SELECT id FROM users WHERE email = ?`, email).Scan(&id); err != nil {
+	if err := q.QueryRow(ctx, `SELECT id FROM users WHERE email = ?`, email).Scan(&id); err != nil {
 		return nil, fmt.Errorf("account id: %w", err)
 	}
 	return &User{ID: id, Email: email, Role: role}, nil
@@ -161,7 +169,7 @@ func (s *Service) Authenticate(ctx context.Context, email, password string) (*Us
 	err := s.db.QueryRow(ctx,
 		`SELECT id, email, role, password_hash, password_salt FROM users WHERE email = ?`, email).
 		Scan(&u.ID, &u.Email, &u.Role, &hashHex, &saltHex)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, db.ErrNoRows) {
 		return nil, ErrInvalidCredentials
 	}
 	if err != nil {

@@ -21,26 +21,54 @@ import (
 	"sync"
 
 	"github.com/glyphux/glyphux/internal/composition"
+	"github.com/glyphux/glyphux/internal/db"
 	"github.com/glyphux/glyphux/internal/identity"
 	"github.com/glyphux/glyphux/pkg/contract"
 )
 
+// Input is the validated form data a submission collects: everything a
+// Committer needs to decide where and how to write the initial state.
+type Input struct {
+	SiteName      string
+	AdminEmail    string
+	AdminPassword string
+	Driver        string // "sqlite" or "postgres"
+	DSN           string // set only when Driver == "postgres"
+}
+
+// Committer persists a validated submission as the wizard's initial state.
+// The default (no Committer set) writes directly to the wizard's own
+// database, atomically. A caller that needs the database choice to actually
+// take effect — e.g. opening a fresh Postgres connection when the operator
+// selects it in the form — supplies its own Committer via SetCommitter.
+type Committer interface {
+	Commit(ctx context.Context, in Input) error
+}
+
 // Wizard serves the first-run flow and locks it after completion.
 type Wizard struct {
-	compositions *composition.Store
-	identities   *identity.Service
-	log          *slog.Logger
+	compositions      *composition.Store
+	identities        *identity.Service
+	database          *db.DB
+	log               *slog.Logger
+	trustProxyHeaders bool // only trust X-Forwarded-Proto when explicitly configured
 
-	mu       sync.Mutex
-	complete bool
-	token    string // required for non-localhost requests (§6.4)
+	mu        sync.Mutex
+	complete  bool
+	token     string // required for non-localhost requests (§6.4)
+	committer Committer
 }
 
 // New builds the wizard, deciding up front whether setup is already complete.
 // If setup is pending, a one-time setup token is generated and logged so a
 // cloud operator can claim the unconfigured instance before an attacker does.
-func New(ctx context.Context, comps *composition.Store, ids *identity.Service, log *slog.Logger) (*Wizard, error) {
-	w := &Wizard{compositions: comps, identities: ids, log: log}
+//
+// trustProxyHeaders controls whether X-Forwarded-Proto is honored when
+// deciding if a remote request arrived over HTTPS (§6.4). Leave it false
+// unless a trusted reverse proxy in front of glyphuxd is known to set that
+// header — otherwise a client can simply claim to be HTTPS.
+func New(ctx context.Context, comps *composition.Store, ids *identity.Service, database *db.DB, log *slog.Logger, trustProxyHeaders bool) (*Wizard, error) {
+	w := &Wizard{compositions: comps, identities: ids, database: database, log: log, trustProxyHeaders: trustProxyHeaders}
 	exists, err := comps.Exists(ctx)
 	if err != nil {
 		return nil, err
@@ -67,6 +95,15 @@ func (w *Wizard) Complete() bool {
 	return w.complete
 }
 
+// SetCommitter overrides how a validated submission is persisted. See
+// Committer. Not safe to call concurrently with a submission in flight —
+// callers set it once, before serving any requests.
+func (w *Wizard) SetCommitter(c Committer) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.committer = c
+}
+
 // Routes registers the wizard endpoints on mux.
 func (w *Wizard) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /setup", w.handleForm)
@@ -78,6 +115,10 @@ func (w *Wizard) handleForm(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "setup already completed; this route is permanently disabled", http.StatusGone)
 		return
 	}
+	if !isLocalhost(r) && !w.isSecure(r) {
+		http.Error(rw, "HTTPS is required to access first-run setup remotely (§6.4)", http.StatusForbidden)
+		return
+	}
 	w.render(rw, formData{NeedToken: !isLocalhost(r)})
 }
 
@@ -86,6 +127,10 @@ func (w *Wizard) handleSubmit(rw http.ResponseWriter, r *http.Request) {
 	defer w.mu.Unlock()
 	if w.complete {
 		http.Error(rw, "setup already completed; this route is permanently disabled", http.StatusGone)
+		return
+	}
+	if !isLocalhost(r) && !w.isSecure(r) {
+		http.Error(rw, "HTTPS is required to submit first-run setup remotely (§6.4)", http.StatusForbidden)
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -107,6 +152,7 @@ func (w *Wizard) handleSubmit(rw http.ResponseWriter, r *http.Request) {
 	email := r.PostFormValue("admin_email")
 	password := r.PostFormValue("admin_password")
 	driver := r.PostFormValue("database")
+	dsn := strings.TrimSpace(r.PostFormValue("database_dsn"))
 
 	if siteName == "" {
 		w.renderError(rw, needToken, "Site name is required.")
@@ -116,22 +162,19 @@ func (w *Wizard) handleSubmit(rw http.ResponseWriter, r *http.Request) {
 		w.renderError(rw, needToken, fmt.Sprintf("Unknown database %q (want sqlite or postgres).", driver))
 		return
 	}
-
-	comp := &contract.Composition{
-		ContractVersion: contract.ContentCompositionV0,
-		Site:            contract.Site{Name: siteName},
-	}
-
-	ctx := r.Context()
-	if err := w.identities.CreateAdmin(ctx, email, password); err != nil {
-		w.renderError(rw, needToken, "Admin account: "+err.Error())
+	if driver == "postgres" && dsn == "" {
+		w.renderError(rw, needToken, "A Postgres connection string is required when Postgres is selected.")
 		return
 	}
-	// Writing the initial composition is the act that completes setup: the
-	// wizard is a client of the contract, and Store.Save validates before
-	// persisting, so an invalid composition can never complete first-run.
-	if err := w.compositions.Save(ctx, comp); err != nil {
-		w.renderError(rw, needToken, "Composition: "+err.Error())
+
+	in := Input{SiteName: siteName, AdminEmail: email, AdminPassword: password, Driver: driver, DSN: dsn}
+
+	ctx := r.Context()
+	// Writing the initial composition is the act that completes setup, so it
+	// and the admin account are created atomically: either both exist or
+	// neither does, and a failed attempt is always safe to retry (§17).
+	if err := w.commit(ctx, in); err != nil {
+		w.renderError(rw, needToken, err.Error())
 		return
 	}
 
@@ -141,6 +184,28 @@ func (w *Wizard) handleSubmit(rw http.ResponseWriter, r *http.Request) {
 
 	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprintf(rw, doneHTML, template.HTMLEscapeString(siteName))
+}
+
+// commit persists in as the wizard's initial state: the injected Committer
+// if one is set, otherwise the default — create the admin account and save
+// the composition atomically against the wizard's own database.
+func (w *Wizard) commit(ctx context.Context, in Input) error {
+	if w.committer != nil {
+		return w.committer.Commit(ctx, in)
+	}
+	comp := &contract.Composition{
+		ContractVersion: contract.ContentCompositionV0,
+		Site:            contract.Site{Name: in.SiteName},
+	}
+	return w.database.WithTx(ctx, func(q db.Queryer) error {
+		if err := w.identities.CreateAdminWith(ctx, q, in.AdminEmail, in.AdminPassword); err != nil {
+			return fmt.Errorf("admin account: %w", err)
+		}
+		if err := w.compositions.SaveWith(ctx, q, comp); err != nil {
+			return fmt.Errorf("composition: %w", err)
+		}
+		return nil
+	})
 }
 
 type formData struct {
@@ -158,6 +223,16 @@ func (w *Wizard) render(rw http.ResponseWriter, data formData) {
 func (w *Wizard) renderError(rw http.ResponseWriter, needToken bool, msg string) {
 	rw.WriteHeader(http.StatusUnprocessableEntity)
 	w.render(rw, formData{NeedToken: needToken, Error: msg})
+}
+
+// isSecure reports whether r arrived over TLS. A reverse-proxy-terminated
+// TLS connection is only recognized via X-Forwarded-Proto when
+// trustProxyHeaders is set — an unvouched header is just a client claim.
+func (w *Wizard) isSecure(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return w.trustProxyHeaders && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
 func isLocalhost(r *http.Request) bool {
@@ -205,7 +280,11 @@ var formTemplate = template.Must(template.New("setup").Parse(`<!doctype html>
       <option value="sqlite" selected>SQLite (embedded, recommended)</option>
       <option value="postgres">Postgres</option>
     </select>
-    <span class="hint">The active backend is chosen at daemon startup (GLYPHUX_DB_DRIVER); this only records your choice.</span>
+    <span class="hint">SQLite needs nothing else. Choosing Postgres takes effect immediately — no restart.</span>
+  </label>
+  <label>Postgres connection string
+    <input name="database_dsn" placeholder="postgres://user:pass@host:5432/dbname">
+    <span class="hint">Required only if you selected Postgres above. Never written to disk.</span>
   </label>
   {{if .NeedToken}}
   <label>Setup token

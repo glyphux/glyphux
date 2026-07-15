@@ -29,6 +29,25 @@ type Server struct {
 // through JSON decoding or validation (slice 1.9).
 const maxRequestBodyBytes = 1 << 20 // 1 MiB
 
+// Production HTTP timeout defaults. Without these a slow or hanging client
+// can hold a connection open indefinitely, exhausting file descriptors —
+// ReadHeaderTimeout alone (the only one previously set) only bounds the
+// header phase, not a slow body or a slow handler.
+const (
+	DefaultReadTimeout       = 30 * time.Second
+	DefaultWriteTimeout      = 30 * time.Second
+	DefaultIdleTimeout       = 120 * time.Second
+	DefaultReadHeaderTimeout = 5 * time.Second
+)
+
+// Timeouts reports the HTTP timeouts a Server was configured with.
+type Timeouts struct {
+	Read       time.Duration
+	Write      time.Duration
+	Idle       time.Duration
+	ReadHeader time.Duration
+}
+
 // Handler assembles the daemon's full route table: API transport, wizard,
 // and the root redirect.
 func Handler(apiServer *api.Server, wizard *setup.Wizard) http.Handler {
@@ -73,17 +92,33 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-// New assembles the full route table.
-func New(addr string, apiServer *api.Server, wizard *setup.Wizard, log *slog.Logger) *Server {
+// New builds a Server that serves handler on addr. Callers assemble the
+// route table themselves — via Handler(apiServer, wizard) for the ordinary
+// case, or a bootstrap.Gateway when setup may still switch which database
+// the daemon serves from (§6.2) — New itself is agnostic to which.
+func New(addr string, handler http.Handler, log *slog.Logger) *Server {
 	return &Server{
 		http: &http.Server{
 			Addr:              addr,
-			Handler:           requestLog(log, Handler(apiServer, wizard)),
-			ReadHeaderTimeout: 5 * time.Second,
+			Handler:           requestLog(log, handler),
+			ReadHeaderTimeout: DefaultReadHeaderTimeout,
+			ReadTimeout:       DefaultReadTimeout,
+			WriteTimeout:      DefaultWriteTimeout,
+			IdleTimeout:       DefaultIdleTimeout,
 		},
 		log:           log,
 		addr:          addr,
 		listenerReady: make(chan string, 1),
+	}
+}
+
+// Timeouts reports the HTTP timeouts this Server was configured with.
+func (s *Server) Timeouts() Timeouts {
+	return Timeouts{
+		Read:       s.http.ReadTimeout,
+		Write:      s.http.WriteTimeout,
+		Idle:       s.http.IdleTimeout,
+		ReadHeader: s.http.ReadHeaderTimeout,
 	}
 }
 

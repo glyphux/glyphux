@@ -2,7 +2,6 @@ package media
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -80,7 +79,7 @@ func (s *Store) getByID(ctx context.Context, id string) (record, error) {
 		`SELECT id, filename, mime_type, size_bytes, width, height, storage_path, alt_text, created_at, updated_at
 		 FROM media_items WHERE id = ?`, id).
 		Scan(&r.ID, &r.Filename, &r.MimeType, &r.SizeBytes, &r.Width, &r.Height, &r.StoragePath, &r.AltText, &created, &updated)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, db.ErrNoRows) {
 		return record{}, ErrNotFound
 	}
 	if err != nil {

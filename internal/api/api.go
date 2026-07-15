@@ -46,6 +46,7 @@ func New(comps *composition.Store, contentAPI *content.API, mediaAPI *media.API,
 // Routes registers the API endpoints on mux.
 func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+	mux.HandleFunc("GET /readyz", s.handleReady)
 	mux.HandleFunc("GET /api/v0/composition", s.handleComposition)
 	mux.HandleFunc("GET /api/v0/content/ping", s.handlePing)
 
@@ -267,6 +268,18 @@ func (s *Server) writeContentError(w http.ResponseWriter, err error) {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	s.writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleReady reports whether the daemon can actually serve requests, not
+// just that the process is running (handleHealth). An orchestrator should
+// stop routing traffic on a non-200 here even while /healthz stays green.
+func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+	if err := s.compositions.Ping(r.Context()); err != nil {
+		s.log.Warn("readiness check failed", "error", err)
+		s.writeError(w, http.StatusServiceUnavailable, "database unreachable")
+		return
+	}
 	s.writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

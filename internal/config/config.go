@@ -31,6 +31,13 @@ type Config struct {
 
 	// OpenBrowser controls whether first-run opens a local browser (Scenario 1).
 	OpenBrowser bool `json:"open_browser"`
+
+	// TrustProxyHeaders controls whether the wizard honors X-Forwarded-Proto
+	// when deciding if a remote request arrived over HTTPS (§6.4). Only
+	// enable this behind a reverse proxy known to set that header correctly
+	// and strip any client-supplied copy of it — otherwise a client can
+	// simply claim to be HTTPS.
+	TrustProxyHeaders bool `json:"trust_proxy_headers"`
 }
 
 // DatabaseConfig selects and configures the database adapter.
@@ -110,6 +117,13 @@ func Load(path string) (Config, error) {
 			return cfg, fmt.Errorf("GLYPHUX_OPEN_BROWSER: %w", err)
 		}
 		cfg.OpenBrowser = b
+	}
+	if v := os.Getenv("GLYPHUX_TRUST_PROXY_HEADERS"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return cfg, fmt.Errorf("GLYPHUX_TRUST_PROXY_HEADERS: %w", err)
+		}
+		cfg.TrustProxyHeaders = b
 	}
 
 	if err := cfg.validate(); err != nil {

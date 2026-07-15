@@ -8,6 +8,7 @@ package server_test
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -51,7 +52,7 @@ func boot(t *testing.T, dbPath string) http.Handler {
 	compositions := composition.NewStore(database)
 	identities := identity.NewService(database)
 	sessions := identity.NewSessions(database)
-	wizard, err := setup.New(ctx, compositions, identities, log)
+	wizard, err := setup.New(ctx, compositions, identities, database, log, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,6 +75,19 @@ func postForm(t *testing.T, h http.Handler, path string, form url.Values, remote
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.RemoteAddr = remoteAddr
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// postFormHTTPS is postForm for a simulated remote HTTPS request — needed
+// because §6.4 now rejects remote setup access outright over plain HTTP.
+func postFormHTTPS(t *testing.T, h http.Handler, path string, form url.Values, remoteAddr string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.RemoteAddr = remoteAddr
+	req.TLS = &tls.ConnectionState{}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
@@ -150,13 +164,15 @@ func TestWizardRequiresTokenForRemoteAccess(t *testing.T) {
 		"admin_email":    {"evil@example.com"},
 		"admin_password": {"evil password"},
 	}
-	// Remote submit without (or with a wrong) token must be rejected.
-	rec := postForm(t, h, "/setup", form, "203.0.113.7:4444")
+	// Remote submit without (or with a wrong) token must be rejected — over a
+	// simulated HTTPS connection, so this test isolates the token check from
+	// the separate §6.4 HTTPS-required check (covered in internal/setup).
+	rec := postFormHTTPS(t, h, "/setup", form, "203.0.113.7:4444")
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("remote submit without token = %d, want 422", rec.Code)
 	}
 	form.Set("setup_token", "wrong-token")
-	rec = postForm(t, h, "/setup", form, "203.0.113.7:4444")
+	rec = postFormHTTPS(t, h, "/setup", form, "203.0.113.7:4444")
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("remote submit with wrong token = %d, want 422", rec.Code)
 	}
@@ -238,7 +254,7 @@ func TestMediaUploadExemptFromGlobalBodyCap(t *testing.T) {
 // The wizard's "database" field records a choice for the record; it does not
 // itself switch backends (that happens via GLYPHUX_DB_DRIVER before the
 // daemon boots, slice 1.10), so "postgres" is an accepted value here.
-func TestWizardAcceptsPostgresChoice(t *testing.T) {
+func TestWizardRejectsPostgresChoiceWithoutDSN(t *testing.T) {
 	h := boot(t, filepath.Join(t.TempDir(), "glyphux.db"))
 	form := url.Values{
 		"site_name":      {"PG Site"},
@@ -247,8 +263,8 @@ func TestWizardAcceptsPostgresChoice(t *testing.T) {
 		"database":       {"postgres"},
 	}
 	rec := postForm(t, h, "/setup", form, "127.0.0.1:9")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("postgres choice = %d, want 200: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("postgres choice without DSN = %d, want 422: %s", rec.Code, rec.Body.String())
 	}
 }
 

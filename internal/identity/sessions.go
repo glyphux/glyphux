@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -95,7 +94,7 @@ func (s *Sessions) Lookup(ctx context.Context, token string) (*User, error) {
 		FROM sessions s JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = ?`, hashToken(token)).
 		Scan(&u.ID, &u.Email, &u.Role, &expiresStr)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, db.ErrNoRows) {
 		return nil, ErrInvalidSession
 	}
 	if err != nil {
