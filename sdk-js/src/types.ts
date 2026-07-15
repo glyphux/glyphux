@@ -37,6 +37,24 @@ export interface ContentVersion {
   created_at: string;
 }
 
+/** A field kind Layer 1 understands (pkg/contract FieldType). */
+export type FieldType = "string" | "richtext" | "number" | "boolean" | "date" | "relation" | "media";
+
+/** One typed field declared on a content type (pkg/contract Field). */
+export interface ContentTypeField {
+  type: FieldType;
+  required?: boolean;
+  localized?: boolean;
+  /** Target content type name; only meaningful (and required) for "relation" fields. */
+  to?: string;
+}
+
+/** A content type's declared shape (pkg/contract ContentType) — the schema
+ * content items of this type are validated against, not an item itself. */
+export interface ContentType {
+  fields: Record<string, ContentTypeField>;
+}
+
 /** A stored media asset and its metadata (internal/media/media.go Item). */
 export interface MediaItem {
   id: string;

@@ -172,6 +172,41 @@ func TestDeleteRemoves(t *testing.T) {
 	}
 }
 
+func TestCountItemsReflectsCreatesAndDeletes(t *testing.T) {
+	api := testAPI(t, articleTypes())
+	ctx := context.Background()
+
+	n, err := api.CountItems(ctx, "article")
+	if err != nil {
+		t.Fatalf("CountItems (empty): %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("CountItems (empty) = %d, want 0", n)
+	}
+
+	created := mustCreate(t, api, "article", map[string]any{"title": "One"})
+	mustCreate(t, api, "article", map[string]any{"title": "Two"})
+
+	n, err = api.CountItems(ctx, "article")
+	if err != nil {
+		t.Fatalf("CountItems: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("CountItems = %d, want 2", n)
+	}
+
+	if err := api.Delete(ctx, "article", created.ID); err != nil {
+		t.Fatal(err)
+	}
+	n, err = api.CountItems(ctx, "article")
+	if err != nil {
+		t.Fatalf("CountItems after delete: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("CountItems after delete = %d, want 1", n)
+	}
+}
+
 func relationTypes() map[string]contract.ContentType {
 	return map[string]contract.ContentType{
 		"author": {Fields: map[string]contract.Field{

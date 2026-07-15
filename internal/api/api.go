@@ -50,6 +50,11 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v0/composition", s.handleComposition)
 	mux.HandleFunc("GET /api/v0/content/ping", s.handlePing)
 
+	// Content-type management (structural schema changes; admin-only).
+	mux.HandleFunc("GET /api/v0/content-types", s.handleContentTypesList)
+	mux.HandleFunc("PUT /api/v0/content-types/{name}", s.requireCapability(permission.ContentTypesManage, s.handleContentTypePut))
+	mux.HandleFunc("DELETE /api/v0/content-types/{name}", s.requireCapability(permission.ContentTypesManage, s.handleContentTypeDelete))
+
 	// Authentication (slice 1.7).
 	mux.HandleFunc("POST /api/v0/auth/login", s.handleLogin)
 	mux.HandleFunc("POST /api/v0/auth/logout", s.handleLogout)

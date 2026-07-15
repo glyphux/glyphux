@@ -23,10 +23,11 @@ type Client struct {
 	httpClient *http.Client
 	token      string
 
-	Auth    *AuthService
-	Content *ContentService
-	Media   *MediaService
-	Users   *UsersService
+	Auth         *AuthService
+	Content      *ContentService
+	ContentTypes *ContentTypesService
+	Media        *MediaService
+	Users        *UsersService
 }
 
 // New builds a Client against baseURL (e.g. "http://localhost:8080"), with
@@ -42,6 +43,7 @@ func New(baseURL string, opts ...Option) *Client {
 	}
 	c.Auth = &AuthService{c: c}
 	c.Content = &ContentService{c: c}
+	c.ContentTypes = &ContentTypesService{c: c}
 	c.Media = &MediaService{c: c}
 	c.Users = &UsersService{c: c}
 	return c

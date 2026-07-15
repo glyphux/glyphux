@@ -281,6 +281,15 @@ func (a *API) Update(ctx context.Context, typeName, id string, data map[string]a
 }
 
 // Delete removes an item, returning ErrNotFound if it does not exist.
+// CountItems reports how many items of typeName exist, regardless of their
+// publish status. It deliberately does not require typeName to be a
+// currently-declared content type, so callers (e.g. the content-type
+// deletion guard) can check for orphaned items even after a type has been
+// removed from the composition.
+func (a *API) CountItems(ctx context.Context, typeName string) (int, error) {
+	return a.items.countByType(ctx, typeName)
+}
+
 func (a *API) Delete(ctx context.Context, typeName, id string) error {
 	if _, err := a.contentType(ctx, typeName); err != nil {
 		return err

@@ -1,5 +1,6 @@
 import { AuthResource } from "./auth.js";
 import { ContentResource } from "./content.js";
+import { ContentTypesResource } from "./content-types.js";
 import { HttpClient } from "./http.js";
 import { MediaResource } from "./media.js";
 import { UsersResource } from "./users.js";
@@ -18,6 +19,7 @@ export class GlyphuxClient {
   private readonly http: HttpClient;
   readonly auth: AuthResource;
   readonly content: ContentResource;
+  readonly contentTypes: ContentTypesResource;
   readonly media: MediaResource;
   readonly users: UsersResource;
 
@@ -25,6 +27,7 @@ export class GlyphuxClient {
     this.http = new HttpClient(options.baseUrl, options.token);
     this.auth = new AuthResource(this.http);
     this.content = new ContentResource(this.http);
+    this.contentTypes = new ContentTypesResource(this.http);
     this.media = new MediaResource(this.http);
     this.users = new UsersResource(this.http);
   }

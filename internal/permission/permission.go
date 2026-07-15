@@ -13,6 +13,11 @@ const (
 	ContentPublish    Capability = "content:publish"
 	MediaWrite        Capability = "media:write"
 	UsersManage       Capability = "users:manage"
+	// ContentTypesManage gates defining, updating, and deleting content
+	// types themselves (as opposed to content:write, which gates items of
+	// an already-declared type) — a structural, site-wide schema change,
+	// held only by admin.
+	ContentTypesManage Capability = "content_types:manage"
 )
 
 // Roles known to v1's fixed capability matrix.
@@ -27,6 +32,7 @@ var roleCapabilities = map[string]map[Capability]bool{
 	RoleAdmin: {
 		ContentRead: true, ContentReadDrafts: true, ContentWrite: true,
 		ContentPublish: true, MediaWrite: true, UsersManage: true,
+		ContentTypesManage: true,
 	},
 	RoleEditor: {
 		ContentRead: true, ContentReadDrafts: true, ContentWrite: true, MediaWrite: true,
