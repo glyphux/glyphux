@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/glyphux/glyphux/internal/adminui"
 	"github.com/glyphux/glyphux/internal/api"
 	"github.com/glyphux/glyphux/internal/setup"
 )
@@ -62,6 +63,14 @@ func Handler(apiServer *api.Server, wizard *setup.Wizard, graphqlHandler ...http
 		mux.Handle("POST /graphql", graphqlHandler[0])
 	}
 
+	// The admin shell (PRD §5.6 Surface 2) is mounted on this same
+	// long-lived mux, so — same reasoning as the root redirect below — it
+	// must be gated on first-run setup having completed. Without the gate
+	// it would be reachable (serving a broken, data-less UI) before /setup
+	// ever runs, since bootstrap only swaps which *database* this mux is
+	// wired to, never which routes exist.
+	mux.Handle("GET /admin/", requireSetupComplete(wizard, http.StripPrefix("/admin", adminui.Handler())))
+
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		if !wizard.Complete() {
 			http.Redirect(w, r, "/setup", http.StatusTemporaryRedirect)
@@ -70,6 +79,18 @@ func Handler(apiServer *api.Server, wizard *setup.Wizard, graphqlHandler ...http
 		http.Redirect(w, r, "/api/v0/content/ping", http.StatusTemporaryRedirect)
 	})
 	return limitBody(securityHeaders(mux))
+}
+
+// requireSetupComplete gates next behind first-run setup having completed,
+// mirroring the root route's own redirect-to-/setup behavior (§6.2).
+func requireSetupComplete(wizard *setup.Wizard, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !wizard.Complete() {
+			http.Redirect(w, r, "/setup", http.StatusTemporaryRedirect)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // limitBody caps every request body at maxRequestBodyBytes. A handler that

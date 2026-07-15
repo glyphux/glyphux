@@ -7,13 +7,18 @@ import type { ContentType } from "./types.js";
 export class ContentTypesResource {
   constructor(private readonly http: HttpClient) {}
 
-  /** Returns every currently declared content type. */
+  /** Returns every currently declared content type, or an empty object if
+   * none are declared yet. (internal/api/contenttypes.go serializes a fresh
+   * install's unset composition.ContentTypes — a nil Go map — as JSON
+   * `null` rather than `{}`; this normalizes that so callers can always
+   * treat the result as a plain, iterable record instead of special-casing
+   * null on every call site.) */
   async list(): Promise<Record<string, ContentType>> {
-    const { content_types } = await this.http.requestJSON<{ content_types: Record<string, ContentType> }>(
+    const { content_types } = await this.http.requestJSON<{ content_types: Record<string, ContentType> | null }>(
       "GET",
       "/api/v0/content-types",
     );
-    return content_types;
+    return content_types ?? {};
   }
 
   /** Creates a new content type or replaces an existing one's field set. */
