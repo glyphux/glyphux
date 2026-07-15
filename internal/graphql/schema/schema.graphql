@@ -29,6 +29,26 @@ type ContentVersion {
   createdAt: String!
 }
 
+type Mutation {
+  "Create a draft item (mirrors POST /api/v0/content/{type}; requires content:write)."
+  createContentItem(type: String!, data: Map!): ContentItem!
+
+  "Replace an item's data, recording a new version (requires content:write)."
+  updateContentItem(type: String!, id: String!, data: Map!): ContentItem!
+
+  "Delete an item (requires content:write)."
+  deleteContentItem(type: String!, id: String!): Boolean!
+
+  "Publish a draft item (requires content:publish)."
+  publishContentItem(type: String!, id: String!): ContentItem!
+
+  "Revert a published item to draft (requires content:publish)."
+  unpublishContentItem(type: String!, id: String!): ContentItem!
+
+  "Restore an item's data to an earlier version (requires content:write)."
+  rollbackContentItem(type: String!, id: String!, version: Int!): ContentItem!
+}
+
 "A single piece of content: a typed, identified JSON document."
 type ContentItem {
   id: String!

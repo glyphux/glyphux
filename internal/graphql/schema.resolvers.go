@@ -9,7 +9,87 @@ import (
 	"context"
 
 	"github.com/glyphux/glyphux/internal/graphql/generated"
+	"github.com/glyphux/glyphux/internal/permission"
 )
+
+// CreateContentItem is the resolver for the createContentItem field. It
+// mirrors handleContentCreate in internal/api/api.go: requires
+// content:write, same as REST.
+func (r *mutationResolver) CreateContentItem(ctx context.Context, typeArg string, data map[string]any) (*generated.ContentItem, error) {
+	if _, err := requireCapability(ctx, permission.ContentWrite); err != nil {
+		return nil, err
+	}
+	item, err := r.content.Create(ctx, typeArg, data)
+	if err != nil {
+		return nil, r.mapContentError(err)
+	}
+	return contentItemModel(item), nil
+}
+
+// UpdateContentItem is the resolver for the updateContentItem field. It
+// mirrors handleContentUpdate: requires content:write.
+func (r *mutationResolver) UpdateContentItem(ctx context.Context, typeArg string, id string, data map[string]any) (*generated.ContentItem, error) {
+	if _, err := requireCapability(ctx, permission.ContentWrite); err != nil {
+		return nil, err
+	}
+	item, err := r.content.Update(ctx, typeArg, id, data)
+	if err != nil {
+		return nil, r.mapContentError(err)
+	}
+	return contentItemModel(item), nil
+}
+
+// DeleteContentItem is the resolver for the deleteContentItem field. It
+// mirrors handleContentDelete: requires content:write.
+func (r *mutationResolver) DeleteContentItem(ctx context.Context, typeArg string, id string) (bool, error) {
+	if _, err := requireCapability(ctx, permission.ContentWrite); err != nil {
+		return false, err
+	}
+	if err := r.content.Delete(ctx, typeArg, id); err != nil {
+		return false, r.mapContentError(err)
+	}
+	return true, nil
+}
+
+// PublishContentItem is the resolver for the publishContentItem field. It
+// mirrors handleContentPublish: requires content:publish, which — unlike
+// content:write — editor does NOT hold (see internal/permission).
+func (r *mutationResolver) PublishContentItem(ctx context.Context, typeArg string, id string) (*generated.ContentItem, error) {
+	if _, err := requireCapability(ctx, permission.ContentPublish); err != nil {
+		return nil, err
+	}
+	item, err := r.content.Publish(ctx, typeArg, id)
+	if err != nil {
+		return nil, r.mapContentError(err)
+	}
+	return contentItemModel(item), nil
+}
+
+// UnpublishContentItem is the resolver for the unpublishContentItem field.
+// It mirrors handleContentUnpublish: requires content:publish.
+func (r *mutationResolver) UnpublishContentItem(ctx context.Context, typeArg string, id string) (*generated.ContentItem, error) {
+	if _, err := requireCapability(ctx, permission.ContentPublish); err != nil {
+		return nil, err
+	}
+	item, err := r.content.Unpublish(ctx, typeArg, id)
+	if err != nil {
+		return nil, r.mapContentError(err)
+	}
+	return contentItemModel(item), nil
+}
+
+// RollbackContentItem is the resolver for the rollbackContentItem field. It
+// mirrors handleContentRollback: requires content:write.
+func (r *mutationResolver) RollbackContentItem(ctx context.Context, typeArg string, id string, version int) (*generated.ContentItem, error) {
+	if _, err := requireCapability(ctx, permission.ContentWrite); err != nil {
+		return nil, err
+	}
+	item, err := r.content.Rollback(ctx, typeArg, id, version)
+	if err != nil {
+		return nil, r.mapContentError(err)
+	}
+	return contentItemModel(item), nil
+}
 
 // ContentTypes is the resolver for the contentTypes field. It mirrors GET
 // /api/v0/content-types — publicly readable, no capability required.
@@ -67,7 +147,13 @@ func (r *queryResolver) ContentVersions(ctx context.Context, typeArg string, id 
 	return out, nil
 }
 
+// Mutation returns generated.MutationResolver implementation.
+func (r *Resolver) Mutation() generated.MutationResolver { return &mutationResolver{r} }
+
 // Query returns generated.QueryResolver implementation.
 func (r *Resolver) Query() generated.QueryResolver { return &queryResolver{r} }
 
-type queryResolver struct{ *Resolver }
+type (
+	mutationResolver struct{ *Resolver }
+	queryResolver    struct{ *Resolver }
+)

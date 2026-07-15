@@ -75,6 +75,44 @@ func testServer(t *testing.T) (http.Handler, testDeps) {
 	return mux, testDeps{identities: identities, sessions: sessions, content: contentAPI}
 }
 
+// loginAdmin creates (if needed) and authenticates the standard admin
+// fixture, returning a bearer token for it.
+func loginAdmin(t *testing.T, deps testDeps) string {
+	t.Helper()
+	ctx := context.Background()
+	const email, password = "admin@example.com", "correct horse battery"
+	if _, err := deps.identities.Authenticate(ctx, email, password); err != nil {
+		if err := deps.identities.CreateAdmin(ctx, email, password); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return loginRole(t, deps, email, "" /* role ignored; account already exists */)
+}
+
+// loginRole creates an account with the given role (if it doesn't already
+// exist) and returns a bearer token for it. A blank role is used only for
+// an account loginAdmin already created.
+func loginRole(t *testing.T, deps testDeps, email, role string) string {
+	t.Helper()
+	ctx := context.Background()
+	const password = "correct horse battery"
+	u, err := deps.identities.Authenticate(ctx, email, password)
+	if err != nil {
+		if role == "" {
+			t.Fatalf("expected account %s to already exist: %v", email, err)
+		}
+		u, err = deps.identities.CreateUser(ctx, email, password, role)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	sess, err := deps.sessions.Create(ctx, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sess.Token
+}
+
 // gqlResponse is the standard GraphQL response envelope.
 type gqlResponse struct {
 	Data   map[string]any `json:"data"`
@@ -237,6 +275,190 @@ func TestContentVersionsQueryReturnsHistory(t *testing.T) {
 	versions, ok := resp.Data["contentVersions"].([]any)
 	if !ok || len(versions) != 2 {
 		t.Fatalf("contentVersions = %v, want 2 entries", resp.Data["contentVersions"])
+	}
+}
+
+func TestCreateContentItemMutationRequiresContentWrite(t *testing.T) {
+	h, deps := testServer(t)
+	ctx := context.Background()
+	if err := deps.identities.CreateAdmin(ctx, "admin@example.com", "correct horse battery"); err != nil {
+		t.Fatal(err)
+	}
+	admin, _ := deps.identities.Authenticate(ctx, "admin@example.com", "correct horse battery")
+	sess, err := deps.sessions.Create(ctx, admin.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const mutation = `mutation($data: Map!) {
+		createContentItem(type: "article", data: $data) { id status data }
+	}`
+	variables := map[string]any{"data": map[string]any{"title": "New", "body": "x"}}
+
+	// Admin (holds content:write) succeeds.
+	_, resp := doGraphQL(t, h, sess.Token, mutation, variables)
+	if len(resp.Errors) != 0 {
+		t.Fatalf("admin create errors = %v", resp.Errors)
+	}
+	created, ok := resp.Data["createContentItem"].(map[string]any)
+	if !ok || created["status"] != "draft" {
+		t.Fatalf("createContentItem = %v, want status=draft", resp.Data["createContentItem"])
+	}
+
+	// Anonymous is rejected with UNAUTHENTICATED.
+	_, resp = doGraphQL(t, h, "", mutation, variables)
+	if len(resp.Errors) != 1 || resp.Errors[0].Extensions["code"] != "UNAUTHENTICATED" {
+		t.Fatalf("anonymous create errors = %v, want 1 UNAUTHENTICATED", resp.Errors)
+	}
+
+	// A viewer (holds content:read only, not content:write) is rejected
+	// with FORBIDDEN — proves the capability gate, not just presence of a
+	// valid session.
+	if _, err := deps.identities.CreateUser(ctx, "viewer@example.com", "correct horse battery", "viewer"); err != nil {
+		t.Fatal(err)
+	}
+	viewer, _ := deps.identities.Authenticate(ctx, "viewer@example.com", "correct horse battery")
+	viewerSess, err := deps.sessions.Create(ctx, viewer.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, resp = doGraphQL(t, h, viewerSess.Token, mutation, variables)
+	if len(resp.Errors) != 1 || resp.Errors[0].Extensions["code"] != "FORBIDDEN" {
+		t.Fatalf("viewer create errors = %v, want 1 FORBIDDEN", resp.Errors)
+	}
+}
+
+func TestUpdateContentItemMutation(t *testing.T) {
+	h, deps := testServer(t)
+	ctx := context.Background()
+	item, err := deps.content.Create(ctx, "article", map[string]any{"title": "Old", "body": "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminToken := loginAdmin(t, deps)
+
+	const mutation = `mutation($id: String!, $data: Map!) {
+		updateContentItem(type: "article", id: $id, data: $data) { id version data }
+	}`
+	variables := map[string]any{"id": item.ID, "data": map[string]any{"title": "New", "body": "x"}}
+
+	_, resp := doGraphQL(t, h, adminToken, mutation, variables)
+	if len(resp.Errors) != 0 {
+		t.Fatalf("errors = %v", resp.Errors)
+	}
+	updated, ok := resp.Data["updateContentItem"].(map[string]any)
+	if !ok {
+		t.Fatalf("updateContentItem = %v", resp.Data["updateContentItem"])
+	}
+	data, _ := updated["data"].(map[string]any)
+	if data["title"] != "New" {
+		t.Errorf("updated data = %v, want title=New", data)
+	}
+
+	// Editor lacks content:write? No — editor holds content:write. Use
+	// viewer instead to prove the gate.
+	viewerToken := loginRole(t, deps, "viewer2@example.com", "viewer")
+	_, resp = doGraphQL(t, h, viewerToken, mutation, variables)
+	if len(resp.Errors) != 1 || resp.Errors[0].Extensions["code"] != "FORBIDDEN" {
+		t.Fatalf("viewer update errors = %v, want 1 FORBIDDEN", resp.Errors)
+	}
+}
+
+func TestDeleteContentItemMutation(t *testing.T) {
+	h, deps := testServer(t)
+	ctx := context.Background()
+	item, err := deps.content.Create(ctx, "article", map[string]any{"title": "Gone", "body": "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminToken := loginAdmin(t, deps)
+
+	const mutation = `mutation($id: String!) { deleteContentItem(type: "article", id: $id) }`
+	_, resp := doGraphQL(t, h, adminToken, mutation, map[string]any{"id": item.ID})
+	if len(resp.Errors) != 0 {
+		t.Fatalf("errors = %v", resp.Errors)
+	}
+	if resp.Data["deleteContentItem"] != true {
+		t.Fatalf("deleteContentItem = %v, want true", resp.Data["deleteContentItem"])
+	}
+	if _, err := deps.content.Get(ctx, "article", item.ID); err == nil {
+		t.Error("item still exists after delete")
+	}
+}
+
+// TestPublishContentItemMutationRequiresContentPublish proves the
+// publish/unpublish capability boundary the task explicitly calls out: an
+// editor holds content:write but NOT content:publish (see
+// internal/permission/permission.go's roleCapabilities matrix), so an
+// editor attempting to publish must be rejected even though the same editor
+// can create/update/delete content freely.
+func TestPublishContentItemMutationRequiresContentPublish(t *testing.T) {
+	h, deps := testServer(t)
+	ctx := context.Background()
+	item, err := deps.content.Create(ctx, "article", map[string]any{"title": "Draft", "body": "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminToken := loginAdmin(t, deps)
+	editorToken := loginRole(t, deps, "editor@example.com", "editor")
+
+	const publishMutation = `mutation($id: String!) { publishContentItem(type: "article", id: $id) { status } }`
+
+	// Editor is rejected — holds content:write but not content:publish.
+	_, resp := doGraphQL(t, h, editorToken, publishMutation, map[string]any{"id": item.ID})
+	if len(resp.Errors) != 1 || resp.Errors[0].Extensions["code"] != "FORBIDDEN" {
+		t.Fatalf("editor publish errors = %v, want 1 FORBIDDEN", resp.Errors)
+	}
+
+	// Admin succeeds.
+	_, resp = doGraphQL(t, h, adminToken, publishMutation, map[string]any{"id": item.ID})
+	if len(resp.Errors) != 0 {
+		t.Fatalf("admin publish errors = %v", resp.Errors)
+	}
+	published, _ := resp.Data["publishContentItem"].(map[string]any)
+	if published["status"] != "published" {
+		t.Fatalf("status after publish = %v, want published", published["status"])
+	}
+
+	// Unpublish reverts it, same capability gate.
+	const unpublishMutation = `mutation($id: String!) { unpublishContentItem(type: "article", id: $id) { status } }`
+	_, resp = doGraphQL(t, h, editorToken, unpublishMutation, map[string]any{"id": item.ID})
+	if len(resp.Errors) != 1 || resp.Errors[0].Extensions["code"] != "FORBIDDEN" {
+		t.Fatalf("editor unpublish errors = %v, want 1 FORBIDDEN", resp.Errors)
+	}
+	_, resp = doGraphQL(t, h, adminToken, unpublishMutation, map[string]any{"id": item.ID})
+	if len(resp.Errors) != 0 {
+		t.Fatalf("admin unpublish errors = %v", resp.Errors)
+	}
+	unpublished, _ := resp.Data["unpublishContentItem"].(map[string]any)
+	if unpublished["status"] != "draft" {
+		t.Fatalf("status after unpublish = %v, want draft", unpublished["status"])
+	}
+}
+
+func TestRollbackContentItemMutation(t *testing.T) {
+	h, deps := testServer(t)
+	ctx := context.Background()
+	item, err := deps.content.Create(ctx, "article", map[string]any{"title": "V1", "body": "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := deps.content.Update(ctx, "article", item.ID, map[string]any{"title": "V2", "body": "x"}); err != nil {
+		t.Fatal(err)
+	}
+	adminToken := loginAdmin(t, deps)
+
+	const mutation = `mutation($id: String!, $version: Int!) {
+		rollbackContentItem(type: "article", id: $id, version: $version) { data }
+	}`
+	_, resp := doGraphQL(t, h, adminToken, mutation, map[string]any{"id": item.ID, "version": 1})
+	if len(resp.Errors) != 0 {
+		t.Fatalf("errors = %v", resp.Errors)
+	}
+	rolled, _ := resp.Data["rollbackContentItem"].(map[string]any)
+	data, _ := rolled["data"].(map[string]any)
+	if data["title"] != "V1" {
+		t.Fatalf("rollback data = %v, want title=V1", data)
 	}
 }
 

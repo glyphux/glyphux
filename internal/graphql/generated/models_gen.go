@@ -37,5 +37,8 @@ type FieldDef struct {
 	To *string `json:"to,omitempty"`
 }
 
+type Mutation struct {
+}
+
 type Query struct {
 }
