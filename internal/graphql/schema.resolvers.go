@@ -128,6 +128,18 @@ func (r *mutationResolver) RemoveContentType(ctx context.Context, name string) (
 	return true, nil
 }
 
+// DeleteMediaItem is the resolver for the deleteMediaItem field. It mirrors
+// handleMediaDelete in internal/api/media.go: requires media:write.
+func (r *mutationResolver) DeleteMediaItem(ctx context.Context, id string) (bool, error) {
+	if _, err := requireCapability(ctx, permission.MediaWrite); err != nil {
+		return false, err
+	}
+	if err := r.media.Delete(ctx, id); err != nil {
+		return false, r.mapMediaError(err)
+	}
+	return true, nil
+}
+
 // ContentTypes is the resolver for the contentTypes field. It mirrors GET
 // /api/v0/content-types — publicly readable, no capability required.
 func (r *queryResolver) ContentTypes(ctx context.Context) ([]*generated.ContentTypeDef, error) {
@@ -180,6 +192,30 @@ func (r *queryResolver) ContentVersions(ctx context.Context, typeArg string, id 
 			Status:    v.Status,
 			CreatedAt: formatTime(v.CreatedAt),
 		}
+	}
+	return out, nil
+}
+
+// MediaItem is the resolver for the mediaItem field. It mirrors
+// handleMediaGet — publicly readable, like REST.
+func (r *queryResolver) MediaItem(ctx context.Context, id string) (*generated.MediaItem, error) {
+	item, err := r.media.Get(ctx, id)
+	if err != nil {
+		return nil, r.mapMediaError(err)
+	}
+	return mediaItemModel(item), nil
+}
+
+// MediaItems is the resolver for the mediaItems field. It mirrors
+// handleMediaList — publicly readable, like REST.
+func (r *queryResolver) MediaItems(ctx context.Context) ([]*generated.MediaItem, error) {
+	items, err := r.media.List(ctx)
+	if err != nil {
+		return nil, r.mapMediaError(err)
+	}
+	out := make([]*generated.MediaItem, len(items))
+	for i, item := range items {
+		out[i] = mediaItemModel(item)
 	}
 	return out, nil
 }

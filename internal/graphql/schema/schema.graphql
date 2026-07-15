@@ -19,6 +19,29 @@ type Query {
 
   "An item's version history, oldest first (mirrors GET .../versions)."
   contentVersions(type: String!, id: String!): [ContentVersion!]!
+
+  "A single media asset (mirrors GET /api/v0/media/{id})."
+  mediaItem(id: String!): MediaItem
+
+  "Every stored media asset (mirrors GET /api/v0/media)."
+  mediaItems: [MediaItem!]!
+}
+
+"""
+A stored media asset and its metadata. Upload is intentionally not exposed
+over GraphQL (see the tracking doc) — it is inherently multipart/binary and
+REST already covers it at POST /api/v0/media.
+"""
+type MediaItem {
+  id: String!
+  filename: String!
+  mimeType: String!
+  sizeBytes: Int!
+  width: Int!
+  height: Int!
+  altText: String!
+  createdAt: String!
+  updatedAt: String!
 }
 
 "One immutable historical snapshot of a content item."
@@ -60,6 +83,9 @@ type Mutation {
   exist.
   """
   removeContentType(name: String!): Boolean!
+
+  "Delete a media asset (mirrors DELETE /api/v0/media/{id}; requires media:write)."
+  deleteMediaItem(id: String!): Boolean!
 }
 
 "Input shape for one field of a content type definition."

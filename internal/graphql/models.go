@@ -10,6 +10,7 @@ import (
 
 	"github.com/glyphux/glyphux/internal/content"
 	"github.com/glyphux/glyphux/internal/graphql/generated"
+	"github.com/glyphux/glyphux/internal/media"
 	"github.com/glyphux/glyphux/pkg/contract"
 )
 
@@ -61,6 +62,21 @@ func contentTypeDef(name string, ct contract.ContentType) *generated.ContentType
 		fields = append(fields, fieldDef(fname, ct.Fields[fname]))
 	}
 	return &generated.ContentTypeDef{Name: name, Fields: fields}
+}
+
+// mediaItemModel converts a media.Item to its GraphQL model.
+func mediaItemModel(item *media.Item) *generated.MediaItem {
+	return &generated.MediaItem{
+		ID:        item.ID,
+		Filename:  item.Filename,
+		MimeType:  item.MimeType,
+		SizeBytes: int(item.SizeBytes),
+		Width:     item.Width,
+		Height:    item.Height,
+		AltText:   item.AltText,
+		CreatedAt: formatTime(item.CreatedAt),
+		UpdatedAt: formatTime(item.UpdatedAt),
+	}
 }
 
 // contentTypeFromInput converts GraphQL FieldInput values to a

@@ -32,6 +32,7 @@ type testDeps struct {
 	identities *identity.Service
 	sessions   *identity.Sessions
 	content    *content.API
+	media      *media.API
 }
 
 // testServer boots a real sqlite-backed server with the GraphQL endpoint
@@ -72,7 +73,7 @@ func testServer(t *testing.T) (http.Handler, testDeps) {
 	resolver := glyphqlgraphql.NewResolver(comps, contentAPI, mediaAPI, identities, sessions, log)
 	mux := http.NewServeMux()
 	mux.Handle("POST /graphql", glyphqlgraphql.NewHandler(resolver))
-	return mux, testDeps{identities: identities, sessions: sessions, content: contentAPI}
+	return mux, testDeps{identities: identities, sessions: sessions, content: contentAPI, media: mediaAPI}
 }
 
 // loginAdmin creates (if needed) and authenticates the standard admin
@@ -550,6 +551,61 @@ func TestRemoveContentTypeMutationRemovesEmptyType(t *testing.T) {
 	}
 	if resp.Data["removeContentType"] != true {
 		t.Fatalf("removeContentType = %v, want true", resp.Data["removeContentType"])
+	}
+}
+
+func TestMediaQueriesArePublicAndDeleteRequiresMediaWrite(t *testing.T) {
+	h, deps := testServer(t)
+	ctx := context.Background()
+	// A tiny valid PNG (1x1 transparent pixel).
+	png := []byte{
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+		0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00,
+		0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+		0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49,
+		0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+	}
+	item, err := deps.media.Upload(ctx, "pixel.png", "image/png", png)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const getQuery = `query($id: String!) { mediaItem(id: $id) { id filename mimeType } }`
+	_, resp := doGraphQL(t, h, "", getQuery, map[string]any{"id": item.ID})
+	if len(resp.Errors) != 0 {
+		t.Fatalf("mediaItem errors = %v", resp.Errors)
+	}
+	got, ok := resp.Data["mediaItem"].(map[string]any)
+	if !ok || got["id"] != item.ID {
+		t.Fatalf("mediaItem = %v, want id=%s", resp.Data["mediaItem"], item.ID)
+	}
+
+	const listQuery = `{ mediaItems { id } }`
+	_, resp = doGraphQL(t, h, "", listQuery, nil)
+	if len(resp.Errors) != 0 {
+		t.Fatalf("mediaItems errors = %v", resp.Errors)
+	}
+	items, _ := resp.Data["mediaItems"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("mediaItems = %v, want 1", items)
+	}
+
+	// Delete: viewer is rejected (no media:write), admin succeeds.
+	const deleteMutation = `mutation($id: String!) { deleteMediaItem(id: $id) }`
+	viewerToken := loginRole(t, deps, "viewer4@example.com", "viewer")
+	_, resp = doGraphQL(t, h, viewerToken, deleteMutation, map[string]any{"id": item.ID})
+	if len(resp.Errors) != 1 || resp.Errors[0].Extensions["code"] != "FORBIDDEN" {
+		t.Fatalf("viewer delete errors = %v, want 1 FORBIDDEN", resp.Errors)
+	}
+
+	adminToken := loginAdmin(t, deps)
+	_, resp = doGraphQL(t, h, adminToken, deleteMutation, map[string]any{"id": item.ID})
+	if len(resp.Errors) != 0 {
+		t.Fatalf("admin delete errors = %v", resp.Errors)
+	}
+	if resp.Data["deleteMediaItem"] != true {
+		t.Fatalf("deleteMediaItem = %v, want true", resp.Data["deleteMediaItem"])
 	}
 }
 
