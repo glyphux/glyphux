@@ -49,6 +49,13 @@ type ComplexityRoot struct {
 		Name   func(childComplexity int) int
 	}
 
+	ContentVersion struct {
+		CreatedAt func(childComplexity int) int
+		Data      func(childComplexity int) int
+		Status    func(childComplexity int) int
+		Version   func(childComplexity int) int
+	}
+
 	FieldDef struct {
 		Localized func(childComplexity int) int
 		Name      func(childComplexity int) int
@@ -58,8 +65,10 @@ type ComplexityRoot struct {
 	}
 
 	Query struct {
-		ContentItem  func(childComplexity int, typeArg string, id string, locale *string) int
-		ContentTypes func(childComplexity int) int
+		ContentItem     func(childComplexity int, typeArg string, id string, locale *string) int
+		ContentItems    func(childComplexity int, typeArg string, locale *string) int
+		ContentTypes    func(childComplexity int) int
+		ContentVersions func(childComplexity int, typeArg string, id string) int
 	}
 }
 
@@ -70,6 +79,8 @@ type ComplexityRoot struct {
 type QueryResolver interface {
 	ContentTypes(ctx context.Context) ([]*ContentTypeDef, error)
 	ContentItem(ctx context.Context, typeArg string, id string, locale *string) (*ContentItem, error)
+	ContentItems(ctx context.Context, typeArg string, locale *string) ([]*ContentItem, error)
+	ContentVersions(ctx context.Context, typeArg string, id string) ([]*ContentVersion, error)
 }
 
 // endregion ************************** generated!.gotpl **************************
@@ -146,6 +157,31 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 
 		return e.ComplexityRoot.ContentTypeDef.Name(childComplexity), true
 
+	case "ContentVersion.createdAt":
+		if e.ComplexityRoot.ContentVersion.CreatedAt == nil {
+			break
+		}
+
+		return e.ComplexityRoot.ContentVersion.CreatedAt(childComplexity), true
+	case "ContentVersion.data":
+		if e.ComplexityRoot.ContentVersion.Data == nil {
+			break
+		}
+
+		return e.ComplexityRoot.ContentVersion.Data(childComplexity), true
+	case "ContentVersion.status":
+		if e.ComplexityRoot.ContentVersion.Status == nil {
+			break
+		}
+
+		return e.ComplexityRoot.ContentVersion.Status(childComplexity), true
+	case "ContentVersion.version":
+		if e.ComplexityRoot.ContentVersion.Version == nil {
+			break
+		}
+
+		return e.ComplexityRoot.ContentVersion.Version(childComplexity), true
+
 	case "FieldDef.localized":
 		if e.ComplexityRoot.FieldDef.Localized == nil {
 			break
@@ -188,12 +224,34 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.ComplexityRoot.Query.ContentItem(childComplexity, args["type"].(string), args["id"].(string), args["locale"].(*string)), true
+	case "Query.contentItems":
+		if e.ComplexityRoot.Query.ContentItems == nil {
+			break
+		}
+
+		args, err := ec.field_Query_contentItems_args(ctx, rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.ComplexityRoot.Query.ContentItems(childComplexity, args["type"].(string), args["locale"].(*string)), true
 	case "Query.contentTypes":
 		if e.ComplexityRoot.Query.ContentTypes == nil {
 			break
 		}
 
 		return e.ComplexityRoot.Query.ContentTypes(childComplexity), true
+	case "Query.contentVersions":
+		if e.ComplexityRoot.Query.ContentVersions == nil {
+			break
+		}
+
+		args, err := ec.field_Query_contentVersions_args(ctx, rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.ComplexityRoot.Query.ContentVersions(childComplexity, args["type"].(string), args["id"].(string)), true
 
 	}
 	return 0, false
@@ -277,6 +335,20 @@ type Query {
   sees published items only.
   """
   contentItem(type: String!, id: String!, locale: String): ContentItem
+
+  "All items of a type (mirrors GET /api/v0/content/{type})."
+  contentItems(type: String!, locale: String): [ContentItem!]!
+
+  "An item's version history, oldest first (mirrors GET .../versions)."
+  contentVersions(type: String!, id: String!): [ContentVersion!]!
+}
+
+"One immutable historical snapshot of a content item."
+type ContentVersion {
+  version: Int!
+  data: Map!
+  status: String!
+  createdAt: String!
 }
 
 "A single piece of content: a typed, identified JSON document."
@@ -343,6 +415,20 @@ func (ec *executionContext) childFields_ContentTypeDef(ctx context.Context, fiel
 		return ec.fieldContext_ContentTypeDef_fields(ctx, field)
 	}
 	return nil, fmt.Errorf("no field named %q was found under type ContentTypeDef", field.Name)
+}
+
+func (ec *executionContext) childFields_ContentVersion(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+	switch field.Name {
+	case "version":
+		return ec.fieldContext_ContentVersion_version(ctx, field)
+	case "data":
+		return ec.fieldContext_ContentVersion_data(ctx, field)
+	case "status":
+		return ec.fieldContext_ContentVersion_status(ctx, field)
+	case "createdAt":
+		return ec.fieldContext_ContentVersion_createdAt(ctx, field)
+	}
+	return nil, fmt.Errorf("no field named %q was found under type ContentVersion", field.Name)
 }
 
 func (ec *executionContext) childFields_FieldDef(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
@@ -518,6 +604,50 @@ func (ec *executionContext) field_Query_contentItem_args(ctx context.Context, ra
 		return nil, err
 	}
 	args["locale"] = arg2
+	return args, nil
+}
+
+func (ec *executionContext) field_Query_contentItems_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
+	var err error
+	args := map[string]any{}
+	arg0, err := graphql.ProcessArgField(ctx, rawArgs, "type",
+		func(ctx context.Context, v any) (string, error) {
+			return ec.unmarshalNString2string(ctx, v)
+		})
+	if err != nil {
+		return nil, err
+	}
+	args["type"] = arg0
+	arg1, err := graphql.ProcessArgField(ctx, rawArgs, "locale",
+		func(ctx context.Context, v any) (*string, error) {
+			return ec.unmarshalOString2ᚖstring(ctx, v)
+		})
+	if err != nil {
+		return nil, err
+	}
+	args["locale"] = arg1
+	return args, nil
+}
+
+func (ec *executionContext) field_Query_contentVersions_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
+	var err error
+	args := map[string]any{}
+	arg0, err := graphql.ProcessArgField(ctx, rawArgs, "type",
+		func(ctx context.Context, v any) (string, error) {
+			return ec.unmarshalNString2string(ctx, v)
+		})
+	if err != nil {
+		return nil, err
+	}
+	args["type"] = arg0
+	arg1, err := graphql.ProcessArgField(ctx, rawArgs, "id",
+		func(ctx context.Context, v any) (string, error) {
+			return ec.unmarshalNString2string(ctx, v)
+		})
+	if err != nil {
+		return nil, err
+	}
+	args["id"] = arg1
 	return args, nil
 }
 
@@ -797,6 +927,98 @@ func (ec *executionContext) fieldContext_ContentTypeDef_fields(_ context.Context
 	return fc, nil
 }
 
+func (ec *executionContext) _ContentVersion_version(ctx context.Context, field graphql.CollectedField, obj *ContentVersion) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_ContentVersion_version(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			return obj.Version, nil
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v int) graphql.Marshaler {
+			return ec.marshalNInt2int(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_ContentVersion_version(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	return graphql.NewScalarFieldContext("ContentVersion", field, false, false, errors.New("field of type Int does not have child fields"))
+}
+
+func (ec *executionContext) _ContentVersion_data(ctx context.Context, field graphql.CollectedField, obj *ContentVersion) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_ContentVersion_data(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			return obj.Data, nil
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v map[string]any) graphql.Marshaler {
+			return ec.marshalNMap2map(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_ContentVersion_data(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	return graphql.NewScalarFieldContext("ContentVersion", field, false, false, errors.New("field of type Map does not have child fields"))
+}
+
+func (ec *executionContext) _ContentVersion_status(ctx context.Context, field graphql.CollectedField, obj *ContentVersion) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_ContentVersion_status(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			return obj.Status, nil
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v string) graphql.Marshaler {
+			return ec.marshalNString2string(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_ContentVersion_status(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	return graphql.NewScalarFieldContext("ContentVersion", field, false, false, errors.New("field of type String does not have child fields"))
+}
+
+func (ec *executionContext) _ContentVersion_createdAt(ctx context.Context, field graphql.CollectedField, obj *ContentVersion) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_ContentVersion_createdAt(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			return obj.CreatedAt, nil
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v string) graphql.Marshaler {
+			return ec.marshalNString2string(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_ContentVersion_createdAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	return graphql.NewScalarFieldContext("ContentVersion", field, false, false, errors.New("field of type String does not have child fields"))
+}
+
 func (ec *executionContext) _FieldDef_name(ctx context.Context, field graphql.CollectedField, obj *FieldDef) (ret graphql.Marshaler) {
 	return graphql.ResolveField(
 		ctx,
@@ -982,6 +1204,94 @@ func (ec *executionContext) fieldContext_Query_contentItem(ctx context.Context, 
 	}()
 	ctx = graphql.WithFieldContext(ctx, fc)
 	if fc.Args, err = ec.field_Query_contentItem_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
+		ec.Error(ctx, err)
+		return fc, err
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _Query_contentItems(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_Query_contentItems(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			fc := graphql.GetFieldContext(ctx)
+			return ec.Resolvers.Query().ContentItems(ctx, fc.Args["type"].(string), fc.Args["locale"].(*string))
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v []*ContentItem) graphql.Marshaler {
+			return ec.marshalNContentItem2ᚕᚖgithubᚗcomᚋglyphuxᚋglyphuxᚋinternalᚋgraphqlᚋgeneratedᚐContentItemᚄ(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_Query_contentItems(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Query",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.childFields_ContentItem(ctx, field)
+		},
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = ec.Recover(ctx, r)
+			ec.Error(ctx, err)
+		}
+	}()
+	ctx = graphql.WithFieldContext(ctx, fc)
+	if fc.Args, err = ec.field_Query_contentItems_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
+		ec.Error(ctx, err)
+		return fc, err
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _Query_contentVersions(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_Query_contentVersions(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			fc := graphql.GetFieldContext(ctx)
+			return ec.Resolvers.Query().ContentVersions(ctx, fc.Args["type"].(string), fc.Args["id"].(string))
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v []*ContentVersion) graphql.Marshaler {
+			return ec.marshalNContentVersion2ᚕᚖgithubᚗcomᚋglyphuxᚋglyphuxᚋinternalᚋgraphqlᚋgeneratedᚐContentVersionᚄ(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_Query_contentVersions(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Query",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.childFields_ContentVersion(ctx, field)
+		},
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = ec.Recover(ctx, r)
+			ec.Error(ctx, err)
+		}
+	}()
+	ctx = graphql.WithFieldContext(ctx, fc)
+	if fc.Args, err = ec.field_Query_contentVersions_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
 		ec.Error(ctx, err)
 		return fc, err
 	}
@@ -2242,6 +2552,59 @@ func (ec *executionContext) _ContentTypeDef(ctx context.Context, sel ast.Selecti
 	return out
 }
 
+var contentVersionImplementors = []string{"ContentVersion"}
+
+func (ec *executionContext) _ContentVersion(ctx context.Context, sel ast.SelectionSet, obj *ContentVersion) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, contentVersionImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferredFieldSet := graphql.NewFieldSet(nil)
+	deferLabelToView := make(map[string]*graphql.FieldSetView)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("ContentVersion")
+		case "version":
+			out.Values[i] = ec._ContentVersion_version(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "data":
+			out.Values[i] = ec._ContentVersion_data(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "status":
+			out.Values[i] = ec._ContentVersion_status(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "createdAt":
+			out.Values[i] = ec._ContentVersion_createdAt(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.Deferred, int32(min(len(deferLabelToView), math.MaxInt32)))
+
+	ec.ProcessDeferredGroup(graphql.DeferredGroup{
+		Defers:   deferLabelToView,
+		Path:     graphql.GetPath(ctx),
+		FieldSet: deferredFieldSet,
+		Context:  ctx,
+	})
+
+	return out
+}
+
 var fieldDefImplementors = []string{"FieldDef"}
 
 func (ec *executionContext) _FieldDef(ctx context.Context, sel ast.SelectionSet, obj *FieldDef) graphql.Marshaler {
@@ -2353,6 +2716,50 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 				}()
 				res = ec._Query_contentItem(ctx, field)
 				if res == graphql.RequiredNull {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			rrm := func(ctx context.Context) graphql.Marshaler {
+				return ec.OperationContext.RootResolverMiddleware(ctx,
+					func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
+		case "contentItems":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._Query_contentItems(ctx, field)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			rrm := func(ctx context.Context) graphql.Marshaler {
+				return ec.OperationContext.RootResolverMiddleware(ctx,
+					func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
+		case "contentVersions":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._Query_contentVersions(ctx, field)
+				if res == graphql.Null {
 					atomic.AddUint32(&fs.Invalids, 1)
 				}
 				return res
@@ -2807,6 +3214,32 @@ func (ec *executionContext) marshalNBoolean2bool(ctx context.Context, sel ast.Se
 	return res
 }
 
+func (ec *executionContext) marshalNContentItem2ᚕᚖgithubᚗcomᚋglyphuxᚋglyphuxᚋinternalᚋgraphqlᚋgeneratedᚐContentItemᚄ(ctx context.Context, sel ast.SelectionSet, v []*ContentItem) graphql.Marshaler {
+	ret := graphql.MarshalSliceConcurrently(ctx, len(v), 0, false, func(ctx context.Context, i int) graphql.Marshaler {
+		fc := graphql.GetFieldContext(ctx)
+		fc.Result = &v[i]
+		return ec.marshalNContentItem2ᚖgithubᚗcomᚋglyphuxᚋglyphuxᚋinternalᚋgraphqlᚋgeneratedᚐContentItem(ctx, sel, v[i])
+	})
+
+	for _, e := range ret {
+		if e == graphql.Null {
+			return graphql.Null
+		}
+	}
+
+	return ret
+}
+
+func (ec *executionContext) marshalNContentItem2ᚖgithubᚗcomᚋglyphuxᚋglyphuxᚋinternalᚋgraphqlᚋgeneratedᚐContentItem(ctx context.Context, sel ast.SelectionSet, v *ContentItem) graphql.Marshaler {
+	if v == nil {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			graphql.AddErrorf(ctx, "the requested element is null which the schema does not allow")
+		}
+		return graphql.Null
+	}
+	return ec._ContentItem(ctx, sel, v)
+}
+
 func (ec *executionContext) marshalNContentTypeDef2ᚕᚖgithubᚗcomᚋglyphuxᚋglyphuxᚋinternalᚋgraphqlᚋgeneratedᚐContentTypeDefᚄ(ctx context.Context, sel ast.SelectionSet, v []*ContentTypeDef) graphql.Marshaler {
 	ret := graphql.MarshalSliceConcurrently(ctx, len(v), 0, false, func(ctx context.Context, i int) graphql.Marshaler {
 		fc := graphql.GetFieldContext(ctx)
@@ -2831,6 +3264,32 @@ func (ec *executionContext) marshalNContentTypeDef2ᚖgithubᚗcomᚋglyphuxᚋg
 		return graphql.Null
 	}
 	return ec._ContentTypeDef(ctx, sel, v)
+}
+
+func (ec *executionContext) marshalNContentVersion2ᚕᚖgithubᚗcomᚋglyphuxᚋglyphuxᚋinternalᚋgraphqlᚋgeneratedᚐContentVersionᚄ(ctx context.Context, sel ast.SelectionSet, v []*ContentVersion) graphql.Marshaler {
+	ret := graphql.MarshalSliceConcurrently(ctx, len(v), 0, false, func(ctx context.Context, i int) graphql.Marshaler {
+		fc := graphql.GetFieldContext(ctx)
+		fc.Result = &v[i]
+		return ec.marshalNContentVersion2ᚖgithubᚗcomᚋglyphuxᚋglyphuxᚋinternalᚋgraphqlᚋgeneratedᚐContentVersion(ctx, sel, v[i])
+	})
+
+	for _, e := range ret {
+		if e == graphql.Null {
+			return graphql.Null
+		}
+	}
+
+	return ret
+}
+
+func (ec *executionContext) marshalNContentVersion2ᚖgithubᚗcomᚋglyphuxᚋglyphuxᚋinternalᚋgraphqlᚋgeneratedᚐContentVersion(ctx context.Context, sel ast.SelectionSet, v *ContentVersion) graphql.Marshaler {
+	if v == nil {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			graphql.AddErrorf(ctx, "the requested element is null which the schema does not allow")
+		}
+		return graphql.Null
+	}
+	return ec._ContentVersion(ctx, sel, v)
 }
 
 func (ec *executionContext) marshalNFieldDef2ᚕᚖgithubᚗcomᚋglyphuxᚋglyphuxᚋinternalᚋgraphqlᚋgeneratedᚐFieldDefᚄ(ctx context.Context, sel ast.SelectionSet, v []*FieldDef) graphql.Marshaler {

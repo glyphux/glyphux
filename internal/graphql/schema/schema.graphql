@@ -13,6 +13,20 @@ type Query {
   sees published items only.
   """
   contentItem(type: String!, id: String!, locale: String): ContentItem
+
+  "All items of a type (mirrors GET /api/v0/content/{type})."
+  contentItems(type: String!, locale: String): [ContentItem!]!
+
+  "An item's version history, oldest first (mirrors GET .../versions)."
+  contentVersions(type: String!, id: String!): [ContentVersion!]!
+}
+
+"One immutable historical snapshot of a content item."
+type ContentVersion {
+  version: Int!
+  data: Map!
+  status: String!
+  createdAt: String!
 }
 
 "A single piece of content: a typed, identified JSON document."

@@ -33,6 +33,40 @@ func (r *queryResolver) ContentItem(ctx context.Context, typeArg string, id stri
 	return contentItemModel(item), nil
 }
 
+// ContentItems is the resolver for the contentItems field. It mirrors
+// handleContentList in internal/api/api.go.
+func (r *queryResolver) ContentItems(ctx context.Context, typeArg string, locale *string) ([]*generated.ContentItem, error) {
+	items, err := r.listContentItems(ctx, typeArg, locale)
+	if err != nil {
+		return nil, r.mapContentError(err)
+	}
+	out := make([]*generated.ContentItem, len(items))
+	for i, item := range items {
+		out[i] = contentItemModel(item)
+	}
+	return out, nil
+}
+
+// ContentVersions is the resolver for the contentVersions field. It mirrors
+// handleContentListVersions in internal/api/api.go — publicly readable,
+// like REST's GET .../versions.
+func (r *queryResolver) ContentVersions(ctx context.Context, typeArg string, id string) ([]*generated.ContentVersion, error) {
+	versions, err := r.content.ListVersions(ctx, typeArg, id)
+	if err != nil {
+		return nil, r.mapContentError(err)
+	}
+	out := make([]*generated.ContentVersion, len(versions))
+	for i, v := range versions {
+		out[i] = &generated.ContentVersion{
+			Version:   v.Version,
+			Data:      v.Data,
+			Status:    v.Status,
+			CreatedAt: formatTime(v.CreatedAt),
+		}
+	}
+	return out, nil
+}
+
 // Query returns generated.QueryResolver implementation.
 func (r *Resolver) Query() generated.QueryResolver { return &queryResolver{r} }
 

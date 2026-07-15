@@ -19,6 +19,14 @@ type ContentTypeDef struct {
 	Fields []*FieldDef `json:"fields"`
 }
 
+// One immutable historical snapshot of a content item.
+type ContentVersion struct {
+	Version   int            `json:"version"`
+	Data      map[string]any `json:"data"`
+	Status    string         `json:"status"`
+	CreatedAt string         `json:"createdAt"`
+}
+
 // A single typed field on a content type.
 type FieldDef struct {
 	Name      string `json:"name"`

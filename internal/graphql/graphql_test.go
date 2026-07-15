@@ -189,6 +189,57 @@ func TestContentItemQueryShowsDraftsToPrivilegedCallers(t *testing.T) {
 	}
 }
 
+func TestContentItemsQueryListsPublishedItemsOnly(t *testing.T) {
+	h, deps := testServer(t)
+	ctx := context.Background()
+	published, err := deps.content.Create(ctx, "article", map[string]any{"title": "Pub", "body": "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := deps.content.Publish(ctx, "article", published.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := deps.content.Create(ctx, "article", map[string]any{"title": "Draft", "body": "x"}); err != nil {
+		t.Fatal(err)
+	}
+
+	const query = `{ contentItems(type: "article") { id status } }`
+	_, resp := doGraphQL(t, h, "", query, nil)
+	if len(resp.Errors) != 0 {
+		t.Fatalf("errors = %v", resp.Errors)
+	}
+	items, ok := resp.Data["contentItems"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("contentItems = %v, want 1 published item", resp.Data["contentItems"])
+	}
+	got := items[0].(map[string]any)
+	if got["id"] != published.ID {
+		t.Errorf("contentItems[0].id = %v, want %s", got["id"], published.ID)
+	}
+}
+
+func TestContentVersionsQueryReturnsHistory(t *testing.T) {
+	h, deps := testServer(t)
+	ctx := context.Background()
+	item, err := deps.content.Create(ctx, "article", map[string]any{"title": "V1", "body": "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := deps.content.Update(ctx, "article", item.ID, map[string]any{"title": "V2", "body": "x"}); err != nil {
+		t.Fatal(err)
+	}
+
+	const query = `query($id: String!) { contentVersions(type: "article", id: $id) { version status } }`
+	_, resp := doGraphQL(t, h, "", query, map[string]any{"id": item.ID})
+	if len(resp.Errors) != 0 {
+		t.Fatalf("errors = %v", resp.Errors)
+	}
+	versions, ok := resp.Data["contentVersions"].([]any)
+	if !ok || len(versions) != 2 {
+		t.Fatalf("contentVersions = %v, want 2 entries", resp.Data["contentVersions"])
+	}
+}
+
 func TestContentTypesQueryIsPublic(t *testing.T) {
 	h, _ := testServer(t)
 	_, resp := doGraphQL(t, h, "", `{ contentTypes { name fields { name type required localized to } } }`, nil)
