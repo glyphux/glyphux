@@ -141,6 +141,41 @@ func TestAuthLoginMeLogout(t *testing.T) {
 	}
 }
 
+// TestLoginResponseIncludesBearerToken proves the login response body carries
+// a usable bearer token, not just a Set-Cookie header — programmatic clients
+// (the SDKs, scripts, server-to-server callers) have no cookie jar and cannot
+// otherwise obtain a session token to authenticate subsequent requests.
+func TestLoginResponseIncludesBearerToken(t *testing.T) {
+	h, deps := testServerWithAuth(t)
+	ctx := context.Background()
+	if err := deps.identities.CreateAdmin(ctx, "admin@example.com", "correct horse battery"); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := do(t, h, http.MethodPost, "/api/v0/auth/login", map[string]any{
+		"email": "admin@example.com", "password": "correct horse battery",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login = %d, body %s", rec.Code, rec.Body.String())
+	}
+	body := decode(t, rec)
+	token, _ := body["token"].(string)
+	if token == "" {
+		t.Fatalf("login response has no token: %v", body)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v0/auth/me", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	meRec := httptest.NewRecorder()
+	h.ServeHTTP(meRec, req)
+	if meRec.Code != http.StatusOK {
+		t.Fatalf("bearer /me with login token = %d, want 200", meRec.Code)
+	}
+	if me := decode(t, meRec); me["email"] != "admin@example.com" {
+		t.Errorf("/me email = %v", me["email"])
+	}
+}
+
 func TestBearerTokenAuthenticates(t *testing.T) {
 	h, deps := testServerWithAuth(t)
 	ctx := context.Background()

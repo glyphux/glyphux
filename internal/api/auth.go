@@ -45,7 +45,15 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, s.newSessionCookie(sess.Token, r))
-	s.writeJSON(w, http.StatusOK, user)
+	// Browser clients authenticate via the cookie just set; programmatic
+	// clients (SDKs, scripts) have no cookie jar, so the same token is also
+	// returned in the body for Authorization: Bearer use.
+	s.writeJSON(w, http.StatusOK, loginResponse{User: user, Token: sess.Token})
+}
+
+type loginResponse struct {
+	*identity.User
+	Token string `json:"token"`
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
