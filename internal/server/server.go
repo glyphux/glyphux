@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/glyphux/glyphux/internal/adminui"
@@ -108,7 +109,7 @@ func Handler(apiServer *api.Server, wizard *setup.Wizard, opts ...Option) http.H
 		}
 		http.Redirect(w, r, "/api/v0/content/ping", http.StatusTemporaryRedirect)
 	})
-	return limitBody(securityHeaders(cors(cfg.allowedOrigins, mux)))
+	return limitBody(securityHeaders(cors(cfg.allowedOrigins, generalRateLimit(mux))))
 }
 
 // requireSetupComplete gates next behind first-run setup having completed,
@@ -117,6 +118,82 @@ func requireSetupComplete(wizard *setup.Wizard, next http.Handler) http.Handler 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !wizard.Complete() {
 			http.Redirect(w, r, "/setup", http.StatusTemporaryRedirect)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// RequestsPerWindow and requestWindow bound how many requests any single
+// remote address may make across the whole API surface within the window —
+// general throttling (slice 1.9), resolving the tracking doc's open
+// question in favor of including it. This is deliberately distinct from
+// internal/api/ratelimit.go's loginLimiter, which only ever counts *failed*
+// logins for brute-force defense; this limiter counts every request
+// regardless of outcome, which is a materially different bookkeeping rule
+// (every request always counts here, vs. only failures there), so it is a
+// separate small type rather than a forced generalization of the other.
+const (
+	RequestsPerWindow = 300
+	requestWindow     = time.Minute
+)
+
+// generalRateLimitExempt holds paths a orchestrator polls on a health-check
+// cadence that must never be mistaken for abuse.
+var generalRateLimitExempt = map[string]bool{
+	"/healthz": true,
+	"/readyz":  true,
+}
+
+// requestLimiter tracks request timestamps per remote address for
+// generalRateLimit.
+type requestLimiter struct {
+	mu       sync.Mutex
+	requests map[string][]time.Time
+	now      func() time.Time
+}
+
+func newRequestLimiter() *requestLimiter {
+	return &requestLimiter{requests: make(map[string][]time.Time), now: time.Now}
+}
+
+// allow records the current request from key and reports whether it may
+// proceed, given RequestsPerWindow within requestWindow.
+func (l *requestLimiter) allow(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	cutoff := l.now().Add(-requestWindow)
+	kept := l.requests[key][:0]
+	for _, t := range l.requests[key] {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	kept = append(kept, l.now())
+	l.requests[key] = kept
+	return len(kept) <= RequestsPerWindow
+}
+
+// generalRateLimit throttles every remote address to RequestsPerWindow
+// requests per requestWindow across the whole daemon surface, excluding
+// generalRateLimitExempt paths. It is intentionally coarse (per-process,
+// in-memory, not per-token) — a first line of defense against a single
+// client overwhelming the daemon, not a precise quota system.
+func generalRateLimit(next http.Handler) http.Handler {
+	limiter := newRequestLimiter()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if generalRateLimitExempt[r.URL.Path] {
+			next.ServeHTTP(w, r)
+			return
+		}
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			host = r.RemoteAddr
+		}
+		if !limiter.allow(host) {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":"too many requests"}`))
 			return
 		}
 		next.ServeHTTP(w, r)

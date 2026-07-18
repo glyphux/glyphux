@@ -205,6 +205,47 @@ func TestOversizedRequestBodyRejected(t *testing.T) {
 	}
 }
 
+// TestGeneralAPIRateLimitPerRemoteAddress proves the daemon throttles a
+// single remote address that hammers the API surface generally — not just
+// failed logins (internal/api/ratelimit.go's loginLimiter) — while leaving
+// /healthz reachable for an orchestrator's liveness polling and leaving a
+// different remote address wholly unaffected (slice 1.9: the tracking doc's
+// open question on general rate limiting, resolved in favor of including
+// it).
+func TestGeneralAPIRateLimitPerRemoteAddress(t *testing.T) {
+	h := boot(t, filepath.Join(t.TempDir(), "glyphux.db"))
+
+	hit := func(remoteAddr string) int {
+		req := httptest.NewRequest(http.MethodGet, "/api/v0/content/ping", nil)
+		req.RemoteAddr = remoteAddr
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	var last int
+	for i := 0; i < server.RequestsPerWindow+5; i++ {
+		last = hit("203.0.113.9:1")
+	}
+	if last != http.StatusTooManyRequests {
+		t.Fatalf("last request from a hammering address = %d, want 429", last)
+	}
+
+	// A different remote address has its own independent budget.
+	if got := hit("203.0.113.10:1"); got == http.StatusTooManyRequests {
+		t.Fatalf("unrelated remote address was rate-limited too: %d", got)
+	}
+
+	// Liveness polling is exempt from the general limiter.
+	healthReq := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	healthReq.RemoteAddr = "203.0.113.9:1"
+	healthRec := httptest.NewRecorder()
+	h.ServeHTTP(healthRec, healthReq)
+	if healthRec.Code != http.StatusOK {
+		t.Fatalf("/healthz for a rate-limited address = %d, want 200", healthRec.Code)
+	}
+}
+
 // Every response carries baseline security headers, and cross-origin
 // requests are not granted CORS access by default (slice 1.9).
 func TestSecurityHeadersAndNoCORSByDefault(t *testing.T) {
