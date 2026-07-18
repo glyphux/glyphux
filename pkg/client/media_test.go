@@ -7,6 +7,8 @@ import (
 	"image/color"
 	"image/png"
 	"testing"
+
+	"github.com/glyphux/glyphux/pkg/client"
 )
 
 func onePixelPNG(t *testing.T) []byte {
@@ -89,5 +91,108 @@ func TestMediaFileResize(t *testing.T) {
 	}
 	if len(resized) == 0 {
 		t.Error("FileResized: empty body")
+	}
+}
+
+// quadPNG builds a 4x2 PNG, left half red / right half blue, so crop/rotate
+// correctness can be checked against real output pixels, not just size.
+func quadPNG(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 4, 2))
+	for y := 0; y < 2; y++ {
+		for x := 0; x < 4; x++ {
+			if x < 2 {
+				img.Set(x, y, color.RGBA{R: 255, A: 255})
+			} else {
+				img.Set(x, y, color.RGBA{B: 255, A: 255})
+			}
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestMediaFileTransformedCropRotateFormat(t *testing.T) {
+	c := loggedInClient(t)
+	ctx := context.Background()
+	uploaded, err := c.Media.Upload(ctx, "quad.png", quadPNG(t))
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+
+	out, contentType, err := c.Media.FileTransformed(ctx, uploaded.ID, client.MediaTransform{
+		CropX: 2, CropY: 0, CropW: 2, CropH: 2,
+		Rotate: 90,
+		Format: "jpeg",
+	})
+	if err != nil {
+		t.Fatalf("FileTransformed: %v", err)
+	}
+	if contentType != "image/jpeg" {
+		t.Errorf("contentType = %q, want image/jpeg", contentType)
+	}
+	cfg, format, err := image.DecodeConfig(bytes.NewReader(out))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if format != "jpeg" {
+		t.Errorf("format = %q, want jpeg", format)
+	}
+	// Cropped to 2x2 (the blue right half), then rotated 90 - still 2x2.
+	if cfg.Width != 2 || cfg.Height != 2 {
+		t.Errorf("dimensions = %dx%d, want 2x2", cfg.Width, cfg.Height)
+	}
+}
+
+func TestMediaFileTransformedRejectsInvalidRotate(t *testing.T) {
+	c := loggedInClient(t)
+	ctx := context.Background()
+	uploaded, err := c.Media.Upload(ctx, "quad.png", quadPNG(t))
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+
+	_, _, err = c.Media.FileTransformed(ctx, uploaded.ID, client.MediaTransform{Rotate: 45})
+	if err == nil {
+		t.Fatal("want an error for an unsupported rotate angle, got nil")
+	}
+}
+
+func TestMediaUpdateMetadataPersistsTagsAndSourceAttribution(t *testing.T) {
+	c := loggedInClient(t)
+	ctx := context.Background()
+	uploaded, err := c.Media.Upload(ctx, "swatch.png", onePixelPNG(t))
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+
+	updated, err := c.Media.UpdateMetadata(ctx, uploaded.ID, client.MediaMetadataUpdate{
+		AltText:     "a swatch",
+		Tags:        []string{"stock", "hero"},
+		Source:      "https://example.com/photo",
+		Attribution: "Photo by Jane Doe",
+	})
+	if err != nil {
+		t.Fatalf("UpdateMetadata: %v", err)
+	}
+	if updated.AltText != "a swatch" {
+		t.Errorf("AltText = %q, want %q", updated.AltText, "a swatch")
+	}
+	if len(updated.Tags) != 2 || updated.Tags[0] != "stock" || updated.Tags[1] != "hero" {
+		t.Errorf("Tags = %v, want [stock hero]", updated.Tags)
+	}
+	if updated.Source != "https://example.com/photo" || updated.Attribution != "Photo by Jane Doe" {
+		t.Errorf("Source/Attribution = %q/%q", updated.Source, updated.Attribution)
+	}
+
+	fetched, err := c.Media.Get(ctx, uploaded.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fetched.AltText != "a swatch" || len(fetched.Tags) != 2 {
+		t.Errorf("Get after UpdateMetadata = %+v, want persisted metadata", fetched)
 	}
 }

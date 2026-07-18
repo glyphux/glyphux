@@ -15,15 +15,42 @@ import (
 // MediaItem is a media library entry, mirroring internal/media.Item's wire
 // shape.
 type MediaItem struct {
-	ID        string    `json:"id"`
-	Filename  string    `json:"filename"`
-	MimeType  string    `json:"mime_type"`
-	SizeBytes int64     `json:"size_bytes"`
-	Width     int       `json:"width"`
-	Height    int       `json:"height"`
-	AltText   string    `json:"alt_text"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID          string    `json:"id"`
+	Filename    string    `json:"filename"`
+	MimeType    string    `json:"mime_type"`
+	SizeBytes   int64     `json:"size_bytes"`
+	Width       int       `json:"width"`
+	Height      int       `json:"height"`
+	AltText     string    `json:"alt_text"`
+	Tags        []string  `json:"tags"`
+	Source      string    `json:"source"`
+	Attribution string    `json:"attribution"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// MediaTransform describes an image transform pipeline — crop, then
+// rotate, then resize, then re-encode in an explicit format — mirroring
+// internal/media.TransformOptions and the GET .../file query params it's
+// built from. A zero value for a field skips that stage; see
+// TransformOptions' doc for exact semantics (e.g. rotate must be 0, 90,
+// 180, or 270).
+type MediaTransform struct {
+	CropX, CropY, CropW, CropH int
+	Rotate                     int
+	MaxW, MaxH                 int
+	Format                     string
+}
+
+// MediaMetadataUpdate is the editable metadata on a media item — alt text,
+// tags, and source/attribution (PRD §11.4) — mirroring
+// internal/media.MetadataUpdate. It replaces every field, so callers
+// should send back the full set they want kept.
+type MediaMetadataUpdate struct {
+	AltText     string   `json:"alt_text"`
+	Tags        []string `json:"tags"`
+	Source      string   `json:"source"`
+	Attribution string   `json:"attribution"`
 }
 
 // MediaService wraps /api/v0/media.
@@ -98,6 +125,16 @@ func (s *MediaService) Delete(ctx context.Context, id string) error {
 	return s.c.doJSON(ctx, "DELETE", "/api/v0/media/"+url.PathEscape(id), nil, nil)
 }
 
+// UpdateMetadata replaces a media item's editable metadata (alt text, tags,
+// source/attribution) and returns the updated item. Requires media:write.
+func (s *MediaService) UpdateMetadata(ctx context.Context, id string, update MediaMetadataUpdate) (*MediaItem, error) {
+	var item MediaItem
+	if err := s.c.doJSON(ctx, "PATCH", "/api/v0/media/"+url.PathEscape(id), update, &item); err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
 // File downloads the original stored bytes for a media item, along with
 // their content type.
 func (s *MediaService) File(ctx context.Context, id string) ([]byte, string, error) {
@@ -111,6 +148,34 @@ func (s *MediaService) FileResized(ctx context.Context, id string, width, height
 	q.Set("w", fmt.Sprint(width))
 	q.Set("h", fmt.Sprint(height))
 	return s.fetchFile(ctx, "/api/v0/media/"+url.PathEscape(id)+"/file?"+q.Encode())
+}
+
+// FileTransformed downloads the media item with a crop/rotate/resize/format
+// pipeline applied (internal/api/media.go handleMediaFile's transform query
+// params), returning the resulting bytes and their actual content type.
+func (s *MediaService) FileTransformed(ctx context.Context, id string, t MediaTransform) ([]byte, string, error) {
+	q := url.Values{}
+	if t.CropW > 0 || t.CropH > 0 {
+		q.Set("crop_x", fmt.Sprint(t.CropX))
+		q.Set("crop_y", fmt.Sprint(t.CropY))
+		q.Set("crop_w", fmt.Sprint(t.CropW))
+		q.Set("crop_h", fmt.Sprint(t.CropH))
+	}
+	if t.Rotate != 0 {
+		q.Set("rotate", fmt.Sprint(t.Rotate))
+	}
+	if t.MaxW > 0 || t.MaxH > 0 {
+		q.Set("w", fmt.Sprint(t.MaxW))
+		q.Set("h", fmt.Sprint(t.MaxH))
+	}
+	if t.Format != "" {
+		q.Set("format", t.Format)
+	}
+	path := "/api/v0/media/" + url.PathEscape(id) + "/file"
+	if len(q) > 0 {
+		path += "?" + q.Encode()
+	}
+	return s.fetchFile(ctx, path)
 }
 
 func (s *MediaService) fetchFile(ctx context.Context, path string) ([]byte, string, error) {
