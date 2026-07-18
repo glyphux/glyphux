@@ -157,12 +157,12 @@ func quadPNG(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
-func uploadQuad(t *testing.T, h http.Handler, cookie *http.Cookie) string {
+func uploadQuad(t *testing.T, h http.Handler, cookie authCreds) string {
 	t.Helper()
 	body, contentType := uploadRequest(t, "quad.png", quadPNG(t))
 	req := httptest.NewRequest(http.MethodPost, "/api/v0/media", body)
 	req.Header.Set("Content-Type", contentType)
-	req.AddCookie(cookie)
+	cookie.addTo(req)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {
@@ -304,6 +304,28 @@ func TestMediaUpdateMetadataOverHTTP(t *testing.T) {
 	got = decode(t, rec)
 	if got["alt_text"] != "a quad" {
 		t.Errorf("GET after patch alt_text = %v, want %q", got["alt_text"], "a quad")
+	}
+}
+
+func TestMediaUpdateMetadataRejectsOversizedBody(t *testing.T) {
+	h, cookie := authedServer(t)
+	id := uploadQuad(t, h, cookie)
+
+	// /api/v0/media is exempt from the server-wide body limiter (the upload
+	// route applies its own larger cap), so PATCH must enforce its own — a
+	// regression check for the gap where it briefly had no cap at all.
+	huge := make([]byte, 2<<20)
+	for i := range huge {
+		huge[i] = 'a'
+	}
+	patchBody, _ := json.Marshal(map[string]any{"alt_text": string(huge)})
+	req := httptest.NewRequest(http.MethodPatch, "/api/v0/media/"+id, bytes.NewReader(patchBody))
+	req.Header.Set("Content-Type", "application/json")
+	cookie.addTo(req)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("oversized patch = %d, want 413", rec.Code)
 	}
 }
 

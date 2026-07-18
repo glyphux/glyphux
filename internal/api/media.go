@@ -17,6 +17,13 @@ import (
 // smaller default, governs uploads.
 const mediaMaxUploadBytes = 10 << 20 // 10 MiB
 
+// mediaMetadataMaxBodyBytes bounds the JSON body of PATCH /api/v0/media/{id}.
+// The route falls under the /api/v0/media prefix the server-wide body
+// limiter exempts (for the upload route's own larger cap above), so this
+// JSON-only route must apply its own limit rather than accept an unbounded
+// body.
+const mediaMetadataMaxBodyBytes = 1 << 20 // 1 MiB, matching the server-wide default
+
 func (s *Server) handleMediaUpload(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, mediaMaxUploadBytes)
 	if err := r.ParseMultipartForm(mediaMaxUploadBytes); err != nil {
@@ -138,6 +145,7 @@ type mediaMetadataUpdateRequest struct {
 }
 
 func (s *Server) handleMediaUpdateMetadata(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, mediaMetadataMaxBodyBytes)
 	var body mediaMetadataUpdateRequest
 	if !s.decodeJSON(w, r, &body) {
 		return
