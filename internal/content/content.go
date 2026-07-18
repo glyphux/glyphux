@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/glyphux/glyphux/internal/composition"
+	"github.com/glyphux/glyphux/internal/permission"
 	"github.com/glyphux/glyphux/pkg/contract"
 )
 
@@ -60,8 +61,13 @@ type Version struct {
 
 // Create validates data against the declared content type and persists a new
 // item as a draft at version 1, returning it with a generated id and
-// timestamps.
-func (a *API) Create(ctx context.Context, typeName string, data map[string]any) (*Item, error) {
+// timestamps. principal must hold content:write — checked here at the
+// domain-API boundary (PRD §10.5) independent of whether a transport
+// handler already checked; a nil principal (anonymous) is always denied.
+func (a *API) Create(ctx context.Context, principal *permission.Principal, typeName string, data map[string]any) (*Item, error) {
+	if !permission.AllowsPrincipal(principal, permission.ContentWrite) {
+		return nil, permission.ErrDenied
+	}
 	ct, err := a.contentType(ctx, typeName)
 	if err != nil {
 		return nil, err
@@ -97,8 +103,19 @@ func (a *API) Create(ctx context.Context, typeName string, data map[string]any) 
 	return item, nil
 }
 
-// Get returns the item of the given type and id, or ErrNotFound.
-func (a *API) Get(ctx context.Context, typeName, id string) (*Item, error) {
+// Get returns the item of the given type and id regardless of publish
+// status, or ErrNotFound. Because it exposes drafts, principal must hold
+// content:read_drafts — checked here at the domain-API boundary. Callers
+// that only need published items should use GetPublished instead, which is
+// the public, capability-free path.
+func (a *API) Get(ctx context.Context, principal *permission.Principal, typeName, id string) (*Item, error) {
+	if !permission.AllowsPrincipal(principal, permission.ContentReadDrafts) {
+		return nil, permission.ErrDenied
+	}
+	return a.get(ctx, typeName, id)
+}
+
+func (a *API) get(ctx context.Context, typeName, id string) (*Item, error) {
 	r, err := a.items.getByID(ctx, typeName, id)
 	if err != nil {
 		return nil, err
@@ -106,9 +123,18 @@ func (a *API) Get(ctx context.Context, typeName, id string) (*Item, error) {
 	return recordToItem(r)
 }
 
-// List returns every item of the given type, oldest first. The type must be
-// declared in the composition.
-func (a *API) List(ctx context.Context, typeName string) ([]*Item, error) {
+// List returns every item of the given type regardless of publish status,
+// oldest first. The type must be declared in the composition. Because it
+// exposes drafts, principal must hold content:read_drafts. Callers that
+// only need published items should use ListPublished instead.
+func (a *API) List(ctx context.Context, principal *permission.Principal, typeName string) ([]*Item, error) {
+	if !permission.AllowsPrincipal(principal, permission.ContentReadDrafts) {
+		return nil, permission.ErrDenied
+	}
+	return a.list(ctx, typeName)
+}
+
+func (a *API) list(ctx context.Context, typeName string) ([]*Item, error) {
 	if _, err := a.contentType(ctx, typeName); err != nil {
 		return nil, err
 	}
@@ -130,8 +156,10 @@ func (a *API) List(ctx context.Context, typeName string) ([]*Item, error) {
 // GetPublished returns the item like Get, but reports ErrNotFound if it is
 // not published — drafts are invisible to public/unprivileged reads (slice
 // 1.5 fix: publish state must actually gate visibility, not just be a label).
+// This is the intentionally public, capability-free read path (PRD §10.5's
+// "public capability set"): no principal is required or accepted.
 func (a *API) GetPublished(ctx context.Context, typeName, id string) (*Item, error) {
-	item, err := a.Get(ctx, typeName, id)
+	item, err := a.get(ctx, typeName, id)
 	if err != nil {
 		return nil, err
 	}
@@ -142,9 +170,9 @@ func (a *API) GetPublished(ctx context.Context, typeName, id string) (*Item, err
 }
 
 // ListPublished returns every published item of the given type, oldest
-// first, excluding drafts.
+// first, excluding drafts. Public, capability-free, like GetPublished.
 func (a *API) ListPublished(ctx context.Context, typeName string) ([]*Item, error) {
-	items, err := a.List(ctx, typeName)
+	items, err := a.list(ctx, typeName)
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +186,7 @@ func (a *API) ListPublished(ctx context.Context, typeName string) ([]*Item, erro
 }
 
 // GetLocalizedPublished composes GetPublished with locale resolution, like
-// GetLocalized does for Get.
+// GetLocalized does for Get. Public, capability-free.
 func (a *API) GetLocalizedPublished(ctx context.Context, typeName, id, locale string) (*Item, error) {
 	ct, err := a.contentType(ctx, typeName)
 	if err != nil {
@@ -173,7 +201,7 @@ func (a *API) GetLocalizedPublished(ctx context.Context, typeName, id, locale st
 }
 
 // ListLocalizedPublished composes ListPublished with locale resolution, like
-// ListLocalized does for List.
+// ListLocalized does for List. Public, capability-free.
 func (a *API) ListLocalizedPublished(ctx context.Context, typeName, locale string) ([]*Item, error) {
 	ct, err := a.contentType(ctx, typeName)
 	if err != nil {
@@ -192,13 +220,14 @@ func (a *API) ListLocalizedPublished(ctx context.Context, typeName, locale strin
 // GetLocalized returns the item like Get, but resolves every localized field
 // to a single value for locale: the value at that locale if present, else an
 // arbitrary available locale as a fallback rather than leaving the field
-// empty. Non-localized fields pass through unchanged.
-func (a *API) GetLocalized(ctx context.Context, typeName, id, locale string) (*Item, error) {
+// empty. Non-localized fields pass through unchanged. Exposes drafts, so
+// principal must hold content:read_drafts like Get.
+func (a *API) GetLocalized(ctx context.Context, principal *permission.Principal, typeName, id, locale string) (*Item, error) {
 	ct, err := a.contentType(ctx, typeName)
 	if err != nil {
 		return nil, err
 	}
-	item, err := a.Get(ctx, typeName, id)
+	item, err := a.Get(ctx, principal, typeName, id)
 	if err != nil {
 		return nil, err
 	}
@@ -207,13 +236,14 @@ func (a *API) GetLocalized(ctx context.Context, typeName, id, locale string) (*I
 }
 
 // ListLocalized returns every item of the given type, resolved to locale like
-// GetLocalized.
-func (a *API) ListLocalized(ctx context.Context, typeName, locale string) ([]*Item, error) {
+// GetLocalized. Exposes drafts, so principal must hold content:read_drafts
+// like List.
+func (a *API) ListLocalized(ctx context.Context, principal *permission.Principal, typeName, locale string) ([]*Item, error) {
 	ct, err := a.contentType(ctx, typeName)
 	if err != nil {
 		return nil, err
 	}
-	items, err := a.List(ctx, typeName)
+	items, err := a.List(ctx, principal, typeName)
 	if err != nil {
 		return nil, err
 	}
@@ -247,8 +277,12 @@ func resolveLocale(item *Item, ct contract.ContentType, locale string) {
 
 // Update validates data against the declared type, replaces the item's data,
 // and records a new version snapshot. Status is left unchanged. Returns
-// ErrNotFound if the item does not exist.
-func (a *API) Update(ctx context.Context, typeName, id string, data map[string]any) (*Item, error) {
+// ErrNotFound if the item does not exist. principal must hold content:write,
+// checked here at the domain-API boundary.
+func (a *API) Update(ctx context.Context, principal *permission.Principal, typeName, id string, data map[string]any) (*Item, error) {
+	if !permission.AllowsPrincipal(principal, permission.ContentWrite) {
+		return nil, permission.ErrDenied
+	}
 	ct, err := a.contentType(ctx, typeName)
 	if err != nil {
 		return nil, err
@@ -277,11 +311,16 @@ func (a *API) Update(ctx context.Context, typeName, id string, data map[string]a
 	}); err != nil {
 		return nil, err
 	}
-	return a.Get(ctx, typeName, id)
+	return a.get(ctx, typeName, id)
 }
 
 // Delete removes an item, returning ErrNotFound if it does not exist.
-func (a *API) Delete(ctx context.Context, typeName, id string) error {
+// principal must hold content:write, checked here at the domain-API
+// boundary.
+func (a *API) Delete(ctx context.Context, principal *permission.Principal, typeName, id string) error {
+	if !permission.AllowsPrincipal(principal, permission.ContentWrite) {
+		return permission.ErrDenied
+	}
 	if _, err := a.contentType(ctx, typeName); err != nil {
 		return err
 	}
@@ -289,14 +328,22 @@ func (a *API) Delete(ctx context.Context, typeName, id string) error {
 }
 
 // Publish marks an item as published, making it the item's live status.
-// Returns ErrNotFound if the item does not exist.
-func (a *API) Publish(ctx context.Context, typeName, id string) (*Item, error) {
+// Returns ErrNotFound if the item does not exist. principal must hold
+// content:publish, checked here at the domain-API boundary.
+func (a *API) Publish(ctx context.Context, principal *permission.Principal, typeName, id string) (*Item, error) {
+	if !permission.AllowsPrincipal(principal, permission.ContentPublish) {
+		return nil, permission.ErrDenied
+	}
 	return a.setStatus(ctx, typeName, id, StatusPublished)
 }
 
 // Unpublish reverts a published item to draft. Returns ErrNotFound if the
-// item does not exist.
-func (a *API) Unpublish(ctx context.Context, typeName, id string) (*Item, error) {
+// item does not exist. principal must hold content:publish, checked here at
+// the domain-API boundary.
+func (a *API) Unpublish(ctx context.Context, principal *permission.Principal, typeName, id string) (*Item, error) {
+	if !permission.AllowsPrincipal(principal, permission.ContentPublish) {
+		return nil, permission.ErrDenied
+	}
 	return a.setStatus(ctx, typeName, id, StatusDraft)
 }
 
@@ -308,7 +355,7 @@ func (a *API) setStatus(ctx context.Context, typeName, id, status string) (*Item
 	if err := a.items.setStatus(ctx, typeName, id, status, now); err != nil {
 		return nil, err
 	}
-	return a.Get(ctx, typeName, id)
+	return a.get(ctx, typeName, id)
 }
 
 // ListVersions returns an item's full version history, oldest first. Returns
@@ -335,8 +382,12 @@ func (a *API) ListVersions(ctx context.Context, typeName, id string) ([]*Version
 // Rollback restores an item's data to an earlier version, validating it
 // against the current content type and recording the restore as a new
 // version. Status is left unchanged. Returns ErrNotFound if the item or the
-// requested version does not exist.
-func (a *API) Rollback(ctx context.Context, typeName, id string, version int) (*Item, error) {
+// requested version does not exist. principal must hold content:write,
+// checked here at the domain-API boundary.
+func (a *API) Rollback(ctx context.Context, principal *permission.Principal, typeName, id string, version int) (*Item, error) {
+	if !permission.AllowsPrincipal(principal, permission.ContentWrite) {
+		return nil, permission.ErrDenied
+	}
 	ct, err := a.contentType(ctx, typeName)
 	if err != nil {
 		return nil, err
@@ -369,7 +420,7 @@ func (a *API) Rollback(ctx context.Context, typeName, id string, version int) (*
 	}); err != nil {
 		return nil, err
 	}
-	return a.Get(ctx, typeName, id)
+	return a.get(ctx, typeName, id)
 }
 
 // checkRelations verifies that every present relation field references an
