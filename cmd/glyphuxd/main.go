@@ -109,6 +109,6 @@ func buildFullHandler(cfg config.Config, log *slog.Logger) bootstrap.BuildFullHa
 		// privileged path.
 		graphqlResolver := graphql.NewResolver(compositions, contentAPI, mediaAPI, identities, sessions, log)
 		graphqlHandler := graphql.NewHandler(graphqlResolver)
-		return server.Handler(apiServer, wizard, graphqlHandler), nil
+		return server.Handler(apiServer, wizard, server.WithGraphQL(graphqlHandler), server.WithCORS(cfg.AllowedOrigins)), nil
 	}
 }

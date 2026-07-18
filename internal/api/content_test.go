@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func doWithCookieBody(t *testing.T, h http.Handler, method, path string, c *http.Cookie, body any) *httptest.ResponseRecorder {
+func doWithCookieBody(t *testing.T, h http.Handler, method, path string, c authCreds, body any) *httptest.ResponseRecorder {
 	t.Helper()
 	var r io.Reader
 	if body != nil {
@@ -18,7 +18,7 @@ func doWithCookieBody(t *testing.T, h http.Handler, method, path string, c *http
 		r = bytes.NewReader(b)
 	}
 	req := httptest.NewRequest(method, path, r)
-	req.AddCookie(c)
+	c.addTo(req)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
@@ -32,7 +32,7 @@ func testServer(t *testing.T) http.Handler {
 
 // authedServer boots a server with an admin account already logged in,
 // returning the handler and the session cookie for driving mutations.
-func authedServer(t *testing.T) (http.Handler, *http.Cookie) {
+func authedServer(t *testing.T) (http.Handler, authCreds) {
 	t.Helper()
 	h, deps := testServerWithAuth(t)
 	ctx := context.Background()
@@ -69,7 +69,7 @@ func decode(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 
 // localizedServer boots a server whose article type declares a localized
 // title field, with an admin already logged in.
-func localizedServer(t *testing.T) (http.Handler, *http.Cookie) {
+func localizedServer(t *testing.T) (http.Handler, authCreds) {
 	t.Helper()
 	h, deps := testServerWithLocalizedContentType(t)
 	ctx := context.Background()
@@ -150,7 +150,7 @@ func TestContentHTTPErrorMapping(t *testing.T) {
 	}
 	// Malformed JSON → 400.
 	req := httptest.NewRequest(http.MethodPost, "/api/v0/content/article", bytes.NewReader([]byte("{not json")))
-	req.AddCookie(cookie)
+	cookie.addTo(req)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
