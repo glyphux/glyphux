@@ -103,7 +103,11 @@ func buildFullHandler(cfg config.Config, log *slog.Logger) bootstrap.BuildFullHa
 		sessions := identity.NewSessions(database)
 		contentAPI := content.NewAPI(compositions, content.NewStore(database))
 		mediaAPI := media.NewAPI(media.NewStore(database), filepath.Join(cfg.DataDir, "media"))
-		apiServer := api.New(compositions, contentAPI, mediaAPI, identities, sessions, log, api.TrustProxyHeaders(cfg.TrustProxyHeaders))
+		apiOpts := []api.Option{api.TrustProxyHeaders(cfg.TrustProxyHeaders)}
+		if oauthMgr := githubOAuthManager(cfg); oauthMgr != nil {
+			apiOpts = append(apiOpts, api.WithOAuth(oauthMgr, publicURL(cfg)))
+		}
+		apiServer := api.New(compositions, contentAPI, mediaAPI, identities, sessions, log, apiOpts...)
 		// GraphQL (slice 1.12) is a second transport over the same domain
 		// APIs the REST apiServer above was just built from — not a new
 		// privileged path.
@@ -111,4 +115,47 @@ func buildFullHandler(cfg config.Config, log *slog.Logger) bootstrap.BuildFullHa
 		graphqlHandler := graphql.NewHandler(graphqlResolver)
 		return server.Handler(apiServer, wizard, graphqlHandler), nil
 	}
+}
+
+// githubOAuthURLs are GitHub's real, fixed OAuth2 endpoints — see
+// internal/identity/oauth.go's doc comment for why GitHub was chosen as
+// this slice's provider.
+const (
+	githubAuthURL     = "https://github.com/login/oauth/authorize"
+	githubTokenURL    = "https://github.com/login/oauth/access_token"
+	githubUserInfoURL = "https://api.github.com/user"
+	githubEmailsURL   = "https://api.github.com/user/emails"
+)
+
+// githubOAuthManager builds an identity.OAuthManager wired to real GitHub
+// endpoints if the operator registered a GitHub OAuth App and set its
+// credentials (GLYPHUX_OAUTH_GITHUB_CLIENT_ID/_SECRET); returns nil
+// (leaving OAuth login routes 404ing) otherwise — OAuth is opt-in server
+// configuration, same as MFA is opt-in per account.
+func githubOAuthManager(cfg config.Config) *identity.OAuthManager {
+	if cfg.OAuth.GitHubClientID == "" || cfg.OAuth.GitHubClientSecret == "" {
+		return nil
+	}
+	return identity.NewOAuthManager(nil, identity.OAuthProvider{
+		Name:         "github",
+		ClientID:     cfg.OAuth.GitHubClientID,
+		ClientSecret: cfg.OAuth.GitHubClientSecret,
+		AuthURL:      githubAuthURL,
+		TokenURL:     githubTokenURL,
+		UserInfoURL:  githubUserInfoURL,
+		EmailsURL:    githubEmailsURL,
+		Scopes:       []string{"read:user", "user:email"},
+	})
+}
+
+// publicURL is this instance's externally-reachable base URL for building
+// an OAuth redirect_uri — must match what's registered with the provider.
+// Falls back to http://<listen addr>, which only works for local/loopback
+// testing (GitHub itself accepts http://localhost redirect URIs, so this is
+// enough to exercise the flow against a real registered app without TLS).
+func publicURL(cfg config.Config) string {
+	if cfg.PublicURL != "" {
+		return cfg.PublicURL
+	}
+	return "http://" + cfg.Addr
 }

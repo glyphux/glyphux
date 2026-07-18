@@ -71,10 +71,22 @@ func contentTypeDef(name string, ct contract.ContentType) *generated.ContentType
 // though identity.User.ID is an int64 internally.
 func userModel(u *identity.User) *generated.User {
 	return &generated.User{
-		ID:    strconv.FormatInt(u.ID, 10),
-		Email: u.Email,
-		Role:  u.Role,
+		ID:         strconv.FormatInt(u.ID, 10),
+		Email:      u.Email,
+		Role:       u.Role,
+		MfaEnabled: u.MFAEnabled,
+		Active:     u.Active,
 	}
+}
+
+// userIDFromGraphQL parses a GraphQL ID scalar back into identity.User's
+// int64 primary key, matching userIDFromPath in internal/api/users.go.
+func userIDFromGraphQL(id string) (int64, error) {
+	n, err := strconv.ParseInt(id, 10, 64)
+	if err != nil {
+		return 0, gqlErr("BAD_REQUEST", "invalid user id")
+	}
+	return n, nil
 }
 
 // mediaItemModel converts a media.Item to its GraphQL model.

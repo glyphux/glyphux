@@ -19,6 +19,13 @@ import (
 	"github.com/vektah/gqlparser/v2/gqlerror"
 )
 
+// errContentTypeHasItemsGraphQL signals RemoveContentType's guard callback
+// (see its call site in schema.resolvers.go) that items still exist —
+// declared here, not inline in schema.resolvers.go, since gqlgen's
+// source-preservation pass can misplace package-level declarations that
+// live inside a regenerated resolver file.
+var errContentTypeHasItemsGraphQL = errors.New("content type has existing items; delete or migrate them first")
+
 // gqlErr builds a GraphQL error carrying a "code" extension.
 func gqlErr(code, message string) *gqlerror.Error {
 	return &gqlerror.Error{
@@ -76,6 +83,20 @@ func (r *Resolver) mapMediaError(err error) error {
 		r.log.Error("media request", "error", err)
 		return gqlErr("INTERNAL", "internal error")
 	}
+}
+
+// mapUserManagementError maps identity.Service's UpdateRole/Deactivate/
+// Reactivate errors, matching writeUserManagementError in
+// internal/api/users.go: a domain-layer permission.ErrDenied (reachable only
+// if the domain-boundary check fails despite this package's own
+// requireCapability having already passed — defense-in-depth, PRD §10.5)
+// maps to FORBIDDEN; anything else (e.g. an unknown role) is a VALIDATION
+// error.
+func (r *Resolver) mapUserManagementError(err error) error {
+	if errors.Is(err, permission.ErrDenied) {
+		return gqlErr("FORBIDDEN", "insufficient permissions")
+	}
+	return gqlErr("VALIDATION", err.Error())
 }
 
 // mapContentTypeError maps composition content-type management errors,
