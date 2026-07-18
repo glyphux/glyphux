@@ -119,6 +119,16 @@ func (s *Sessions) Revoke(ctx context.Context, token string) error {
 	return nil
 }
 
+// RevokeAllForUser deletes every session belonging to userID — used when
+// deactivating an account, so it cannot keep using a session opened before
+// deactivation until that session's TTL happens to expire on its own.
+func (s *Sessions) RevokeAllForUser(ctx context.Context, userID int64) error {
+	if _, err := s.db.Exec(ctx, `DELETE FROM sessions WHERE user_id = ?`, userID); err != nil {
+		return fmt.Errorf("revoke all sessions for user: %w", err)
+	}
+	return nil
+}
+
 func hashToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
