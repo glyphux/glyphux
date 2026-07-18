@@ -32,7 +32,10 @@ func init() { Migrations = append(Migrations, mfaMigrations...) }
 
 var mfaMigrations = []db.Migration{
 	{
-		Version: 8,
+		// Version 8 collided with slice 0010's media migration (also
+		// independently numbered 8, and merged into dev first) — bumped to
+		// 12, the next free slot after identity's own oauth.go migration 11.
+		Version: 12,
 		Name:    "mfa columns",
 		SQL: `
 			ALTER TABLE users ADD COLUMN mfa_enabled INTEGER NOT NULL DEFAULT 0;
@@ -41,7 +44,7 @@ var mfaMigrations = []db.Migration{
 		`,
 	},
 	{
-		Version: 9,
+		Version: 13,
 		Name:    "mfa challenges",
 		SQL: `
 			CREATE TABLE mfa_challenges (

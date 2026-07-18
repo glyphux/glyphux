@@ -74,6 +74,20 @@ func TestMFAEnrollConfirmAndLoginChallengeOverHTTP(t *testing.T) {
 	if verified["token"] == nil || verified["token"] == "" {
 		t.Fatal("expected a session token after MFA verification")
 	}
+
+	// Regression: MFA-verify must set a CSRF cookie exactly like a normal
+	// login does, or this session could never pass requireCSRF on any
+	// mutation route — an MFA-protected account would be silently locked
+	// out of every write.
+	var sawCSRFCookie bool
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "glyphux_csrf" && c.Value != "" {
+			sawCSRFCookie = true
+		}
+	}
+	if !sawCSRFCookie {
+		t.Error("MFA verify response set no CSRF cookie")
+	}
 }
 
 func TestMFAEnrollRequiresAuthentication(t *testing.T) {

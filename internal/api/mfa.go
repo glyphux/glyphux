@@ -80,6 +80,16 @@ func (s *Server) handleMFAVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, s.newSessionCookie(sess.Token, r))
+	// Mirrors handleLogin: this cookie-authenticated session needs its own
+	// CSRF cookie too, or every mutation route's requireCSRF would reject
+	// this session with no way to obtain a valid token (slice 1.9).
+	csrfToken, err := newCSRFToken()
+	if err != nil {
+		s.log.Error("generate CSRF token", "error", err)
+		s.writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	http.SetCookie(w, s.newCSRFCookie(csrfToken, r))
 	s.writeJSON(w, http.StatusOK, loginResponse{User: user, Token: sess.Token})
 }
 

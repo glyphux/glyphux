@@ -155,6 +155,19 @@ func TestOAuthLoginCreatesAccountEndToEnd(t *testing.T) {
 	if body["token"] == nil || body["token"] == "" {
 		t.Error("expected a session token")
 	}
+
+	// Regression: the OAuth callback must set a CSRF cookie exactly like a
+	// normal login does, or an OAuth-only account could never pass
+	// requireCSRF on any mutation route.
+	var sawCSRFCookie bool
+	for _, c := range callbackRec.Result().Cookies() {
+		if c.Name == "glyphux_csrf" && c.Value != "" {
+			sawCSRFCookie = true
+		}
+	}
+	if !sawCSRFCookie {
+		t.Error("OAuth callback response set no CSRF cookie")
+	}
 }
 
 func TestOAuthRoutesDisabledWithoutConfiguration(t *testing.T) {
