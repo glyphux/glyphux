@@ -86,20 +86,23 @@ func (s *Sessions) Create(ctx context.Context, userID int64) (*Session, error) {
 // token is unknown, revoked, or expired.
 func (s *Sessions) Lookup(ctx context.Context, token string) (*User, error) {
 	var (
-		u          User
-		expiresStr string
+		u                  User
+		expiresStr         string
+		mfaEnabled, active int
 	)
 	err := s.db.QueryRow(ctx, `
-		SELECT u.id, u.email, u.role, s.expires_at
+		SELECT u.id, u.email, u.role, u.mfa_enabled, u.active, s.expires_at
 		FROM sessions s JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = ?`, hashToken(token)).
-		Scan(&u.ID, &u.Email, &u.Role, &expiresStr)
+		Scan(&u.ID, &u.Email, &u.Role, &mfaEnabled, &active, &expiresStr)
 	if errors.Is(err, db.ErrNoRows) {
 		return nil, ErrInvalidSession
 	}
 	if err != nil {
 		return nil, fmt.Errorf("lookup session: %w", err)
 	}
+	u.MFAEnabled = mfaEnabled != 0
+	u.Active = active != 0
 	expires, err := time.Parse(time.RFC3339Nano, expiresStr)
 	if err != nil {
 		return nil, fmt.Errorf("parse session expiry: %w", err)
