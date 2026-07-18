@@ -18,4 +18,20 @@ export class UsersResource {
     const { users } = await this.http.requestJSON<{ users: User[] }>("GET", "/api/v0/users");
     return users;
   }
+
+  /** Changes id's role to one of v1's fixed roles. */
+  async updateRole(id: number, role: string): Promise<User> {
+    return this.http.requestJSON<User>("PATCH", `/api/v0/users/${id}/role`, { json: { role } });
+  }
+
+  /** Blocks id from authenticating and revokes every session it currently
+   * holds. */
+  async deactivate(id: number): Promise<void> {
+    await this.http.requestVoid("POST", `/api/v0/users/${id}/deactivate`);
+  }
+
+  /** Re-enables a previously deactivated account. */
+  async reactivate(id: number): Promise<void> {
+    await this.http.requestVoid("POST", `/api/v0/users/${id}/reactivate`);
+  }
 }

@@ -3,14 +3,31 @@ export interface User {
   id: number;
   email: string;
   role: string;
+  /** Whether TOTP MFA is enabled for this account. */
+  mfaEnabled: boolean;
+  /** Whether this account can currently authenticate. */
+  active: boolean;
 }
 
 /** The body of a successful POST /api/v0/auth/login — the authenticated
  * user plus the bearer token to send as `Authorization: Bearer <token>` on
  * subsequent requests (internal/api/auth.go loginResponse). */
-export interface LoginResult extends User {
+export interface AuthenticatedSession extends User {
   token: string;
 }
+
+/** The body POST /api/v0/auth/login returns instead, when the account has
+ * TOTP MFA enabled: the password verified, but no session is issued yet —
+ * complete the login with AuthResource.verifyMfa(mfaToken, code)
+ * (internal/api/auth.go mfaChallengeResponse). */
+export interface MfaChallenge {
+  mfaRequired: true;
+  mfaToken: string;
+}
+
+/** POST /api/v0/auth/login's response is one of these two shapes — check
+ * `"mfaRequired" in result` to discriminate. */
+export type LoginResult = AuthenticatedSession | MfaChallenge;
 
 /** A content item's publication status (internal/content/content.go). */
 export type ContentStatus = "draft" | "published";
