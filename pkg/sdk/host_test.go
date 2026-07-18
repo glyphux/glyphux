@@ -12,6 +12,7 @@ import (
 	"github.com/glyphux/glyphux/internal/identity"
 	"github.com/glyphux/glyphux/internal/media"
 	"github.com/glyphux/glyphux/pkg/contract"
+	"github.com/glyphux/glyphux/pkg/kernel"
 	"github.com/glyphux/glyphux/pkg/sdk"
 )
 
@@ -328,6 +329,69 @@ func TestHostAPIRegisterBlockWorksWithContentCapability(t *testing.T) {
 	}
 	if err := host.RegisterBlock(sdk.BlockDef{Name: "hero"}); err != nil {
 		t.Fatalf("register block: %v", err)
+	}
+}
+
+func TestNewHostAPIRejectsCoreConstraintKernelDoesNotSatisfy(t *testing.T) {
+	m := validManifest()
+	m.Requires.Core = ">=99.0.0"
+	if _, err := sdk.NewHostAPI(m, testKernel(t)); !errors.Is(err, sdk.ErrUnsupportedCoreVersion) {
+		t.Fatalf("expected ErrUnsupportedCoreVersion, got %v", err)
+	}
+}
+
+func TestNewHostAPIAcceptsCoreConstraintKernelSatisfies(t *testing.T) {
+	m := validManifest()
+	m.Requires.Core = ">=0.1.0"
+	if _, err := sdk.NewHostAPI(m, testKernel(t)); err != nil {
+		t.Fatalf("expected satisfied requires.core to be accepted, got %v", err)
+	}
+}
+
+func TestNewHostAPIAcceptsExactCoreConstraintMatchingKernelVersion(t *testing.T) {
+	m := validManifest()
+	m.Requires.Core = kernel.Version
+	if _, err := sdk.NewHostAPI(m, testKernel(t)); err != nil {
+		t.Fatalf("expected exact-match requires.core to be accepted, got %v", err)
+	}
+}
+
+func TestNewHostAPIRejectsExactCoreConstraintNotMatchingKernelVersion(t *testing.T) {
+	m := validManifest()
+	m.Requires.Core = "0.0.1"
+	if _, err := sdk.NewHostAPI(m, testKernel(t)); !errors.Is(err, sdk.ErrUnsupportedCoreVersion) {
+		t.Fatalf("expected ErrUnsupportedCoreVersion, got %v", err)
+	}
+}
+
+func TestNewHostAPIRejectsUnknownContractVersion(t *testing.T) {
+	m := validManifest()
+	m.Requires.Contract = "content-composition/v99"
+	if _, err := sdk.NewHostAPI(m, testKernel(t)); !errors.Is(err, sdk.ErrUnsupportedContract) {
+		t.Fatalf("expected ErrUnsupportedContract, got %v", err)
+	}
+}
+
+func TestNewHostAPIAcceptsKnownContractVersion(t *testing.T) {
+	m := validManifest()
+	m.Requires.Contract = string(contract.ContentCompositionV0)
+	if _, err := sdk.NewHostAPI(m, testKernel(t)); err != nil {
+		t.Fatalf("expected known requires.contract to be accepted, got %v", err)
+	}
+}
+
+func TestHostAPIAllowsNetworkHostDelegatesToManifest(t *testing.T) {
+	m := validManifest()
+	m.Permissions = []sdk.Permission{{Name: "network", Args: []string{"api.stripe.com"}}}
+	host, err := sdk.NewHostAPI(m, testKernel(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !host.AllowsNetworkHost("api.stripe.com") {
+		t.Fatal("expected allow: host is in the declared allowlist")
+	}
+	if host.AllowsNetworkHost("evil.example.com") {
+		t.Fatal("expected deny: host is not in the declared allowlist")
 	}
 }
 

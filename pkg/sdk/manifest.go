@@ -120,6 +120,34 @@ func validCoreConstraint(c string) bool {
 	return semver.IsValid(canonicalSemver(c))
 }
 
+// coreSatisfied reports whether kernelVersion satisfies constraint (a
+// requires.core string already known to be well-formed per
+// validCoreConstraint — this is NewHostAPI's runtime enforcement step,
+// checked in addition to, and after, Validate's shape check). An
+// unprefixed constraint means exact version match, matching the doc comment
+// on Requires.Core.
+func coreSatisfied(constraint, kernelVersion string) bool {
+	kv := canonicalSemver(kernelVersion)
+	for _, op := range coreConstraintOperators {
+		if rest, ok := strings.CutPrefix(constraint, op); ok {
+			cmp := semver.Compare(kv, canonicalSemver(rest))
+			switch op {
+			case ">=":
+				return cmp >= 0
+			case "<=":
+				return cmp <= 0
+			case "==":
+				return cmp == 0
+			case ">":
+				return cmp > 0
+			case "<":
+				return cmp < 0
+			}
+		}
+	}
+	return semver.Compare(kv, canonicalSemver(constraint)) == 0
+}
+
 // ErrInvalidManifest wraps every manifest validation failure.
 var ErrInvalidManifest = errors.New("invalid manifest")
 
@@ -197,6 +225,42 @@ func validateAPIScopes(scopes []APIScope) error {
 		}
 	}
 	return nil
+}
+
+// AllowsNetworkHost reports whether host is permitted by m's declared
+// "network" permission allowlist (PRD §7.3's example: `network:
+// [api.stripe.com]`). Deny-by-default (§10.1, "adversarial by default"): a
+// manifest that declares no "network" permission at all denies every host,
+// and an empty/blank host is never allowed regardless of the allowlist.
+//
+// Matching is EXACT HOSTNAME ONLY, case-insensitive — no wildcard or
+// subdomain matching. The PRD's own "api.stripe.com" example does not
+// specify subdomain semantics, and inventing an implicit "*.stripe.com"-style
+// bypass a plugin author never explicitly declared would cut against
+// adversarial-by-default. A plugin that legitimately needs several
+// subdomains must declare each one.
+//
+// This is a decision PRIMITIVE, not an enforcement POINT: nothing calls this
+// yet to actually intercept an outbound request, because the interception
+// points (the WASM host, the RPC broker — PRD §10.3) don't exist yet
+// (they're slices 2.4/2.5). See this slice's tracking doc,
+// docs/implementation/active/0014-phase2-slice2.6-permissions-enforcement.md.
+func (m Manifest) AllowsNetworkHost(host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return false
+	}
+	for _, p := range m.Permissions {
+		if p.Name != "network" {
+			continue
+		}
+		for _, allowed := range p.Args {
+			if strings.ToLower(strings.TrimSpace(allowed)) == host {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // canonicalSemver adds the "v" prefix golang.org/x/mod/semver requires, so

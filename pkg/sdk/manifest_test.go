@@ -166,15 +166,66 @@ func TestManifestValidateRejectsDuplicatePermission(t *testing.T) {
 	}
 }
 
+func TestManifestAllowsNetworkHostDeniesWithoutNetworkPermission(t *testing.T) {
+	m := validManifest()
+	if m.AllowsNetworkHost("api.stripe.com") {
+		t.Fatal("expected deny: manifest declares no network permission at all")
+	}
+}
+
+func TestManifestAllowsNetworkHostAllowsExactAllowlistedHost(t *testing.T) {
+	m := validManifest()
+	m.Permissions = []sdk.Permission{{Name: "network", Args: []string{"api.stripe.com"}}}
+	if !m.AllowsNetworkHost("api.stripe.com") {
+		t.Fatal("expected allow: host is in the declared allowlist")
+	}
+}
+
+func TestManifestAllowsNetworkHostDeniesUnlistedHost(t *testing.T) {
+	m := validManifest()
+	m.Permissions = []sdk.Permission{{Name: "network", Args: []string{"api.stripe.com"}}}
+	if m.AllowsNetworkHost("evil.example.com") {
+		t.Fatal("expected deny: host is not in the declared allowlist")
+	}
+}
+
+func TestManifestAllowsNetworkHostDeniesSubdomainOfAllowlistedHost(t *testing.T) {
+	m := validManifest()
+	m.Permissions = []sdk.Permission{{Name: "network", Args: []string{"api.stripe.com"}}}
+	if m.AllowsNetworkHost("evil.api.stripe.com") {
+		t.Fatal("expected deny: matching is exact-hostname only, no subdomain/wildcard matching")
+	}
+}
+
+func TestManifestAllowsNetworkHostIsCaseInsensitive(t *testing.T) {
+	m := validManifest()
+	m.Permissions = []sdk.Permission{{Name: "network", Args: []string{"api.stripe.com"}}}
+	if !m.AllowsNetworkHost("API.STRIPE.COM") {
+		t.Fatal("expected allow: hostname matching should be case-insensitive")
+	}
+}
+
+func TestManifestAllowsNetworkHostDeniesEmptyHost(t *testing.T) {
+	m := validManifest()
+	m.Permissions = []sdk.Permission{{Name: "network", Args: []string{"api.stripe.com"}}}
+	if m.AllowsNetworkHost("") {
+		t.Fatal("expected deny: empty host must never be allowed")
+	}
+}
+
 // validManifest returns a minimally well-formed manifest for tests that
-// only care about one specific field under test.
+// only care about one specific field under test. Requires.Core is
+// deliberately ">=0.1.0", not ">=1.0.0" as the PRD's own §7.3 example
+// shows — it must be satisfiable by the real running kernel.Version (see
+// pkg/kernel) for NewHostAPI's requires.core enforcement (slice 2.6) to
+// accept it; ">=1.0.0" would be rejected by today's actual pre-1.0 kernel.
 func validManifest() sdk.Manifest {
 	return sdk.Manifest{
 		Name:    "forms",
 		Version: "1.0.0",
 		Runtime: sdk.RuntimeWASM,
 		Requires: sdk.Requires{
-			Core:     ">=1.0.0",
+			Core:     ">=0.1.0",
 			Contract: "content-composition/v0",
 		},
 	}
