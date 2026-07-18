@@ -20,7 +20,7 @@ func (r *mutationResolver) CreateContentItem(ctx context.Context, typeArg string
 	if _, err := requireCapability(ctx, permission.ContentWrite); err != nil {
 		return nil, err
 	}
-	item, err := r.content.Create(ctx, typeArg, data)
+	item, err := r.content.Create(ctx, domainPrincipal(ctx), typeArg, data)
 	if err != nil {
 		return nil, r.mapContentError(err)
 	}
@@ -33,7 +33,7 @@ func (r *mutationResolver) UpdateContentItem(ctx context.Context, typeArg string
 	if _, err := requireCapability(ctx, permission.ContentWrite); err != nil {
 		return nil, err
 	}
-	item, err := r.content.Update(ctx, typeArg, id, data)
+	item, err := r.content.Update(ctx, domainPrincipal(ctx), typeArg, id, data)
 	if err != nil {
 		return nil, r.mapContentError(err)
 	}
@@ -46,7 +46,7 @@ func (r *mutationResolver) DeleteContentItem(ctx context.Context, typeArg string
 	if _, err := requireCapability(ctx, permission.ContentWrite); err != nil {
 		return false, err
 	}
-	if err := r.content.Delete(ctx, typeArg, id); err != nil {
+	if err := r.content.Delete(ctx, domainPrincipal(ctx), typeArg, id); err != nil {
 		return false, r.mapContentError(err)
 	}
 	return true, nil
@@ -59,7 +59,7 @@ func (r *mutationResolver) PublishContentItem(ctx context.Context, typeArg strin
 	if _, err := requireCapability(ctx, permission.ContentPublish); err != nil {
 		return nil, err
 	}
-	item, err := r.content.Publish(ctx, typeArg, id)
+	item, err := r.content.Publish(ctx, domainPrincipal(ctx), typeArg, id)
 	if err != nil {
 		return nil, r.mapContentError(err)
 	}
@@ -72,7 +72,7 @@ func (r *mutationResolver) UnpublishContentItem(ctx context.Context, typeArg str
 	if _, err := requireCapability(ctx, permission.ContentPublish); err != nil {
 		return nil, err
 	}
-	item, err := r.content.Unpublish(ctx, typeArg, id)
+	item, err := r.content.Unpublish(ctx, domainPrincipal(ctx), typeArg, id)
 	if err != nil {
 		return nil, r.mapContentError(err)
 	}
@@ -85,7 +85,7 @@ func (r *mutationResolver) RollbackContentItem(ctx context.Context, typeArg stri
 	if _, err := requireCapability(ctx, permission.ContentWrite); err != nil {
 		return nil, err
 	}
-	item, err := r.content.Rollback(ctx, typeArg, id, version)
+	item, err := r.content.Rollback(ctx, domainPrincipal(ctx), typeArg, id, version)
 	if err != nil {
 		return nil, r.mapContentError(err)
 	}
@@ -100,7 +100,7 @@ func (r *mutationResolver) DefineContentType(ctx context.Context, name string, f
 		return nil, err
 	}
 	ct := contentTypeFromInput(fields)
-	comp, err := r.compositions.DefineContentType(ctx, name, ct)
+	comp, err := r.compositions.DefineContentType(ctx, domainPrincipal(ctx), name, ct)
 	if err != nil {
 		return nil, r.mapContentTypeError(err)
 	}
@@ -136,7 +136,7 @@ func (r *mutationResolver) RemoveContentType(ctx context.Context, name string) (
 		}
 		return nil
 	}
-	if _, err := r.compositions.RemoveContentTypeGuarded(ctx, name, guard); err != nil {
+	if _, err := r.compositions.RemoveContentTypeGuarded(ctx, domainPrincipal(ctx), name, guard); err != nil {
 		if errors.Is(err, errContentTypeHasItemsGraphQL) {
 			return false, gqlErr("CONFLICT", err.Error())
 		}
@@ -156,7 +156,7 @@ func (r *mutationResolver) DeleteMediaItem(ctx context.Context, id string) (bool
 	if _, err := requireCapability(ctx, permission.MediaWrite); err != nil {
 		return false, err
 	}
-	if err := r.media.Delete(ctx, id); err != nil {
+	if err := r.media.Delete(ctx, domainPrincipal(ctx), id); err != nil {
 		return false, r.mapMediaError(err)
 	}
 	return true, nil

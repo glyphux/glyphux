@@ -13,6 +13,12 @@ import (
 
 	"github.com/glyphux/glyphux/internal/db"
 	"github.com/glyphux/glyphux/internal/media"
+	"github.com/glyphux/glyphux/internal/permission"
+)
+
+var (
+	mediaAdminPrincipal  = &permission.Principal{Role: permission.RoleAdmin}
+	mediaViewerPrincipal = &permission.Principal{Role: permission.RoleViewer}
 )
 
 func testAPI(t *testing.T) *media.API {
@@ -50,7 +56,7 @@ func TestUploadStoresFileAndMetadata(t *testing.T) {
 	ctx := context.Background()
 	data := pngBytes(t, 40, 20)
 
-	item, err := api.Upload(ctx, "cover.png", "image/png", data)
+	item, err := api.Upload(ctx, mediaAdminPrincipal, "cover.png", "image/png", data)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -78,7 +84,7 @@ func TestUploadStoresFileAndMetadata(t *testing.T) {
 
 func TestUploadRejectsDisallowedMimeType(t *testing.T) {
 	api := testAPI(t)
-	_, err := api.Upload(context.Background(), "notes.txt", "text/plain", []byte("hello"))
+	_, err := api.Upload(context.Background(), mediaAdminPrincipal, "notes.txt", "text/plain", []byte("hello"))
 	if !errors.Is(err, media.ErrUnsupportedType) {
 		t.Errorf("got %v, want ErrUnsupportedType", err)
 	}
@@ -94,10 +100,10 @@ func TestGetMissingReturnsNotFound(t *testing.T) {
 func TestListReturnsAllUploads(t *testing.T) {
 	api := testAPI(t)
 	ctx := context.Background()
-	if _, err := api.Upload(ctx, "a.png", "image/png", pngBytes(t, 10, 10)); err != nil {
+	if _, err := api.Upload(ctx, mediaAdminPrincipal, "a.png", "image/png", pngBytes(t, 10, 10)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := api.Upload(ctx, "b.png", "image/png", pngBytes(t, 10, 10)); err != nil {
+	if _, err := api.Upload(ctx, mediaAdminPrincipal, "b.png", "image/png", pngBytes(t, 10, 10)); err != nil {
 		t.Fatal(err)
 	}
 	items, err := api.List(ctx)
@@ -112,7 +118,7 @@ func TestListReturnsAllUploads(t *testing.T) {
 func TestDeleteRemovesRecordAndFile(t *testing.T) {
 	api := testAPI(t)
 	ctx := context.Background()
-	item, err := api.Upload(ctx, "a.png", "image/png", pngBytes(t, 10, 10))
+	item, err := api.Upload(ctx, mediaAdminPrincipal, "a.png", "image/png", pngBytes(t, 10, 10))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +127,7 @@ func TestDeleteRemovesRecordAndFile(t *testing.T) {
 		t.Fatalf("uploaded file missing on disk: %v", err)
 	}
 
-	if err := api.Delete(ctx, item.ID); err != nil {
+	if err := api.Delete(ctx, mediaAdminPrincipal, item.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 	if _, err := api.Get(ctx, item.ID); !errors.Is(err, media.ErrNotFound) {
@@ -136,7 +142,7 @@ func TestOpenServesStoredBytes(t *testing.T) {
 	api := testAPI(t)
 	ctx := context.Background()
 	data := pngBytes(t, 12, 8)
-	item, err := api.Upload(ctx, "a.png", "image/png", data)
+	item, err := api.Upload(ctx, mediaAdminPrincipal, "a.png", "image/png", data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +164,7 @@ func TestOpenServesStoredBytes(t *testing.T) {
 func TestResizeScalesImagePreservingAspectRatio(t *testing.T) {
 	api := testAPI(t)
 	ctx := context.Background()
-	item, err := api.Upload(ctx, "a.png", "image/png", pngBytes(t, 40, 20))
+	item, err := api.Upload(ctx, mediaAdminPrincipal, "a.png", "image/png", pngBytes(t, 40, 20))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,5 +182,51 @@ func TestResizeScalesImagePreservingAspectRatio(t *testing.T) {
 	}
 	if cfg.Width != 20 || cfg.Height != 10 {
 		t.Errorf("resized dimensions = %dx%d, want 20x10 (aspect preserved)", cfg.Width, cfg.Height)
+	}
+}
+
+// --- Domain-API boundary capability enforcement (PRD §10.5) ---
+//
+// These tests call the media domain API directly — bypassing internal/api's
+// HTTP transport and its requireCapability check entirely — to prove the
+// domain API rejects an under-privileged or anonymous caller on its own.
+
+func TestUploadRejectsUnderPrivilegedAndAnonymousPrincipal(t *testing.T) {
+	api := testAPI(t)
+	ctx := context.Background()
+	data := pngBytes(t, 4, 4)
+
+	if _, err := api.Upload(ctx, mediaViewerPrincipal, "a.png", "image/png", data); !errors.Is(err, permission.ErrDenied) {
+		t.Errorf("viewer Upload: got %v, want permission.ErrDenied", err)
+	}
+	if _, err := api.Upload(ctx, nil, "a.png", "image/png", data); !errors.Is(err, permission.ErrDenied) {
+		t.Errorf("anonymous Upload: got %v, want permission.ErrDenied", err)
+	}
+	items, err := api.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 0 {
+		t.Errorf("List = %d items, want 0 (denied uploads must not persist)", len(items))
+	}
+}
+
+func TestDeleteRejectsUnderPrivilegedAndAnonymousPrincipal(t *testing.T) {
+	api := testAPI(t)
+	ctx := context.Background()
+	item, err := api.Upload(ctx, mediaAdminPrincipal, "a.png", "image/png", pngBytes(t, 4, 4))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := api.Delete(ctx, mediaViewerPrincipal, item.ID); !errors.Is(err, permission.ErrDenied) {
+		t.Errorf("viewer Delete: got %v, want permission.ErrDenied", err)
+	}
+	if err := api.Delete(ctx, nil, item.ID); !errors.Is(err, permission.ErrDenied) {
+		t.Errorf("anonymous Delete: got %v, want permission.ErrDenied", err)
+	}
+	// Item must still exist: neither rejected Delete call took effect.
+	if _, err := api.Get(ctx, item.ID); err != nil {
+		t.Errorf("item should still exist after denied deletes: %v", err)
 	}
 }

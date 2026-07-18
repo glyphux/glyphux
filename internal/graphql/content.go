@@ -22,11 +22,11 @@ func (r *Resolver) getContentItem(ctx context.Context, typeName, id string, loca
 	drafts := canReadDrafts(ctx)
 	switch {
 	case loc != "" && drafts:
-		return r.content.GetLocalized(ctx, typeName, id, loc)
+		return r.content.GetLocalized(ctx, domainPrincipal(ctx), typeName, id, loc)
 	case loc != "" && !drafts:
 		return r.content.GetLocalizedPublished(ctx, typeName, id, loc)
 	case drafts:
-		return r.content.Get(ctx, typeName, id)
+		return r.content.Get(ctx, domainPrincipal(ctx), typeName, id)
 	default:
 		return r.content.GetPublished(ctx, typeName, id)
 	}
@@ -41,11 +41,11 @@ func (r *Resolver) listContentItems(ctx context.Context, typeName string, locale
 	drafts := canReadDrafts(ctx)
 	switch {
 	case loc != "" && drafts:
-		return r.content.ListLocalized(ctx, typeName, loc)
+		return r.content.ListLocalized(ctx, domainPrincipal(ctx), typeName, loc)
 	case loc != "" && !drafts:
 		return r.content.ListLocalizedPublished(ctx, typeName, loc)
 	case drafts:
-		return r.content.List(ctx, typeName)
+		return r.content.List(ctx, domainPrincipal(ctx), typeName)
 	default:
 		return r.content.ListPublished(ctx, typeName)
 	}

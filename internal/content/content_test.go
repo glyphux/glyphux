@@ -8,7 +8,18 @@ import (
 
 	"github.com/glyphux/glyphux/internal/composition"
 	"github.com/glyphux/glyphux/internal/db"
+	"github.com/glyphux/glyphux/internal/permission"
 	"github.com/glyphux/glyphux/pkg/contract"
+)
+
+// Principals used throughout: adminPrincipal for ordinary fixture setup
+// (Create/Update/etc. need *some* privileged caller), editorPrincipal and
+// viewerPrincipal to exercise under-privileged rejection, and a nil
+// *permission.Principal to exercise the anonymous/unauthenticated case.
+var (
+	adminPrincipal  = &permission.Principal{Role: permission.RoleAdmin}
+	editorPrincipal = &permission.Principal{Role: permission.RoleEditor}
+	viewerPrincipal = &permission.Principal{Role: permission.RoleViewer}
 )
 
 // testAPI wires a content API over a fresh SQLite DB whose composition declares
@@ -30,7 +41,7 @@ func testAPI(t *testing.T, types map[string]contract.ContentType) *API {
 		Site:            contract.Site{Name: "Test"},
 		ContentTypes:    types,
 	}
-	if err := comps.Save(context.Background(), comp); err != nil {
+	if err := comps.Save(context.Background(), nil, comp); err != nil {
 		t.Fatal(err)
 	}
 	return NewAPI(comps, NewStore(d))
@@ -47,7 +58,7 @@ func articleTypes() map[string]contract.ContentType {
 
 func TestCreateRejectsUndeclaredType(t *testing.T) {
 	api := testAPI(t, articleTypes())
-	_, err := api.Create(context.Background(), "widget", map[string]any{"title": "x"})
+	_, err := api.Create(context.Background(), adminPrincipal, "widget", map[string]any{"title": "x"})
 	if !errors.Is(err, ErrUnknownType) {
 		t.Errorf("got %v, want ErrUnknownType", err)
 	}
@@ -55,7 +66,7 @@ func TestCreateRejectsUndeclaredType(t *testing.T) {
 
 func TestCreateRejectsUnknownField(t *testing.T) {
 	api := testAPI(t, articleTypes())
-	_, err := api.Create(context.Background(), "article", map[string]any{"title": "x", "bogus": 1})
+	_, err := api.Create(context.Background(), adminPrincipal, "article", map[string]any{"title": "x", "bogus": 1})
 	if !errors.Is(err, ErrValidation) {
 		t.Errorf("got %v, want ErrValidation", err)
 	}
@@ -63,7 +74,7 @@ func TestCreateRejectsUnknownField(t *testing.T) {
 
 func TestCreateRejectsMissingRequiredField(t *testing.T) {
 	api := testAPI(t, articleTypes())
-	_, err := api.Create(context.Background(), "article", map[string]any{"body": "no title"})
+	_, err := api.Create(context.Background(), adminPrincipal, "article", map[string]any{"body": "no title"})
 	if !errors.Is(err, ErrValidation) {
 		t.Errorf("got %v, want ErrValidation", err)
 	}
@@ -77,22 +88,22 @@ func TestCreateRejectsWrongValueType(t *testing.T) {
 			"sale":  {Type: contract.FieldBoolean},
 		}},
 	})
-	_, err := api.Create(context.Background(), "product", map[string]any{"name": "Shoe", "price": "free"})
+	_, err := api.Create(context.Background(), adminPrincipal, "product", map[string]any{"name": "Shoe", "price": "free"})
 	if !errors.Is(err, ErrValidation) {
 		t.Errorf("string price: got %v, want ErrValidation", err)
 	}
-	if _, err := api.Create(context.Background(), "product", map[string]any{"name": "Shoe", "sale": "yes"}); !errors.Is(err, ErrValidation) {
+	if _, err := api.Create(context.Background(), adminPrincipal, "product", map[string]any{"name": "Shoe", "sale": "yes"}); !errors.Is(err, ErrValidation) {
 		t.Errorf("string bool: got %v, want ErrValidation", err)
 	}
 	// Correct kinds pass.
-	if _, err := api.Create(context.Background(), "product", map[string]any{"name": "Shoe", "price": 9.99, "sale": true}); err != nil {
+	if _, err := api.Create(context.Background(), adminPrincipal, "product", map[string]any{"name": "Shoe", "price": 9.99, "sale": true}); err != nil {
 		t.Errorf("valid product rejected: %v", err)
 	}
 }
 
 func TestGetMissingReturnsNotFound(t *testing.T) {
 	api := testAPI(t, articleTypes())
-	if _, err := api.Get(context.Background(), "article", "deadbeef"); !errors.Is(err, ErrNotFound) {
+	if _, err := api.Get(context.Background(), adminPrincipal, "article", "deadbeef"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("got %v, want ErrNotFound", err)
 	}
 }
@@ -107,7 +118,7 @@ func TestListReturnsOnlyItemsOfType(t *testing.T) {
 	mustCreate(t, api, "article", map[string]any{"title": "A2"})
 	mustCreate(t, api, "note", map[string]any{"title": "N1"})
 
-	items, err := api.List(ctx, "article")
+	items, err := api.List(ctx, adminPrincipal, "article")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -123,7 +134,7 @@ func TestListReturnsOnlyItemsOfType(t *testing.T) {
 
 func TestListUndeclaredTypeErrors(t *testing.T) {
 	api := testAPI(t, articleTypes())
-	if _, err := api.List(context.Background(), "widget"); !errors.Is(err, ErrUnknownType) {
+	if _, err := api.List(context.Background(), adminPrincipal, "widget"); !errors.Is(err, ErrUnknownType) {
 		t.Errorf("got %v, want ErrUnknownType", err)
 	}
 }
@@ -133,24 +144,24 @@ func TestUpdateMutatesAndValidates(t *testing.T) {
 	ctx := context.Background()
 	created := mustCreate(t, api, "article", map[string]any{"title": "Before"})
 
-	updated, err := api.Update(ctx, "article", created.ID, map[string]any{"title": "After", "body": "added"})
+	updated, err := api.Update(ctx, adminPrincipal, "article", created.ID, map[string]any{"title": "After", "body": "added"})
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	if updated.Data["title"] != "After" || updated.Data["body"] != "added" {
 		t.Errorf("Update data = %v", updated.Data)
 	}
-	got, _ := api.Get(ctx, "article", created.ID)
+	got, _ := api.Get(ctx, adminPrincipal, "article", created.ID)
 	if got.Data["title"] != "After" {
 		t.Errorf("persisted title = %v, want After", got.Data["title"])
 	}
 
 	// Update is validated too: a missing required field is rejected.
-	if _, err := api.Update(ctx, "article", created.ID, map[string]any{"body": "no title"}); !errors.Is(err, ErrValidation) {
+	if _, err := api.Update(ctx, adminPrincipal, "article", created.ID, map[string]any{"body": "no title"}); !errors.Is(err, ErrValidation) {
 		t.Errorf("invalid update: got %v, want ErrValidation", err)
 	}
 	// Updating a missing item is a not-found.
-	if _, err := api.Update(ctx, "article", "nope", map[string]any{"title": "x"}); !errors.Is(err, ErrNotFound) {
+	if _, err := api.Update(ctx, adminPrincipal, "article", "nope", map[string]any{"title": "x"}); !errors.Is(err, ErrNotFound) {
 		t.Errorf("update missing: got %v, want ErrNotFound", err)
 	}
 }
@@ -160,14 +171,14 @@ func TestDeleteRemoves(t *testing.T) {
 	ctx := context.Background()
 	created := mustCreate(t, api, "article", map[string]any{"title": "Doomed"})
 
-	if err := api.Delete(ctx, "article", created.ID); err != nil {
+	if err := api.Delete(ctx, adminPrincipal, "article", created.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if _, err := api.Get(ctx, "article", created.ID); !errors.Is(err, ErrNotFound) {
+	if _, err := api.Get(ctx, adminPrincipal, "article", created.ID); !errors.Is(err, ErrNotFound) {
 		t.Errorf("after delete, Get got %v, want ErrNotFound", err)
 	}
 	// Deleting a missing item is a not-found.
-	if err := api.Delete(ctx, "article", created.ID); !errors.Is(err, ErrNotFound) {
+	if err := api.Delete(ctx, adminPrincipal, "article", created.ID); !errors.Is(err, ErrNotFound) {
 		t.Errorf("delete missing: got %v, want ErrNotFound", err)
 	}
 }
@@ -195,7 +206,7 @@ func TestCountItemsReflectsCreatesAndDeletes(t *testing.T) {
 		t.Fatalf("CountItems = %d, want 2", n)
 	}
 
-	if err := api.Delete(ctx, "article", created.ID); err != nil {
+	if err := api.Delete(ctx, adminPrincipal, "article", created.ID); err != nil {
 		t.Fatal(err)
 	}
 	n, err = api.CountItems(ctx, "article")
@@ -225,23 +236,23 @@ func TestRelationMustReferenceExistingTarget(t *testing.T) {
 	author := mustCreate(t, api, "author", map[string]any{"name": "Ada"})
 
 	// Valid reference to an existing author.
-	if _, err := api.Create(ctx, "article", map[string]any{"title": "T", "author": author.ID}); err != nil {
+	if _, err := api.Create(ctx, adminPrincipal, "article", map[string]any{"title": "T", "author": author.ID}); err != nil {
 		t.Errorf("valid relation rejected: %v", err)
 	}
 	// Dangling reference is a validation failure.
-	if _, err := api.Create(ctx, "article", map[string]any{"title": "T", "author": "does-not-exist"}); !errors.Is(err, ErrValidation) {
+	if _, err := api.Create(ctx, adminPrincipal, "article", map[string]any{"title": "T", "author": "does-not-exist"}); !errors.Is(err, ErrValidation) {
 		t.Errorf("dangling relation: got %v, want ErrValidation", err)
 	}
 	// Update is enforced too.
 	art := mustCreate(t, api, "article", map[string]any{"title": "T"})
-	if _, err := api.Update(ctx, "article", art.ID, map[string]any{"title": "T", "author": "nope"}); !errors.Is(err, ErrValidation) {
+	if _, err := api.Update(ctx, adminPrincipal, "article", art.ID, map[string]any{"title": "T", "author": "nope"}); !errors.Is(err, ErrValidation) {
 		t.Errorf("dangling relation on update: got %v, want ErrValidation", err)
 	}
 }
 
 func mustCreate(t *testing.T, api *API, typeName string, data map[string]any) *Item {
 	t.Helper()
-	it, err := api.Create(context.Background(), typeName, data)
+	it, err := api.Create(context.Background(), adminPrincipal, typeName, data)
 	if err != nil {
 		t.Fatalf("Create(%s): %v", typeName, err)
 	}
@@ -264,19 +275,19 @@ func TestPublishAndUnpublish(t *testing.T) {
 	ctx := context.Background()
 	created := mustCreate(t, api, "article", map[string]any{"title": "Hello"})
 
-	published, err := api.Publish(ctx, "article", created.ID)
+	published, err := api.Publish(ctx, adminPrincipal, "article", created.ID)
 	if err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	if published.Status != "published" {
 		t.Errorf("Status after Publish = %q, want published", published.Status)
 	}
-	got, _ := api.Get(ctx, "article", created.ID)
+	got, _ := api.Get(ctx, adminPrincipal, "article", created.ID)
 	if got.Status != "published" {
 		t.Errorf("persisted status = %q, want published", got.Status)
 	}
 
-	unpublished, err := api.Unpublish(ctx, "article", created.ID)
+	unpublished, err := api.Unpublish(ctx, adminPrincipal, "article", created.ID)
 	if err != nil {
 		t.Fatalf("Unpublish: %v", err)
 	}
@@ -284,7 +295,7 @@ func TestPublishAndUnpublish(t *testing.T) {
 		t.Errorf("Status after Unpublish = %q, want draft", unpublished.Status)
 	}
 
-	if _, err := api.Publish(ctx, "article", "nope"); !errors.Is(err, ErrNotFound) {
+	if _, err := api.Publish(ctx, adminPrincipal, "article", "nope"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("publish missing item: got %v, want ErrNotFound", err)
 	}
 }
@@ -294,7 +305,7 @@ func TestUpdateBumpsVersionAndRecordsHistory(t *testing.T) {
 	ctx := context.Background()
 	created := mustCreate(t, api, "article", map[string]any{"title": "V1"})
 
-	updated, err := api.Update(ctx, "article", created.ID, map[string]any{"title": "V2"})
+	updated, err := api.Update(ctx, adminPrincipal, "article", created.ID, map[string]any{"title": "V2"})
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
@@ -325,12 +336,12 @@ func TestRollbackRestoresOlderVersion(t *testing.T) {
 	api := testAPI(t, articleTypes())
 	ctx := context.Background()
 	created := mustCreate(t, api, "article", map[string]any{"title": "V1"})
-	_, err := api.Update(ctx, "article", created.ID, map[string]any{"title": "V2"})
+	_, err := api.Update(ctx, adminPrincipal, "article", created.ID, map[string]any{"title": "V2"})
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 
-	rolled, err := api.Rollback(ctx, "article", created.ID, 1)
+	rolled, err := api.Rollback(ctx, adminPrincipal, "article", created.ID, 1)
 	if err != nil {
 		t.Fatalf("Rollback: %v", err)
 	}
@@ -341,7 +352,7 @@ func TestRollbackRestoresOlderVersion(t *testing.T) {
 		t.Errorf("Rollback Version = %d, want 3 (rollback is itself a new version)", rolled.Version)
 	}
 
-	if _, err := api.Rollback(ctx, "article", created.ID, 99); !errors.Is(err, ErrNotFound) {
+	if _, err := api.Rollback(ctx, adminPrincipal, "article", created.ID, 99); !errors.Is(err, ErrNotFound) {
 		t.Errorf("rollback to missing version: got %v, want ErrNotFound", err)
 	}
 }
@@ -357,7 +368,7 @@ func localizedArticleTypes() map[string]contract.ContentType {
 
 func TestCreateAcceptsLocalizedFieldAsLocaleMap(t *testing.T) {
 	api := testAPI(t, localizedArticleTypes())
-	created, err := api.Create(context.Background(), "article", map[string]any{
+	created, err := api.Create(context.Background(), adminPrincipal, "article", map[string]any{
 		"title": map[string]any{"en": "Hello", "fr": "Bonjour"},
 	})
 	if err != nil {
@@ -371,7 +382,7 @@ func TestCreateAcceptsLocalizedFieldAsLocaleMap(t *testing.T) {
 
 func TestCreateRejectsLocalizedFieldNotAMap(t *testing.T) {
 	api := testAPI(t, localizedArticleTypes())
-	_, err := api.Create(context.Background(), "article", map[string]any{"title": "not a locale map"})
+	_, err := api.Create(context.Background(), adminPrincipal, "article", map[string]any{"title": "not a locale map"})
 	if !errors.Is(err, ErrValidation) {
 		t.Errorf("got %v, want ErrValidation", err)
 	}
@@ -379,7 +390,7 @@ func TestCreateRejectsLocalizedFieldNotAMap(t *testing.T) {
 
 func TestCreateRejectsWrongKindWithinLocaleMap(t *testing.T) {
 	api := testAPI(t, localizedArticleTypes())
-	_, err := api.Create(context.Background(), "article", map[string]any{
+	_, err := api.Create(context.Background(), adminPrincipal, "article", map[string]any{
 		"title": map[string]any{"en": 42},
 	})
 	if !errors.Is(err, ErrValidation) {
@@ -389,7 +400,7 @@ func TestCreateRejectsWrongKindWithinLocaleMap(t *testing.T) {
 
 func TestCreateRejectsEmptyLocaleMapForRequiredField(t *testing.T) {
 	api := testAPI(t, localizedArticleTypes())
-	_, err := api.Create(context.Background(), "article", map[string]any{
+	_, err := api.Create(context.Background(), adminPrincipal, "article", map[string]any{
 		"title": map[string]any{},
 	})
 	if !errors.Is(err, ErrValidation) {
@@ -405,7 +416,7 @@ func TestGetLocalizedResolvesRequestedLocaleWithFallback(t *testing.T) {
 		"body":  "shared body",
 	})
 
-	fr, err := api.GetLocalized(ctx, "article", created.ID, "fr")
+	fr, err := api.GetLocalized(ctx, adminPrincipal, "article", created.ID, "fr")
 	if err != nil {
 		t.Fatalf("GetLocalized(fr): %v", err)
 	}
@@ -417,7 +428,7 @@ func TestGetLocalizedResolvesRequestedLocaleWithFallback(t *testing.T) {
 	}
 
 	// Missing locale falls back to any available value rather than erroring.
-	de, err := api.GetLocalized(ctx, "article", created.ID, "de")
+	de, err := api.GetLocalized(ctx, adminPrincipal, "article", created.ID, "de")
 	if err != nil {
 		t.Fatalf("GetLocalized(de): %v", err)
 	}
@@ -432,7 +443,7 @@ func TestListLocalizedResolvesEachItem(t *testing.T) {
 	mustCreate(t, api, "article", map[string]any{"title": map[string]any{"en": "A"}})
 	mustCreate(t, api, "article", map[string]any{"title": map[string]any{"en": "B"}})
 
-	items, err := api.ListLocalized(ctx, "article", "en")
+	items, err := api.ListLocalized(ctx, adminPrincipal, "article", "en")
 	if err != nil {
 		t.Fatalf("ListLocalized: %v", err)
 	}
@@ -455,7 +466,7 @@ func TestGetPublishedHidesDrafts(t *testing.T) {
 		t.Errorf("GetPublished on draft: got %v, want ErrNotFound", err)
 	}
 
-	if _, err := api.Publish(ctx, "article", created.ID); err != nil {
+	if _, err := api.Publish(ctx, adminPrincipal, "article", created.ID); err != nil {
 		t.Fatal(err)
 	}
 	got, err := api.GetPublished(ctx, "article", created.ID)
@@ -467,7 +478,7 @@ func TestGetPublishedHidesDrafts(t *testing.T) {
 	}
 
 	// Admin Get still sees it regardless of status.
-	if _, err := api.Get(ctx, "article", created.ID); err != nil {
+	if _, err := api.Get(ctx, adminPrincipal, "article", created.ID); err != nil {
 		t.Errorf("Get (admin view): %v", err)
 	}
 }
@@ -477,7 +488,7 @@ func TestListPublishedExcludesDrafts(t *testing.T) {
 	ctx := context.Background()
 	published := mustCreate(t, api, "article", map[string]any{"title": "Published"})
 	mustCreate(t, api, "article", map[string]any{"title": "Draft"})
-	if _, err := api.Publish(ctx, "article", published.ID); err != nil {
+	if _, err := api.Publish(ctx, adminPrincipal, "article", published.ID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -490,7 +501,7 @@ func TestListPublishedExcludesDrafts(t *testing.T) {
 	}
 
 	// Admin List still sees both.
-	all, err := api.List(ctx, "article")
+	all, err := api.List(ctx, adminPrincipal, "article")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -507,7 +518,7 @@ func TestGetLocalizedPublishedHidesDrafts(t *testing.T) {
 	if _, err := api.GetLocalizedPublished(ctx, "article", created.ID, "en"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("GetLocalizedPublished on draft: got %v, want ErrNotFound", err)
 	}
-	if _, err := api.Publish(ctx, "article", created.ID); err != nil {
+	if _, err := api.Publish(ctx, adminPrincipal, "article", created.ID); err != nil {
 		t.Fatal(err)
 	}
 	got, err := api.GetLocalizedPublished(ctx, "article", created.ID, "en")
@@ -524,7 +535,7 @@ func TestListLocalizedPublishedExcludesDrafts(t *testing.T) {
 	ctx := context.Background()
 	published := mustCreate(t, api, "article", map[string]any{"title": map[string]any{"en": "Pub"}})
 	mustCreate(t, api, "article", map[string]any{"title": map[string]any{"en": "Draft"}})
-	if _, err := api.Publish(ctx, "article", published.ID); err != nil {
+	if _, err := api.Publish(ctx, adminPrincipal, "article", published.ID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -541,7 +552,7 @@ func TestCreateAndGet(t *testing.T) {
 	api := testAPI(t, articleTypes())
 	ctx := context.Background()
 
-	created, err := api.Create(ctx, "article", map[string]any{"title": "Hello", "body": "World"})
+	created, err := api.Create(ctx, adminPrincipal, "article", map[string]any{"title": "Hello", "body": "World"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -552,7 +563,7 @@ func TestCreateAndGet(t *testing.T) {
 		t.Errorf("Type = %q, want article", created.Type)
 	}
 
-	got, err := api.Get(ctx, "article", created.ID)
+	got, err := api.Get(ctx, adminPrincipal, "article", created.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -561,5 +572,130 @@ func TestCreateAndGet(t *testing.T) {
 	}
 	if got.Data["body"] != "World" {
 		t.Errorf("body = %v, want World", got.Data["body"])
+	}
+}
+
+// --- Domain-API boundary capability enforcement (PRD §10.5) ---
+//
+// These tests call the content domain API directly — bypassing
+// internal/api's HTTP transport and its requireCapability/canReadDrafts
+// checks entirely — to prove the domain API rejects an under-privileged or
+// anonymous caller on its own, independent of whether any transport layer
+// already checked.
+
+func TestCreateRejectsUnderPrivilegedAndAnonymousPrincipal(t *testing.T) {
+	api := testAPI(t, articleTypes())
+	ctx := context.Background()
+
+	if _, err := api.Create(ctx, viewerPrincipal, "article", map[string]any{"title": "x"}); !errors.Is(err, permission.ErrDenied) {
+		t.Errorf("viewer Create: got %v, want permission.ErrDenied", err)
+	}
+	if _, err := api.Create(ctx, nil, "article", map[string]any{"title": "x"}); !errors.Is(err, permission.ErrDenied) {
+		t.Errorf("anonymous Create: got %v, want permission.ErrDenied", err)
+	}
+	// Editor holds content:write and should succeed.
+	if _, err := api.Create(ctx, editorPrincipal, "article", map[string]any{"title": "x"}); err != nil {
+		t.Errorf("editor Create rejected: %v", err)
+	}
+}
+
+func TestUpdateRejectsUnderPrivilegedAndAnonymousPrincipal(t *testing.T) {
+	api := testAPI(t, articleTypes())
+	ctx := context.Background()
+	created := mustCreate(t, api, "article", map[string]any{"title": "Before"})
+
+	if _, err := api.Update(ctx, viewerPrincipal, "article", created.ID, map[string]any{"title": "After"}); !errors.Is(err, permission.ErrDenied) {
+		t.Errorf("viewer Update: got %v, want permission.ErrDenied", err)
+	}
+	if _, err := api.Update(ctx, nil, "article", created.ID, map[string]any{"title": "After"}); !errors.Is(err, permission.ErrDenied) {
+		t.Errorf("anonymous Update: got %v, want permission.ErrDenied", err)
+	}
+}
+
+func TestDeleteRejectsUnderPrivilegedAndAnonymousPrincipal(t *testing.T) {
+	api := testAPI(t, articleTypes())
+	ctx := context.Background()
+	created := mustCreate(t, api, "article", map[string]any{"title": "Doomed"})
+
+	if err := api.Delete(ctx, viewerPrincipal, "article", created.ID); !errors.Is(err, permission.ErrDenied) {
+		t.Errorf("viewer Delete: got %v, want permission.ErrDenied", err)
+	}
+	if err := api.Delete(ctx, nil, "article", created.ID); !errors.Is(err, permission.ErrDenied) {
+		t.Errorf("anonymous Delete: got %v, want permission.ErrDenied", err)
+	}
+	// Item must still exist: neither rejected Delete call took effect.
+	if _, err := api.Get(ctx, adminPrincipal, "article", created.ID); err != nil {
+		t.Errorf("item should still exist after denied deletes: %v", err)
+	}
+}
+
+func TestPublishAndUnpublishRequireContentPublishNotJustContentWrite(t *testing.T) {
+	api := testAPI(t, articleTypes())
+	ctx := context.Background()
+	created := mustCreate(t, api, "article", map[string]any{"title": "Hello"})
+
+	// Editor holds content:write but not content:publish.
+	if _, err := api.Publish(ctx, editorPrincipal, "article", created.ID); !errors.Is(err, permission.ErrDenied) {
+		t.Errorf("editor Publish: got %v, want permission.ErrDenied", err)
+	}
+	if _, err := api.Publish(ctx, nil, "article", created.ID); !errors.Is(err, permission.ErrDenied) {
+		t.Errorf("anonymous Publish: got %v, want permission.ErrDenied", err)
+	}
+	published, err := api.Publish(ctx, adminPrincipal, "article", created.ID)
+	if err != nil {
+		t.Fatalf("admin Publish: %v", err)
+	}
+	if _, err := api.Unpublish(ctx, editorPrincipal, "article", published.ID); !errors.Is(err, permission.ErrDenied) {
+		t.Errorf("editor Unpublish: got %v, want permission.ErrDenied", err)
+	}
+}
+
+func TestRollbackRejectsUnderPrivilegedAndAnonymousPrincipal(t *testing.T) {
+	api := testAPI(t, articleTypes())
+	ctx := context.Background()
+	created := mustCreate(t, api, "article", map[string]any{"title": "V1"})
+	if _, err := api.Update(ctx, adminPrincipal, "article", created.ID, map[string]any{"title": "V2"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := api.Rollback(ctx, viewerPrincipal, "article", created.ID, 1); !errors.Is(err, permission.ErrDenied) {
+		t.Errorf("viewer Rollback: got %v, want permission.ErrDenied", err)
+	}
+	if _, err := api.Rollback(ctx, nil, "article", created.ID, 1); !errors.Is(err, permission.ErrDenied) {
+		t.Errorf("anonymous Rollback: got %v, want permission.ErrDenied", err)
+	}
+}
+
+func TestGetAndListRejectAnonymousAndViewerLacksReadDrafts(t *testing.T) {
+	api := testAPI(t, articleTypes())
+	ctx := context.Background()
+	created := mustCreate(t, api, "article", map[string]any{"title": "Draft only"})
+
+	// Viewer holds content:read but not content:read_drafts, so the
+	// all-status admin view (Get/List) is denied even though the public,
+	// capability-free GetPublished path exists separately.
+	if _, err := api.Get(ctx, viewerPrincipal, "article", created.ID); !errors.Is(err, permission.ErrDenied) {
+		t.Errorf("viewer Get: got %v, want permission.ErrDenied", err)
+	}
+	if _, err := api.Get(ctx, nil, "article", created.ID); !errors.Is(err, permission.ErrDenied) {
+		t.Errorf("anonymous Get: got %v, want permission.ErrDenied", err)
+	}
+	if _, err := api.List(ctx, viewerPrincipal, "article"); !errors.Is(err, permission.ErrDenied) {
+		t.Errorf("viewer List: got %v, want permission.ErrDenied", err)
+	}
+	if _, err := api.List(ctx, nil, "article"); !errors.Is(err, permission.ErrDenied) {
+		t.Errorf("anonymous List: got %v, want permission.ErrDenied", err)
+	}
+	// Editor and admin both hold content:read_drafts.
+	if _, err := api.Get(ctx, editorPrincipal, "article", created.ID); err != nil {
+		t.Errorf("editor Get rejected: %v", err)
+	}
+
+	// The public, capability-free path is unaffected: anyone (including
+	// anonymous) can still read published content — but this item is still
+	// a draft, so it is correctly invisible there too, just for a different
+	// reason (not published, not permission).
+	if _, err := api.GetPublished(ctx, "article", created.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("GetPublished on draft: got %v, want ErrNotFound", err)
 	}
 }

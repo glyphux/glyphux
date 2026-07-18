@@ -166,13 +166,16 @@ func (w *Wizard) handleSubmit(rw http.ResponseWriter, r *http.Request) {
 		w.renderError(rw, needToken, "A Postgres connection string is required when Postgres is selected.")
 		return
 	}
-
 	in := Input{SiteName: siteName, AdminEmail: email, AdminPassword: password, Driver: driver, DSN: dsn}
 
 	ctx := r.Context()
 	// Writing the initial composition is the act that completes setup, so it
 	// and the admin account are created atomically: either both exist or
 	// neither does, and a failed attempt is always safe to retry (§17).
+	// commit persists via Store.SaveWith (not Save), which does not require a
+	// principal — the real security boundary for this pre-auth bootstrap
+	// write is the wizard's own token/localhost gate above, not a capability
+	// check (Store.Save's capability check exists for post-setup callers).
 	if err := w.commit(ctx, in); err != nil {
 		w.renderError(rw, needToken, err.Error())
 		return

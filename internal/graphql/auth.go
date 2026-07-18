@@ -94,3 +94,19 @@ func canReadDrafts(ctx context.Context) bool {
 	user, ok := principalFrom(ctx)
 	return ok && permission.Allows(user.Role, permission.ContentReadDrafts)
 }
+
+// domainPrincipal converts the request's authenticated identity.User (if
+// any) into the narrow permission.Principal domain APIs check capability
+// grants against — the same bridge internal/api/auth.go's principal method
+// makes, so internal/content, internal/composition, and internal/media
+// never need to import internal/identity to enforce their own
+// domain-API-boundary capability checks (PRD §10.5) as defense-in-depth
+// alongside this package's own requireCapability/canReadDrafts fast-fail
+// checks.
+func domainPrincipal(ctx context.Context) *permission.Principal {
+	user, ok := principalFrom(ctx)
+	if !ok {
+		return nil
+	}
+	return &permission.Principal{Role: user.Role}
+}

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/glyphux/glyphux/internal/db"
+	"github.com/glyphux/glyphux/internal/permission"
 	"github.com/glyphux/glyphux/pkg/contract"
 )
 
@@ -51,7 +52,7 @@ var Migrations = []db.Migration{
 // concurrent read-modify-write cycles on the single composition row would
 // otherwise silently drop whichever one committed last, with the survivor's
 // write based on a document the other's edit never touched.
-const maxCASAttempts = 10
+const maxCASAttempts = 50
 
 // Store reads and writes the composition document.
 type Store struct {
@@ -92,14 +93,33 @@ func (s *Store) loadVersioned(ctx context.Context) (*contract.Composition, int64
 // Save validates and persists the composition. Invalid compositions are
 // rejected before touching storage — the store never holds a contract-invalid
 // document.
-func (s *Store) Save(ctx context.Context, c *contract.Composition) error {
+//
+// principal must hold content-types:manage — checked here at the domain-API
+// boundary (PRD §10.5) — with one deliberate exception: the very first write
+// (first-run setup, before any composition or admin account exists) needs no
+// principal, since none can exist yet. That bootstrap write goes through
+// SaveWith directly (see internal/setup's Committer), which is already gated
+// by the setup wizard's own token/localhost check — the real security
+// boundary for it, not a capability check. Every Save call once a
+// composition already exists requires an authenticated principal holding
+// content-types:manage.
+func (s *Store) Save(ctx context.Context, principal *permission.Principal, c *contract.Composition) error {
+	exists, err := s.Exists(ctx)
+	if err != nil {
+		return err
+	}
+	if exists && !permission.AllowsPrincipal(principal, permission.ContentTypesManage) {
+		return permission.ErrDenied
+	}
 	return s.SaveWith(ctx, s.db, c)
 }
 
 // SaveWith validates and persists the composition using q instead of the
-// store's own database handle — q is typically a transaction from
-// db.WithTx, so bootstrap can save the initial composition and create the
-// admin account atomically: both commit together, or neither does.
+// store's own database handle, with no capability check — q is typically a
+// transaction from db.WithTx, so bootstrap can save the initial composition
+// and create the admin account atomically: both commit together, or neither
+// does. Callers outside the pre-auth bootstrap path should use Save, not
+// this, so the capability check isn't bypassed.
 func (s *Store) SaveWith(ctx context.Context, q db.Queryer, c *contract.Composition) error {
 	if err := c.Validate(); err != nil {
 		return err
@@ -150,7 +170,14 @@ func (s *Store) casSave(ctx context.Context, c *contract.Composition, expectVers
 // contract schema before persisting — an invalid shape (unknown field type,
 // a relation naming a target that doesn't exist, a non-identifier name)
 // leaves the stored composition untouched.
-func (s *Store) DefineContentType(ctx context.Context, name string, ct contract.ContentType) (*contract.Composition, error) {
+//
+// principal must hold content-types:manage, checked here at the domain-API
+// boundary (PRD §10.5) as defense-in-depth alongside the transport layer's
+// own requireCapability fast-fail check.
+func (s *Store) DefineContentType(ctx context.Context, principal *permission.Principal, name string, ct contract.ContentType) (*contract.Composition, error) {
+	if !permission.AllowsPrincipal(principal, permission.ContentTypesManage) {
+		return nil, permission.ErrDenied
+	}
 	for attempt := 0; attempt < maxCASAttempts; attempt++ {
 		comp, version, err := s.loadVersioned(ctx)
 		if err != nil {
@@ -178,8 +205,8 @@ func (s *Store) DefineContentType(ctx context.Context, name string, ct contract.
 // ErrContentTypeNotFound if no type by that name is declared. Callers are
 // responsible for checking whether content items of that type still exist
 // before calling this — the store itself has no notion of content items.
-func (s *Store) RemoveContentType(ctx context.Context, name string) (*contract.Composition, error) {
-	return s.RemoveContentTypeGuarded(ctx, name, nil)
+func (s *Store) RemoveContentType(ctx context.Context, principal *permission.Principal, name string) (*contract.Composition, error) {
+	return s.RemoveContentTypeGuarded(ctx, principal, name, nil)
 }
 
 // RemoveContentTypeGuarded is RemoveContentType, but calls guard (if
@@ -191,7 +218,14 @@ func (s *Store) RemoveContentType(ctx context.Context, name string) (*contract.C
 // transaction spanning both the composition and content stores, since an
 // item could otherwise be created in the gap between an earlier count check
 // and this write.
-func (s *Store) RemoveContentTypeGuarded(ctx context.Context, name string, guard func(context.Context) error) (*contract.Composition, error) {
+//
+// principal must hold content-types:manage, checked here at the domain-API
+// boundary (PRD §10.5) as defense-in-depth alongside the transport layer's
+// own requireCapability fast-fail check.
+func (s *Store) RemoveContentTypeGuarded(ctx context.Context, principal *permission.Principal, name string, guard func(context.Context) error) (*contract.Composition, error) {
+	if !permission.AllowsPrincipal(principal, permission.ContentTypesManage) {
+		return nil, permission.ErrDenied
+	}
 	for attempt := 0; attempt < maxCASAttempts; attempt++ {
 		comp, version, err := s.loadVersioned(ctx)
 		if err != nil {

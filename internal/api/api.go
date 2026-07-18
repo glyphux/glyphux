@@ -111,7 +111,7 @@ func (s *Server) handleContentCreate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	item, err := s.content.Create(r.Context(), r.PathValue("type"), data)
+	item, err := s.content.Create(r.Context(), s.principal(r), r.PathValue("type"), data)
 	if err != nil {
 		s.writeContentError(w, err)
 		return
@@ -138,11 +138,11 @@ func (s *Server) handleContentList(w http.ResponseWriter, r *http.Request) {
 	)
 	switch {
 	case locale != "" && drafts:
-		items, err = s.content.ListLocalized(r.Context(), typeName, locale)
+		items, err = s.content.ListLocalized(r.Context(), s.principal(r), typeName, locale)
 	case locale != "" && !drafts:
 		items, err = s.content.ListLocalizedPublished(r.Context(), typeName, locale)
 	case drafts:
-		items, err = s.content.List(r.Context(), typeName)
+		items, err = s.content.List(r.Context(), s.principal(r), typeName)
 	default:
 		items, err = s.content.ListPublished(r.Context(), typeName)
 	}
@@ -164,11 +164,11 @@ func (s *Server) handleContentGet(w http.ResponseWriter, r *http.Request) {
 	)
 	switch {
 	case locale != "" && drafts:
-		item, err = s.content.GetLocalized(r.Context(), typeName, id, locale)
+		item, err = s.content.GetLocalized(r.Context(), s.principal(r), typeName, id, locale)
 	case locale != "" && !drafts:
 		item, err = s.content.GetLocalizedPublished(r.Context(), typeName, id, locale)
 	case drafts:
-		item, err = s.content.Get(r.Context(), typeName, id)
+		item, err = s.content.Get(r.Context(), s.principal(r), typeName, id)
 	default:
 		item, err = s.content.GetPublished(r.Context(), typeName, id)
 	}
@@ -184,7 +184,7 @@ func (s *Server) handleContentUpdate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	item, err := s.content.Update(r.Context(), r.PathValue("type"), r.PathValue("id"), data)
+	item, err := s.content.Update(r.Context(), s.principal(r), r.PathValue("type"), r.PathValue("id"), data)
 	if err != nil {
 		s.writeContentError(w, err)
 		return
@@ -193,7 +193,7 @@ func (s *Server) handleContentUpdate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleContentDelete(w http.ResponseWriter, r *http.Request) {
-	if err := s.content.Delete(r.Context(), r.PathValue("type"), r.PathValue("id")); err != nil {
+	if err := s.content.Delete(r.Context(), s.principal(r), r.PathValue("type"), r.PathValue("id")); err != nil {
 		s.writeContentError(w, err)
 		return
 	}
@@ -201,7 +201,7 @@ func (s *Server) handleContentDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleContentPublish(w http.ResponseWriter, r *http.Request) {
-	item, err := s.content.Publish(r.Context(), r.PathValue("type"), r.PathValue("id"))
+	item, err := s.content.Publish(r.Context(), s.principal(r), r.PathValue("type"), r.PathValue("id"))
 	if err != nil {
 		s.writeContentError(w, err)
 		return
@@ -210,7 +210,7 @@ func (s *Server) handleContentPublish(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleContentUnpublish(w http.ResponseWriter, r *http.Request) {
-	item, err := s.content.Unpublish(r.Context(), r.PathValue("type"), r.PathValue("id"))
+	item, err := s.content.Unpublish(r.Context(), s.principal(r), r.PathValue("type"), r.PathValue("id"))
 	if err != nil {
 		s.writeContentError(w, err)
 		return
@@ -233,7 +233,7 @@ func (s *Server) handleContentRollback(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "version must be an integer")
 		return
 	}
-	item, err := s.content.Rollback(r.Context(), r.PathValue("type"), r.PathValue("id"), version)
+	item, err := s.content.Rollback(r.Context(), s.principal(r), r.PathValue("type"), r.PathValue("id"), version)
 	if err != nil {
 		s.writeContentError(w, err)
 		return
@@ -270,6 +270,11 @@ func (s *Server) decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool 
 // missing item are 404; validation failures are 422 with the field issues.
 func (s *Server) writeContentError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, permission.ErrDenied):
+		// Reachable only if a domain-API capability check fails despite this
+		// package's own requireCapability/canReadDrafts fast-fail already
+		// having passed (defense-in-depth, PRD §10.5) — 403 either way.
+		s.writeError(w, http.StatusForbidden, "insufficient permissions")
 	case errors.Is(err, content.ErrUnknownType), errors.Is(err, content.ErrNotFound):
 		s.writeError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, content.ErrValidation):

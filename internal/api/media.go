@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"github.com/glyphux/glyphux/internal/media"
+	"github.com/glyphux/glyphux/internal/permission"
 )
 
 // mediaMaxUploadBytes bounds a single media upload — larger than the generic
@@ -43,7 +44,7 @@ func (s *Server) handleMediaUpload(w http.ResponseWriter, r *http.Request) {
 	// on the part, so sniff the real type from content rather than trust it.
 	mimeType := http.DetectContentType(data)
 
-	item, err := s.media.Upload(r.Context(), header.Filename, mimeType, data)
+	item, err := s.media.Upload(r.Context(), s.principal(r), header.Filename, mimeType, data)
 	if err != nil {
 		s.writeMediaError(w, err)
 		return
@@ -98,7 +99,7 @@ func (s *Server) handleMediaFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleMediaDelete(w http.ResponseWriter, r *http.Request) {
-	if err := s.media.Delete(r.Context(), r.PathValue("id")); err != nil {
+	if err := s.media.Delete(r.Context(), s.principal(r), r.PathValue("id")); err != nil {
 		s.writeMediaError(w, err)
 		return
 	}
@@ -107,6 +108,11 @@ func (s *Server) handleMediaDelete(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) writeMediaError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, permission.ErrDenied):
+		// Reachable only if the domain API's own capability check fails
+		// despite this package's requireCapability fast-fail already having
+		// passed (defense-in-depth, PRD §10.5) — 403 either way.
+		s.writeError(w, http.StatusForbidden, "insufficient permissions")
 	case errors.Is(err, media.ErrNotFound):
 		s.writeError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, media.ErrUnsupportedType):

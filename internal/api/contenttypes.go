@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/glyphux/glyphux/internal/composition"
+	"github.com/glyphux/glyphux/internal/permission"
 	"github.com/glyphux/glyphux/pkg/contract"
 )
 
@@ -36,7 +37,7 @@ func (s *Server) handleContentTypePut(w http.ResponseWriter, r *http.Request) {
 	if !s.decodeJSON(w, r, &ct) {
 		return
 	}
-	comp, err := s.compositions.DefineContentType(r.Context(), r.PathValue("name"), ct)
+	comp, err := s.compositions.DefineContentType(r.Context(), s.principal(r), r.PathValue("name"), ct)
 	if err != nil {
 		s.writeContentTypeError(w, err)
 		return
@@ -76,7 +77,7 @@ func (s *Server) handleContentTypeDelete(w http.ResponseWriter, r *http.Request)
 		}
 		return nil
 	}
-	if _, err := s.compositions.RemoveContentTypeGuarded(r.Context(), name, guard); err != nil {
+	if _, err := s.compositions.RemoveContentTypeGuarded(r.Context(), s.principal(r), name, guard); err != nil {
 		if errors.Is(err, errContentTypeHasItems) {
 			s.writeError(w, http.StatusConflict, err.Error())
 			return
@@ -94,6 +95,8 @@ func (s *Server) writeContentTypeError(w http.ResponseWriter, err error) {
 		s.writeError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, composition.ErrNotFound):
 		s.writeError(w, http.StatusConflict, "setup not completed; visit /setup")
+	case errors.Is(err, permission.ErrDenied):
+		s.writeError(w, http.StatusForbidden, "insufficient permissions")
 	default:
 		var verrs contract.ValidationErrors
 		if errors.As(err, &verrs) {

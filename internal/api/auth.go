@@ -128,6 +128,19 @@ func userFrom(ctx context.Context) (*identity.User, bool) {
 	return u, ok
 }
 
+// principal resolves r's caller as the narrow permission.Principal domain
+// APIs check capability grants against, or nil for an unauthenticated
+// request. Passed through to every domain-API call so the domain layer can
+// enforce its own capability check (PRD §10.5) as defense-in-depth alongside
+// this package's own requireCapability/canReadDrafts fast-fail checks.
+func (s *Server) principal(r *http.Request) *permission.Principal {
+	user, ok := s.currentUser(r)
+	if !ok {
+		return nil
+	}
+	return &permission.Principal{Role: user.Role}
+}
+
 func (s *Server) newSessionCookie(token string, r *http.Request) *http.Cookie {
 	return &http.Cookie{
 		Name:     sessionCookieName,

@@ -38,7 +38,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *identity.Service, *identity
 	}
 
 	comps := composition.NewStore(d)
-	if err := comps.Save(context.Background(), &contract.Composition{
+	if err := comps.Save(context.Background(), nil, &contract.Composition{
 		ContractVersion: contract.ContentCompositionV0,
 		Site:            contract.Site{Name: "Test"},
 		ContentTypes: map[string]contract.ContentType{

@@ -14,6 +14,7 @@ import (
 	"github.com/glyphux/glyphux/internal/composition"
 	"github.com/glyphux/glyphux/internal/content"
 	"github.com/glyphux/glyphux/internal/media"
+	"github.com/glyphux/glyphux/internal/permission"
 	"github.com/glyphux/glyphux/pkg/contract"
 	"github.com/vektah/gqlparser/v2/gqlerror"
 )
@@ -54,6 +55,8 @@ func (r *Resolver) mapContentError(err error) error {
 		return gqlErr("VALIDATION", err.Error())
 	case errors.Is(err, composition.ErrNotFound):
 		return gqlErr("SETUP_REQUIRED", "setup not completed; visit /setup")
+	case errors.Is(err, permission.ErrDenied):
+		return gqlErr("FORBIDDEN", "insufficient permissions")
 	default:
 		r.log.Error("content request", "error", err)
 		return gqlErr("INTERNAL", "internal error")
@@ -67,6 +70,8 @@ func (r *Resolver) mapMediaError(err error) error {
 		return gqlErr("NOT_FOUND", err.Error())
 	case errors.Is(err, media.ErrUnsupportedType):
 		return gqlErr("UNSUPPORTED_MEDIA_TYPE", err.Error())
+	case errors.Is(err, permission.ErrDenied):
+		return gqlErr("FORBIDDEN", "insufficient permissions")
 	default:
 		r.log.Error("media request", "error", err)
 		return gqlErr("INTERNAL", "internal error")
@@ -81,6 +86,8 @@ func (r *Resolver) mapContentTypeError(err error) error {
 		return gqlErr("NOT_FOUND", err.Error())
 	case errors.Is(err, composition.ErrNotFound):
 		return gqlErr("SETUP_REQUIRED", "setup not completed; visit /setup")
+	case errors.Is(err, permission.ErrDenied):
+		return gqlErr("FORBIDDEN", "insufficient permissions")
 	default:
 		var verrs contract.ValidationErrors
 		if errors.As(err, &verrs) {

@@ -23,11 +23,17 @@ import (
 	glyphqlgraphql "github.com/glyphux/glyphux/internal/graphql"
 	"github.com/glyphux/glyphux/internal/identity"
 	"github.com/glyphux/glyphux/internal/media"
+	"github.com/glyphux/glyphux/internal/permission"
 	"github.com/glyphux/glyphux/pkg/contract"
 )
 
 // testDeps exposes the domain services a graphql test server was built
 // from, so tests can seed data or mint sessions directly.
+// adminPrincipal is used by tests that seed data directly through the
+// domain APIs (bypassing HTTP), since those APIs now enforce their own
+// capability checks (PRD §10.5) independent of the transport layer.
+var adminPrincipal = &permission.Principal{Role: permission.RoleAdmin}
+
 type testDeps struct {
 	identities *identity.Service
 	sessions   *identity.Sessions
@@ -52,7 +58,7 @@ func testServer(t *testing.T) (http.Handler, testDeps) {
 		t.Fatal(err)
 	}
 	comps := composition.NewStore(d)
-	if err := comps.Save(context.Background(), &contract.Composition{
+	if err := comps.Save(context.Background(), nil, &contract.Composition{
 		ContractVersion: contract.ContentCompositionV0,
 		Site:            contract.Site{Name: "Test"},
 		ContentTypes: map[string]contract.ContentType{
@@ -177,11 +183,11 @@ var _ = io.ReadAll
 
 func TestContentItemQueryReturnsPublishedItemAnonymously(t *testing.T) {
 	h, deps := testServer(t)
-	item, err := deps.content.Create(context.Background(), "article", map[string]any{"title": "Hello", "body": "World"})
+	item, err := deps.content.Create(context.Background(), adminPrincipal, "article", map[string]any{"title": "Hello", "body": "World"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := deps.content.Publish(context.Background(), "article", item.ID); err != nil {
+	if _, err := deps.content.Publish(context.Background(), adminPrincipal, "article", item.ID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -207,7 +213,7 @@ func TestContentItemQueryReturnsPublishedItemAnonymously(t *testing.T) {
 
 func TestContentItemQueryHidesDraftsFromAnonymousCallers(t *testing.T) {
 	h, deps := testServer(t)
-	item, err := deps.content.Create(context.Background(), "article", map[string]any{"title": "Draft", "body": "shh"})
+	item, err := deps.content.Create(context.Background(), adminPrincipal, "article", map[string]any{"title": "Draft", "body": "shh"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +242,7 @@ func TestContentItemQueryShowsDraftsToPrivilegedCallers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	item, err := deps.content.Create(ctx, "article", map[string]any{"title": "Draft", "body": "shh"})
+	item, err := deps.content.Create(ctx, adminPrincipal, "article", map[string]any{"title": "Draft", "body": "shh"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,14 +261,14 @@ func TestContentItemQueryShowsDraftsToPrivilegedCallers(t *testing.T) {
 func TestContentItemsQueryListsPublishedItemsOnly(t *testing.T) {
 	h, deps := testServer(t)
 	ctx := context.Background()
-	published, err := deps.content.Create(ctx, "article", map[string]any{"title": "Pub", "body": "x"})
+	published, err := deps.content.Create(ctx, adminPrincipal, "article", map[string]any{"title": "Pub", "body": "x"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := deps.content.Publish(ctx, "article", published.ID); err != nil {
+	if _, err := deps.content.Publish(ctx, adminPrincipal, "article", published.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := deps.content.Create(ctx, "article", map[string]any{"title": "Draft", "body": "x"}); err != nil {
+	if _, err := deps.content.Create(ctx, adminPrincipal, "article", map[string]any{"title": "Draft", "body": "x"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -284,11 +290,11 @@ func TestContentItemsQueryListsPublishedItemsOnly(t *testing.T) {
 func TestContentVersionsQueryReturnsHistory(t *testing.T) {
 	h, deps := testServer(t)
 	ctx := context.Background()
-	item, err := deps.content.Create(ctx, "article", map[string]any{"title": "V1", "body": "x"})
+	item, err := deps.content.Create(ctx, adminPrincipal, "article", map[string]any{"title": "V1", "body": "x"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := deps.content.Update(ctx, "article", item.ID, map[string]any{"title": "V2", "body": "x"}); err != nil {
+	if _, err := deps.content.Update(ctx, adminPrincipal, "article", item.ID, map[string]any{"title": "V2", "body": "x"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -356,7 +362,7 @@ func TestCreateContentItemMutationRequiresContentWrite(t *testing.T) {
 func TestUpdateContentItemMutation(t *testing.T) {
 	h, deps := testServer(t)
 	ctx := context.Background()
-	item, err := deps.content.Create(ctx, "article", map[string]any{"title": "Old", "body": "x"})
+	item, err := deps.content.Create(ctx, adminPrincipal, "article", map[string]any{"title": "Old", "body": "x"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,7 +398,7 @@ func TestUpdateContentItemMutation(t *testing.T) {
 func TestDeleteContentItemMutation(t *testing.T) {
 	h, deps := testServer(t)
 	ctx := context.Background()
-	item, err := deps.content.Create(ctx, "article", map[string]any{"title": "Gone", "body": "x"})
+	item, err := deps.content.Create(ctx, adminPrincipal, "article", map[string]any{"title": "Gone", "body": "x"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +412,7 @@ func TestDeleteContentItemMutation(t *testing.T) {
 	if resp.Data["deleteContentItem"] != true {
 		t.Fatalf("deleteContentItem = %v, want true", resp.Data["deleteContentItem"])
 	}
-	if _, err := deps.content.Get(ctx, "article", item.ID); err == nil {
+	if _, err := deps.content.Get(ctx, adminPrincipal, "article", item.ID); err == nil {
 		t.Error("item still exists after delete")
 	}
 }
@@ -420,7 +426,7 @@ func TestDeleteContentItemMutation(t *testing.T) {
 func TestPublishContentItemMutationRequiresContentPublish(t *testing.T) {
 	h, deps := testServer(t)
 	ctx := context.Background()
-	item, err := deps.content.Create(ctx, "article", map[string]any{"title": "Draft", "body": "x"})
+	item, err := deps.content.Create(ctx, adminPrincipal, "article", map[string]any{"title": "Draft", "body": "x"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -464,11 +470,11 @@ func TestPublishContentItemMutationRequiresContentPublish(t *testing.T) {
 func TestRollbackContentItemMutation(t *testing.T) {
 	h, deps := testServer(t)
 	ctx := context.Background()
-	item, err := deps.content.Create(ctx, "article", map[string]any{"title": "V1", "body": "x"})
+	item, err := deps.content.Create(ctx, adminPrincipal, "article", map[string]any{"title": "V1", "body": "x"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := deps.content.Update(ctx, "article", item.ID, map[string]any{"title": "V2", "body": "x"}); err != nil {
+	if _, err := deps.content.Update(ctx, adminPrincipal, "article", item.ID, map[string]any{"title": "V2", "body": "x"}); err != nil {
 		t.Fatal(err)
 	}
 	adminToken := loginAdmin(t, deps)
@@ -537,7 +543,7 @@ func TestRemoveContentTypeMutationBlockedWhenItemsExist(t *testing.T) {
 	h, deps := testServer(t)
 	ctx := context.Background()
 	adminToken := loginAdmin(t, deps)
-	if _, err := deps.content.Create(ctx, "article", map[string]any{"title": "Keeps type alive", "body": "x"}); err != nil {
+	if _, err := deps.content.Create(ctx, adminPrincipal, "article", map[string]any{"title": "Keeps type alive", "body": "x"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -590,7 +596,7 @@ func TestMediaQueriesArePublicAndDeleteRequiresMediaWrite(t *testing.T) {
 		0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49,
 		0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
 	}
-	item, err := deps.media.Upload(ctx, "pixel.png", "image/png", png)
+	item, err := deps.media.Upload(ctx, adminPrincipal, "pixel.png", "image/png", png)
 	if err != nil {
 		t.Fatal(err)
 	}

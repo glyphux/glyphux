@@ -73,3 +73,22 @@ func TestValidRoleRecognizesKnownRolesOnly(t *testing.T) {
 		t.Error("ValidRole(superuser) = true, want false")
 	}
 }
+
+func TestRoleOfNilPrincipalIsAnonymous(t *testing.T) {
+	if got := permission.RoleOf(nil); got != "" {
+		t.Errorf("RoleOf(nil) = %q, want empty", got)
+	}
+	if got := permission.RoleOf(&permission.Principal{Role: permission.RoleAdmin}); got != permission.RoleAdmin {
+		t.Errorf("RoleOf(admin) = %q, want admin", got)
+	}
+}
+
+func TestAllowsPrincipalNilIsAnonymousAndHoldsNothingSensitive(t *testing.T) {
+	if permission.AllowsPrincipal(nil, permission.ContentWrite) {
+		t.Error("nil principal should not hold content:write")
+	}
+	admin := &permission.Principal{Role: permission.RoleAdmin}
+	if !permission.AllowsPrincipal(admin, permission.ContentWrite) {
+		t.Error("admin principal should hold content:write")
+	}
+}

@@ -22,8 +22,15 @@ import (
 
 	"github.com/glyphux/glyphux/internal/composition"
 	"github.com/glyphux/glyphux/internal/db"
+	"github.com/glyphux/glyphux/internal/permission"
 	"github.com/glyphux/glyphux/pkg/contract"
 )
+
+// seedPrincipal is an admin principal — this fixture runs offline against a
+// stopped daemon's SQLite file directly, so there's no real HTTP-authenticated
+// caller; Store.Save requires content-types:manage once a composition
+// already exists (PRD §10.5), so an admin principal is supplied here.
+var seedPrincipal = &permission.Principal{Role: permission.RoleAdmin}
 
 func main() {
 	if err := run(); err != nil {
@@ -64,7 +71,7 @@ func run() error {
 		},
 	}
 
-	if err := compositions.Save(ctx, comp); err != nil {
+	if err := compositions.Save(ctx, seedPrincipal, comp); err != nil {
 		return fmt.Errorf("save composition: %w", err)
 	}
 	fmt.Println("seeded content type \"post\"")
