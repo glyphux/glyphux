@@ -50,6 +50,9 @@ type MediaItem {
   width: Int!
   height: Int!
   altText: String!
+  tags: [String!]!
+  source: String!
+  attribution: String!
   createdAt: String!
   updatedAt: String!
 }

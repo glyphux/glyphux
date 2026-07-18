@@ -1,5 +1,5 @@
 import type { HttpClient } from "./http.js";
-import type { MediaItem } from "./types.js";
+import type { MediaItem, MediaMetadataUpdate, MediaTransform } from "./types.js";
 
 /** Wraps /api/v0/media[/...] (internal/api/media.go). */
 export class MediaResource {
@@ -38,16 +38,32 @@ export class MediaResource {
     await this.http.requestVoid("DELETE", `/api/v0/media/${encodeURIComponent(id)}`);
   }
 
+  /** Replaces a media item's editable metadata (alt text, tags,
+   * source/attribution) and returns the updated item. Requires
+   * media:write. */
+  async updateMetadata(id: string, update: MediaMetadataUpdate): Promise<MediaItem> {
+    return this.http.requestJSON<MediaItem>("PATCH", `/api/v0/media/${encodeURIComponent(id)}`, { json: update });
+  }
+
   /** Returns the raw file bytes as a Response — the caller decides how to
    * consume it (`.blob()`, `.arrayBuffer()`, stream the body, etc.) and can
-   * inspect `Content-Type`. Pass `width`/`height` to request a resized
-   * variant (internal/api/media.go handleMediaFile). Does not throw
+   * inspect `Content-Type`. Pass any combination of `width`/`height` (a
+   * resize), `cropX`/`cropY`/`cropW`/`cropH` (a crop), `rotate` (90/180/270),
+   * and `format` ("jpeg"/"png") to run the transform pipeline — crop, then
+   * rotate, then resize, then re-encode — in one request
+   * (internal/api/media.go handleMediaFile). Does not throw
    * GlyphuxApiError; check `response.ok` / `response.status` directly,
    * since a non-2xx body here is not guaranteed to be JSON. */
-  async file(id: string, options?: { width?: number; height?: number }): Promise<Response> {
+  async file(id: string, options?: MediaTransform): Promise<Response> {
     return this.http.requestRaw("GET", `/api/v0/media/${encodeURIComponent(id)}/file`, {
       w: options?.width !== undefined ? String(options.width) : undefined,
       h: options?.height !== undefined ? String(options.height) : undefined,
+      crop_x: options?.cropX !== undefined ? String(options.cropX) : undefined,
+      crop_y: options?.cropY !== undefined ? String(options.cropY) : undefined,
+      crop_w: options?.cropW !== undefined ? String(options.cropW) : undefined,
+      crop_h: options?.cropH !== undefined ? String(options.cropH) : undefined,
+      rotate: options?.rotate !== undefined ? String(options.rotate) : undefined,
+      format: options?.format,
     });
   }
 }

@@ -66,15 +66,18 @@ type ComplexityRoot struct {
 	}
 
 	MediaItem struct {
-		AltText   func(childComplexity int) int
-		CreatedAt func(childComplexity int) int
-		Filename  func(childComplexity int) int
-		Height    func(childComplexity int) int
-		ID        func(childComplexity int) int
-		MimeType  func(childComplexity int) int
-		SizeBytes func(childComplexity int) int
-		UpdatedAt func(childComplexity int) int
-		Width     func(childComplexity int) int
+		AltText     func(childComplexity int) int
+		Attribution func(childComplexity int) int
+		CreatedAt   func(childComplexity int) int
+		Filename    func(childComplexity int) int
+		Height      func(childComplexity int) int
+		ID          func(childComplexity int) int
+		MimeType    func(childComplexity int) int
+		SizeBytes   func(childComplexity int) int
+		Source      func(childComplexity int) int
+		Tags        func(childComplexity int) int
+		UpdatedAt   func(childComplexity int) int
+		Width       func(childComplexity int) int
 	}
 
 	Mutation struct {
@@ -269,6 +272,12 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.ComplexityRoot.MediaItem.AltText(childComplexity), true
+	case "MediaItem.attribution":
+		if e.ComplexityRoot.MediaItem.Attribution == nil {
+			break
+		}
+
+		return e.ComplexityRoot.MediaItem.Attribution(childComplexity), true
 	case "MediaItem.createdAt":
 		if e.ComplexityRoot.MediaItem.CreatedAt == nil {
 			break
@@ -305,6 +314,18 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.ComplexityRoot.MediaItem.SizeBytes(childComplexity), true
+	case "MediaItem.source":
+		if e.ComplexityRoot.MediaItem.Source == nil {
+			break
+		}
+
+		return e.ComplexityRoot.MediaItem.Source(childComplexity), true
+	case "MediaItem.tags":
+		if e.ComplexityRoot.MediaItem.Tags == nil {
+			break
+		}
+
+		return e.ComplexityRoot.MediaItem.Tags(childComplexity), true
 	case "MediaItem.updatedAt":
 		if e.ComplexityRoot.MediaItem.UpdatedAt == nil {
 			break
@@ -648,6 +669,9 @@ type MediaItem {
   width: Int!
   height: Int!
   altText: String!
+  tags: [String!]!
+  source: String!
+  attribution: String!
   createdAt: String!
   updatedAt: String!
 }
@@ -821,6 +845,12 @@ func (ec *executionContext) childFields_MediaItem(ctx context.Context, field gra
 		return ec.fieldContext_MediaItem_height(ctx, field)
 	case "altText":
 		return ec.fieldContext_MediaItem_altText(ctx, field)
+	case "tags":
+		return ec.fieldContext_MediaItem_tags(ctx, field)
+	case "source":
+		return ec.fieldContext_MediaItem_source(ctx, field)
+	case "attribution":
+		return ec.fieldContext_MediaItem_attribution(ctx, field)
 	case "createdAt":
 		return ec.fieldContext_MediaItem_createdAt(ctx, field)
 	case "updatedAt":
@@ -1928,6 +1958,75 @@ func (ec *executionContext) _MediaItem_altText(ctx context.Context, field graphq
 	)
 }
 func (ec *executionContext) fieldContext_MediaItem_altText(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	return graphql.NewScalarFieldContext("MediaItem", field, false, false, errors.New("field of type String does not have child fields"))
+}
+
+func (ec *executionContext) _MediaItem_tags(ctx context.Context, field graphql.CollectedField, obj *MediaItem) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_MediaItem_tags(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			return obj.Tags, nil
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v []string) graphql.Marshaler {
+			return ec.marshalNString2ᚕstringᚄ(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_MediaItem_tags(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	return graphql.NewScalarFieldContext("MediaItem", field, false, false, errors.New("field of type String does not have child fields"))
+}
+
+func (ec *executionContext) _MediaItem_source(ctx context.Context, field graphql.CollectedField, obj *MediaItem) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_MediaItem_source(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			return obj.Source, nil
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v string) graphql.Marshaler {
+			return ec.marshalNString2string(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_MediaItem_source(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	return graphql.NewScalarFieldContext("MediaItem", field, false, false, errors.New("field of type String does not have child fields"))
+}
+
+func (ec *executionContext) _MediaItem_attribution(ctx context.Context, field graphql.CollectedField, obj *MediaItem) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_MediaItem_attribution(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			return obj.Attribution, nil
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v string) graphql.Marshaler {
+			return ec.marshalNString2string(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_MediaItem_attribution(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	return graphql.NewScalarFieldContext("MediaItem", field, false, false, errors.New("field of type String does not have child fields"))
 }
 
@@ -4235,6 +4334,21 @@ func (ec *executionContext) _MediaItem(ctx context.Context, sel ast.SelectionSet
 			if out.Values[i] == graphql.Null {
 				out.Invalids++
 			}
+		case "tags":
+			out.Values[i] = ec._MediaItem_tags(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "source":
+			out.Values[i] = ec._MediaItem_source(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "attribution":
+			out.Values[i] = ec._MediaItem_attribution(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
 		case "createdAt":
 			out.Values[i] = ec._MediaItem_createdAt(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
@@ -5267,6 +5381,35 @@ func (ec *executionContext) marshalNString2string(ctx context.Context, sel ast.S
 		}
 	}
 	return res
+}
+
+func (ec *executionContext) unmarshalNString2ᚕstringᚄ(ctx context.Context, v any) ([]string, error) {
+	vSlice := graphql.CoerceList(v)
+	var err error
+	res := make([]string, len(vSlice))
+	for i := range vSlice {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithIndex(i))
+		res[i], err = ec.unmarshalNString2string(ctx, vSlice[i])
+		if err != nil {
+			return nil, err
+		}
+	}
+	return res, nil
+}
+
+func (ec *executionContext) marshalNString2ᚕstringᚄ(ctx context.Context, sel ast.SelectionSet, v []string) graphql.Marshaler {
+	ret := make(graphql.Array, len(v))
+	for i := range v {
+		ret[i] = ec.marshalNString2string(ctx, sel, v[i])
+	}
+
+	for _, e := range ret {
+		if e == graphql.Null {
+			return graphql.Null
+		}
+	}
+
+	return ret
 }
 
 func (ec *executionContext) marshalNUser2githubᚗcomᚋglyphuxᚋglyphuxᚋinternalᚋgraphqlᚋgeneratedᚐUser(ctx context.Context, sel ast.SelectionSet, v User) graphql.Marshaler {

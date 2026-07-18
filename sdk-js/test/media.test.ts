@@ -2,6 +2,14 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { GlyphuxClient } from "../src/client.js";
 import { GlyphuxApiError } from "../src/errors.js";
 import { testEnv } from "./testenv.js";
+import { encodePNG, decodePNG } from "./png.js";
+
+// A 4x2 image, left half red / right half blue, so crop/rotate correctness
+// can be checked against real output pixels and dimensions, not just a 200
+// status.
+function quadPng(): Buffer {
+  return encodePNG(4, 2, (x) => (x < 2 ? { r: 255, g: 0, b: 0, a: 255 } : { r: 0, g: 0, b: 255, a: 255 }));
+}
 
 // A minimal valid 1x1 transparent PNG, so internal/media.Upload's
 // image.DecodeConfig sniff succeeds and reports real width/height.
@@ -100,5 +108,94 @@ describe("media", () => {
     expect(res.status).toBe(200);
     const bytes = new Uint8Array(await res.arrayBuffer());
     expect(bytes.length).toBeGreaterThan(0);
+  });
+
+  it("file() with crop params extracts the requested rect", async () => {
+    const client = await adminClient();
+    const uploaded = await client.media.upload(quadPng(), "quad.png");
+
+    const res = await client.media.file(uploaded.id, { cropX: 2, cropY: 0, cropW: 2, cropH: 2 });
+
+    expect(res.status).toBe(200);
+    const img = decodePNG(Buffer.from(await res.arrayBuffer()));
+    expect(img.width).toBe(2);
+    expect(img.height).toBe(2);
+    // Cropped the right (blue) half.
+    expect(img.at(0, 0)).toEqual({ r: 0, g: 0, b: 255, a: 255 });
+  });
+
+  it("file() with an out-of-bounds crop rect is a typed 400 error", async () => {
+    const client = await adminClient();
+    const uploaded = await client.media.upload(quadPng(), "quad.png");
+
+    const res = await client.media.file(uploaded.id, { cropX: 0, cropY: 0, cropW: 99, cropH: 99 });
+
+    expect(res.status).toBe(400);
+  });
+
+  it("file() with rotate=90 swaps dimensions and moves the left half to the top", async () => {
+    const client = await adminClient();
+    const uploaded = await client.media.upload(quadPng(), "quad.png");
+
+    const res = await client.media.file(uploaded.id, { rotate: 90 });
+
+    expect(res.status).toBe(200);
+    const img = decodePNG(Buffer.from(await res.arrayBuffer()));
+    expect(img.width).toBe(2);
+    expect(img.height).toBe(4);
+    expect(img.at(0, 0)).toEqual({ r: 255, g: 0, b: 0, a: 255 });
+    expect(img.at(0, 3)).toEqual({ r: 0, g: 0, b: 255, a: 255 });
+  });
+
+  it("file() with an unsupported rotate angle is a typed 400 error", async () => {
+    const client = await adminClient();
+    const uploaded = await client.media.upload(quadPng(), "quad.png");
+
+    const res = await client.media.file(uploaded.id, { rotate: 45 });
+
+    expect(res.status).toBe(400);
+  });
+
+  it("file() with format=jpeg re-encodes as a real JPEG", async () => {
+    const client = await adminClient();
+    const uploaded = await client.media.upload(quadPng(), "quad.png");
+
+    const res = await client.media.file(uploaded.id, { format: "jpeg" });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/jpeg");
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    // JPEG magic bytes (SOI marker).
+    expect(bytes[0]).toBe(0xff);
+    expect(bytes[1]).toBe(0xd8);
+  });
+
+  it("updateMetadata() persists tags, source, and attribution", async () => {
+    const client = await adminClient();
+    const uploaded = await client.media.upload(onePixelPng(), "tag-me.png");
+
+    const updated = await client.media.updateMetadata(uploaded.id, {
+      alt_text: "a pixel",
+      tags: ["stock", "hero"],
+      source: "https://example.com/photo",
+      attribution: "Photo by Jane Doe",
+    });
+
+    expect(updated.alt_text).toBe("a pixel");
+    expect(updated.tags).toEqual(["stock", "hero"]);
+    expect(updated.source).toBe("https://example.com/photo");
+    expect(updated.attribution).toBe("Photo by Jane Doe");
+
+    const fetched = await client.media.get(uploaded.id);
+    expect(fetched.tags).toEqual(["stock", "hero"]);
+    expect(fetched.source).toBe("https://example.com/photo");
+  });
+
+  it("upload() defaults tags to an empty array, not null", async () => {
+    const client = await adminClient();
+    const uploaded = await client.media.upload(onePixelPng(), "untagged.png");
+
+    expect(Array.isArray(uploaded.tags)).toBe(true);
+    expect(uploaded.tags).toEqual([]);
   });
 });
