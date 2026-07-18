@@ -20,11 +20,12 @@ permissions beyond presence-in-a-map. This slice closes that gap.
 
 ## Status
 
-In progress (implemented and verified in this session on branch
-`phase2-slice2.6-permissions-enforcement`, built off local `dev` at
-`f0e20e7` which already has slice 2.1 merged; not yet PR'd — the parent
-session merges after independently reconciling with the parallel 2.2/2.3
-slices).
+Complete. Reconciled by hand against 2.2's overlapping changes to
+`pkg/sdk/host.go`/`manifest.go` (both sides' additions coexist; only a
+test-file conflict, resolved by keeping both new test blocks) and merged
+into `dev`. Independently re-verified: full repo build/vet/test -race, plus
+a hand-driven program confirming requires.core rejection and exact-match
+network-allowlist denial actually behave as claimed.
 
 ## Current Decisions
 

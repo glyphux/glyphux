@@ -17,9 +17,9 @@ is the capability registry's job (slice 2.3)").
 
 ## Status
 
-In progress (implemented and verified in this session; not yet PR'd —
-branch is being handed to the parent session for review/merge alongside the
-parallel 2.2 event-bus and 2.6 permissions-enforcement slices).
+Complete. Merged into `dev` (clean merge, no file overlap with 2.2/2.6);
+independently re-verified end-to-end after all three parallel slices
+landed.
 
 ## Current Decisions
 

@@ -24,10 +24,11 @@ building the stub first).
 
 ## Status
 
-Implemented and verified in this session (TDD: failing tests written
-against the new `KernelDeps.Bus`/`sdk.NewEventBus` shape first, confirmed a
-compile-time red, then the minimal implementation added to turn it green).
-Not yet PR'd to `staging` — that happens once more of Phase 2 lands, per the
+Complete. Merged into `dev` (clean, no file overlap with 2.3; reconciled
+manually with 2.6's overlapping changes to host.go/manifest.go). Independently
+re-verified with a full repo build/vet/test -race and a hand-driven program
+exercising cross-plugin dispatch after all three parallel slices landed
+together. Not yet PR'd to `staging` — that happens once more of Phase 2 lands, per the
 established "dev → PR → staging" convention. This branch does not merge
 itself; the parent session reviews, resolves conflicts with the parallel
 2.3/2.6 slices, and merges.

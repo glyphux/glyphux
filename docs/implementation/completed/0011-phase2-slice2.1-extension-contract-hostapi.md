@@ -17,9 +17,9 @@ documented shape before anything else starts.
 
 ## Status
 
-In progress (implemented and verified in this session; not yet PR'd to
-`staging` — that happens once more of Phase 2 lands, per the established
-"dev → PR → staging" convention).
+Complete. Merged into `dev`; independently re-verified (build/vet/test -race
+repo-wide, plus hand-driven exercise) after slices 2.2/2.3/2.6 landed
+alongside it.
 
 ## Current Decisions
 
