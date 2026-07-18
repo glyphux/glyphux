@@ -61,7 +61,7 @@ func TestMediaUploadGetListDeleteOverHTTP(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v0/media", body)
 	req.Header.Set("Content-Type", contentType)
-	req.AddCookie(cookie)
+	cookie.addTo(req)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {
@@ -140,7 +140,7 @@ func TestMediaUploadRejectsUnsupportedType(t *testing.T) {
 	body, contentType := uploadRequest(t, "notes.txt", []byte("hello world"))
 	req := httptest.NewRequest(http.MethodPost, "/api/v0/media", body)
 	req.Header.Set("Content-Type", contentType)
-	req.AddCookie(cookie)
+	cookie.addTo(req)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnsupportedMediaType {
