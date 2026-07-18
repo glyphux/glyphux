@@ -84,6 +84,16 @@ var knownAPIScopes = map[string]map[string]bool{
 	"users":   {"read": true, "manage": true},
 	"media":   {"read": true, "write": true},
 	"events":  {"emit": true, "subscribe": true},
+	// payments and membership do not yet back a real HostAPI method surface
+	// (commerce/membership are Phase 3 slices 3.3/3.4, PRD §14) — they exist
+	// here only so a manifest has a capability to declare in order to
+	// subscribe to the corresponding sensitive domain events (§8.4), per
+	// slice 2.2's tracking doc. "payments" scopes match the PRD's own §7.4
+	// example (`payments: [charge, refund]`) verbatim; "membership" has no
+	// PRD example scope, so "manage" is this slice's placeholder guess,
+	// expected to be revisited when slice 3.4 defines a real MembershipAPI.
+	"payments":   {"charge": true, "refund": true},
+	"membership": {"manage": true},
 }
 
 // Requires declares the kernel/contract versions a plugin needs (PRD §7.3).

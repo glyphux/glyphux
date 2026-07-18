@@ -2,6 +2,7 @@ package sdk_test
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -330,8 +331,12 @@ func TestHostAPIRegisterBlockWorksWithContentCapability(t *testing.T) {
 	}
 }
 
+func manifestWithEvents(scopes ...string) sdk.Manifest {
+	return manifestWithAPI(sdk.APIScope{Capability: "events", Scopes: scopes})
+}
+
 func TestHostAPIOnAndEmitAreCallable(t *testing.T) {
-	host, err := sdk.NewHostAPI(validManifest(), testKernel(t))
+	host, err := sdk.NewHostAPI(manifestWithEvents("subscribe", "emit"), testKernel(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,5 +345,168 @@ func TestHostAPIOnAndEmitAreCallable(t *testing.T) {
 	}
 	if err := host.Emit(context.Background(), "content.after_save", map[string]any{"id": "1"}); err != nil {
 		t.Fatalf("Emit: %v", err)
+	}
+}
+
+func TestHostAPIOnDeniedWithoutEventsSubscribeScope(t *testing.T) {
+	host, err := sdk.NewHostAPI(validManifest(), testKernel(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host.On("content.after_save", func(context.Context, any) error { return nil }); err == nil {
+		t.Fatal("expected On to be denied without events:subscribe declared")
+	}
+}
+
+func TestHostAPIEmitDeniedWithoutEventsEmitScope(t *testing.T) {
+	host, err := sdk.NewHostAPI(manifestWithEvents("subscribe"), testKernel(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host.Emit(context.Background(), "content.after_save", nil); err == nil {
+		t.Fatal("expected Emit to be denied without events:emit declared")
+	}
+}
+
+func TestHostAPIEventBusIsSharedAcrossPluginsOnSameKernelDeps(t *testing.T) {
+	kernel := testKernel(t)
+	kernel.Bus = sdk.NewEventBus()
+
+	emitter, err := sdk.NewHostAPI(manifestWithEvents("emit"), kernel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscriberManifest := manifestWithEvents("subscribe")
+	subscriberManifest.Name = "a-different-plugin"
+	subscriber, err := sdk.NewHostAPI(subscriberManifest, kernel)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	received := make(chan any, 1)
+	if err := subscriber.On("content.after_save", func(_ context.Context, payload any) error {
+		received <- payload
+		return nil
+	}); err != nil {
+		t.Fatalf("On: %v", err)
+	}
+
+	if err := emitter.Emit(context.Background(), "content.after_save", "hello"); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	select {
+	case got := <-received:
+		if got != "hello" {
+			t.Errorf("got payload %v, want %q", got, "hello")
+		}
+	default:
+		t.Fatal("expected a shared bus to dispatch the emitting plugin's event to the other plugin's subscriber")
+	}
+}
+
+func TestHostAPIEmitDispatchesToAllSubscribersAndCollectsErrors(t *testing.T) {
+	m := manifestWithEvents("subscribe", "emit")
+	host, err := sdk.NewHostAPI(m, testKernel(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calledA, calledB bool
+	if err := host.On("content.after_save", func(context.Context, any) error {
+		calledA = true
+		return errors.New("handler a failed")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.On("content.after_save", func(context.Context, any) error {
+		calledB = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	err = host.Emit(context.Background(), "content.after_save", nil)
+	if err == nil {
+		t.Fatal("expected Emit to report the first subscriber's error")
+	}
+	if !calledA || !calledB {
+		t.Errorf("expected both subscribers to run despite the first's error, got calledA=%v calledB=%v", calledA, calledB)
+	}
+}
+
+func TestHostAPIOnDeniedForSensitiveEventWithoutDomainCapability(t *testing.T) {
+	host, err := sdk.NewHostAPI(manifestWithEvents("subscribe"), testKernel(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host.On("user.created", func(context.Context, any) error { return nil }); err == nil {
+		t.Fatal("expected On(\"user.created\") to be denied without users:read declared")
+	}
+}
+
+func TestHostAPIOnAllowedForSensitiveEventWithDomainCapability(t *testing.T) {
+	m := validManifest()
+	m.API = []sdk.APIScope{
+		{Capability: "events", Scopes: []string{"subscribe"}},
+		{Capability: "users", Scopes: []string{"read"}},
+	}
+	host, err := sdk.NewHostAPI(m, testKernel(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host.On("user.created", func(context.Context, any) error { return nil }); err != nil {
+		t.Fatalf("On(\"user.created\"): %v", err)
+	}
+}
+
+func TestHostAPIOnDeniedForPaymentEventWithoutPaymentsCapability(t *testing.T) {
+	host, err := sdk.NewHostAPI(manifestWithEvents("subscribe"), testKernel(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host.On("payment.completed", func(context.Context, any) error { return nil }); err == nil {
+		t.Fatal("expected On(\"payment.completed\") to be denied without a declared payments capability")
+	}
+}
+
+func TestHostAPIOnAllowedForPaymentEventWithPaymentsCapability(t *testing.T) {
+	m := validManifest()
+	m.API = []sdk.APIScope{
+		{Capability: "events", Scopes: []string{"subscribe"}},
+		{Capability: "payments", Scopes: []string{"charge"}},
+	}
+	host, err := sdk.NewHostAPI(m, testKernel(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host.On("order.placed", func(context.Context, any) error { return nil }); err != nil {
+		t.Fatalf("On(\"order.placed\"): %v", err)
+	}
+	if err := host.On("payment.refunded", func(context.Context, any) error { return nil }); err != nil {
+		t.Fatalf("On(\"payment.refunded\"): %v", err)
+	}
+}
+
+func TestHostAPIOnDeniedForMembershipEventWithoutMembershipCapability(t *testing.T) {
+	host, err := sdk.NewHostAPI(manifestWithEvents("subscribe"), testKernel(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host.On("membership.started", func(context.Context, any) error { return nil }); err == nil {
+		t.Fatal("expected On(\"membership.started\") to be denied without a declared membership capability")
+	}
+}
+
+func TestHostAPIOnAllowedForMembershipEventWithMembershipCapability(t *testing.T) {
+	m := validManifest()
+	m.API = []sdk.APIScope{
+		{Capability: "events", Scopes: []string{"subscribe"}},
+		{Capability: "membership", Scopes: []string{"manage"}},
+	}
+	host, err := sdk.NewHostAPI(m, testKernel(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host.On("membership.expired", func(context.Context, any) error { return nil }); err != nil {
+		t.Fatalf("On(\"membership.expired\"): %v", err)
 	}
 }

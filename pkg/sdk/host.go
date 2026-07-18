@@ -43,6 +43,109 @@ type KernelDeps struct {
 	// Left nil (the common case — e.g. in most tests), NewHostAPI gives
 	// that single HostAPI its own private backend.
 	KV *MemoryKVBackend
+
+	// Bus backs every plugin's On/Emit from this KernelDeps — the real,
+	// cross-plugin event bus (PRD §8.4, slice 2.2). Shared across every
+	// HostAPI built from the same KernelDeps, exactly like KV above: that
+	// sharing is what makes "an emitted event reaches every subscriber
+	// across every plugin" true rather than each HostAPI dispatching only
+	// to its own private subscriber list. Left nil (the common case in
+	// tests that only exercise a single HostAPI's own On/Emit), NewHostAPI
+	// gives that single HostAPI its own private bus.
+	Bus *EventBus
+}
+
+// EventBus is the real, cross-plugin event bus underlying every HostAPI's
+// On/Emit (PRD §8.4: "a single event bus underlies all tiers"). Multiple
+// HostAPI instances built from the same KernelDeps.Bus share one EventBus,
+// so a plugin's Emit dispatches to every subscriber across every plugin on
+// the bus, not just its own handlers.
+//
+// Dispatch order across subscribers follows registration order (the same
+// guarantee slice 2.1's stub made per-HostAPI, now true bus-wide). Handler
+// errors are collected via errors.Join rather than stopping dispatch at the
+// first failure: one subscriber's misbehaving handler should not silently
+// prevent every other plugin on the bus from observing the event — plugins
+// are mutually untrusted (PRD §10.1), so one plugin's bug should not become
+// another plugin's outage. The emitting caller still learns something
+// failed (a non-nil, inspectable error), it just doesn't learn "nothing ran
+// after the first error" when in fact everything ran.
+type EventBus struct {
+	mu          sync.Mutex
+	subscribers map[string][]EventHandler
+}
+
+// NewEventBus returns an empty bus.
+func NewEventBus() *EventBus {
+	return &EventBus{subscribers: make(map[string][]EventHandler)}
+}
+
+func (b *EventBus) subscribe(event string, handler EventHandler) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.subscribers[event] = append(b.subscribers[event], handler)
+}
+
+func (b *EventBus) emit(ctx context.Context, event string, payload any) error {
+	b.mu.Lock()
+	handlers := append([]EventHandler(nil), b.subscribers[event]...)
+	b.mu.Unlock()
+	var errs []error
+	for _, handler := range handlers {
+		if err := handler(ctx, payload); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// sensitiveEventRule names the api capability (and, where meaningful, the
+// specific scope) a manifest must declare in order to subscribe to a
+// sensitive domain event via On (PRD §8.4: "subscribing to a sensitive
+// event ... requires the corresponding capability scope, because the
+// subscriber sees sensitive data flow"). An empty Scope means "the
+// capability must be declared at all, any scope suffices" — the same
+// "declared at all" gate RegisterBlock already uses for a lighter-weight
+// check, used here because payments/membership have no real HostAPI method
+// surface yet (see knownAPIScopes' doc comment) so there is no finer-grained
+// scope to require beyond "this plugin owns this capability at all".
+type sensitiveEventRule struct {
+	Capability string
+	Scope      string
+}
+
+// sensitiveEvents maps the PRD §8.4 domain events with real sensitive-data
+// exposure to the capability a subscriber must declare. Judgment calls (see
+// this slice's tracking doc for the full reasoning):
+//   - user.created / user.deleted -> users:read. Observing account
+//     creation/deletion is a read-grade exposure of user data, and "read" is
+//     the existing users scope that already gates UsersAPI.List.
+//   - order.placed / payment.completed / payment.refunded -> payments
+//     (any scope). Orders and payments are treated as one sensitivity tier
+//     (both are financial-transaction data) since the PRD's own capability
+//     graph doesn't name a separate "orders" capability distinct from
+//     "payments" (§7.4 line ~592-594).
+//   - membership.started / membership.expired -> membership (any scope).
+//     Kept distinct from users:read rather than folded into it, because
+//     subscription/access-tier state is a different fact than account
+//     identity, and the PRD's own capability graph (§7.4) names "membership"
+//     as its own capability separately from "users"/"identity".
+//
+// Every other named event in §8.4's list (the lifecycle events:
+// composition.before_build/after_build, content.before_save/after_save,
+// content.published/unpublished, request.before_render/after_render, and
+// plugin.loaded/plugin.error) is treated as a lower-sensitivity structural
+// hook: subscribing to any of them only requires the baseline events:
+// subscribe scope every On call requires, not an additional domain
+// capability.
+var sensitiveEvents = map[string]sensitiveEventRule{
+	"user.created":       {Capability: "users", Scope: "read"},
+	"user.deleted":       {Capability: "users", Scope: "read"},
+	"order.placed":       {Capability: "payments"},
+	"payment.completed":  {Capability: "payments"},
+	"payment.refunded":   {Capability: "payments"},
+	"membership.started": {Capability: "membership"},
+	"membership.expired": {Capability: "membership"},
 }
 
 // MemoryKVBackend is an in-memory ScopedKV backing, namespaced per plugin
@@ -130,10 +233,13 @@ type HostAPI interface {
 	RegisterContentType(ctx context.Context, name string, def contract.ContentType) error
 	RegisterBlock(def BlockDef) error
 
-	// On/Emit are the event-bus subscribe/emit surface (PRD §8.4). The real
-	// event bus with per-event capability requirements is slice 2.2; this
-	// slice only establishes the interface shape so later slices extend
-	// rather than reshape it. Deliberately ungated for now.
+	// On/Emit are the event-bus subscribe/emit surface (PRD §8.4), backed by
+	// the real cross-plugin EventBus (slice 2.2; KernelDeps.Bus). On is
+	// gated on events:subscribe, plus the corresponding domain capability
+	// for the PRD's own examples of sensitive domain events (sensitiveEvents
+	// below). Emit is gated only on events:emit — deliberately not gated
+	// per-event, since emitting is the lower-risk side of the bus (see
+	// Emit's doc comment and this slice's tracking doc).
 	On(event string, handler EventHandler) error
 	Emit(ctx context.Context, event string, payload any) error
 }
@@ -175,7 +281,7 @@ type hostAPI struct {
 	adminPages  []AdminPageDef
 	jobs        []JobDef
 	blocks      []BlockDef
-	subscribers map[string][]EventHandler
+	bus         *EventBus
 	kv          *MemoryKVBackend
 }
 
@@ -203,9 +309,13 @@ func NewHostAPI(manifest Manifest, deps KernelDeps) (HostAPI, error) {
 	if kv == nil {
 		kv = NewMemoryKVBackend()
 	}
+	bus := deps.Bus
+	if bus == nil {
+		bus = NewEventBus()
+	}
 	return &hostAPI{
 		manifest: manifest, deps: deps, apiScope: scopes, permissions: perms, kv: kv,
-		subscribers: make(map[string][]EventHandler),
+		bus: bus,
 	}, nil
 }
 
@@ -230,24 +340,46 @@ func (h *hostAPI) RegisterBlock(def BlockDef) error {
 	return nil
 }
 
-// On subscribes handler to event. Real dispatch semantics (delivery order,
-// per-event capability requirements) are slice 2.2; this records the
-// subscription and always succeeds.
+// On subscribes handler to event on the shared cross-plugin EventBus
+// (KernelDeps.Bus). Requires the baseline events:subscribe scope; if event
+// is one of the PRD §8.4 sensitive domain events (see sensitiveEvents),
+// additionally requires the corresponding domain capability — because the
+// subscriber sees that event's sensitive data flow, a materially different
+// risk from merely emitting (§8.4: "emitting and subscribing carry
+// different risk and are scoped separately").
 func (h *hostAPI) On(event string, handler EventHandler) error {
-	h.subscribers[event] = append(h.subscribers[event], handler)
+	if !h.hasScope("events", "subscribe") {
+		return errors.New("events:subscribe: " + ErrScopeNotDeclared.Error())
+	}
+	if rule, sensitive := sensitiveEvents[event]; sensitive {
+		if rule.Scope == "" {
+			if _, declared := h.apiScope[rule.Capability]; !declared {
+				return errors.New(rule.Capability + ": " + ErrScopeNotDeclared.Error())
+			}
+		} else if !h.hasScope(rule.Capability, rule.Scope) {
+			return errors.New(rule.Capability + ":" + rule.Scope + ": " + ErrScopeNotDeclared.Error())
+		}
+	}
+	h.bus.subscribe(event, handler)
 	return nil
 }
 
-// Emit publishes payload to every handler subscribed to event via On. This
-// slice's minimal in-process dispatch — no persistence, no ordering
-// guarantees beyond registration order, no cross-plugin bus (slice 2.2).
+// Emit publishes payload to every handler subscribed to event across every
+// plugin sharing this HostAPI's EventBus (KernelDeps.Bus) — not just this
+// plugin's own subscriptions. Requires only the baseline events:emit scope:
+// per PRD §8.4, emitting is deliberately the less-scrutinized side of the
+// bus (a plugin publishing what it already knows carries less risk than a
+// plugin observing what other plugins/the kernel publish), so unlike On,
+// Emit carries no additional per-event capability requirement even for
+// events sensitiveEvents lists — see this slice's tracking doc for the full
+// reasoning. If one or more subscribers' handlers error, Emit still calls
+// every remaining subscriber (see EventBus.emit's doc comment) and returns
+// the collected errors via errors.Join.
 func (h *hostAPI) Emit(ctx context.Context, event string, payload any) error {
-	for _, handler := range h.subscribers[event] {
-		if err := handler(ctx, payload); err != nil {
-			return err
-		}
+	if !h.hasScope("events", "emit") {
+		return errors.New("events:emit: " + ErrScopeNotDeclared.Error())
 	}
-	return nil
+	return h.bus.emit(ctx, event, payload)
 }
 
 // Store returns this plugin's namespaced key-value store — always present,
