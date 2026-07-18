@@ -145,11 +145,6 @@ func (r *mutationResolver) RemoveContentType(ctx context.Context, name string) (
 	return true, nil
 }
 
-// errContentTypeHasItemsGraphQL signals the delete-guard rejected a removal
-// because content items of that type still exist — mirrors
-// errContentTypeHasItems in internal/api/contenttypes.go.
-var errContentTypeHasItemsGraphQL = errors.New("content type has existing items; delete or migrate them first")
-
 // DeleteMediaItem is the resolver for the deleteMediaItem field. It mirrors
 // handleMediaDelete in internal/api/media.go: requires media:write.
 func (r *mutationResolver) DeleteMediaItem(ctx context.Context, id string) (bool, error) {
@@ -174,6 +169,64 @@ func (r *mutationResolver) CreateUser(ctx context.Context, email string, passwor
 		return nil, gqlErr("VALIDATION", err.Error())
 	}
 	return userModel(u), nil
+}
+
+// UpdateUserRole is the resolver for the updateUserRole field. It mirrors
+// handleUpdateUserRole in internal/api/users.go: requires users:manage
+// (admin-only), enforced both here (fast-fail) and inside
+// identity.Service.UpdateRole itself (PRD §10.5 domain-boundary
+// defense-in-depth).
+func (r *mutationResolver) UpdateUserRole(ctx context.Context, id string, role string) (*generated.User, error) {
+	if _, err := requireCapability(ctx, permission.UsersManage); err != nil {
+		return nil, err
+	}
+	userID, err := userIDFromGraphQL(id)
+	if err != nil {
+		return nil, err
+	}
+	u, err := r.identities.UpdateRole(ctx, domainPrincipal(ctx), userID, role)
+	if err != nil {
+		return nil, r.mapUserManagementError(err)
+	}
+	return userModel(u), nil
+}
+
+// DeactivateUser is the resolver for the deactivateUser field. It mirrors
+// handleDeactivateUser: requires users:manage, and also revokes every
+// session the account currently holds so it cannot keep working off a
+// session opened before deactivation.
+func (r *mutationResolver) DeactivateUser(ctx context.Context, id string) (bool, error) {
+	if _, err := requireCapability(ctx, permission.UsersManage); err != nil {
+		return false, err
+	}
+	userID, err := userIDFromGraphQL(id)
+	if err != nil {
+		return false, err
+	}
+	if err := r.identities.Deactivate(ctx, domainPrincipal(ctx), userID); err != nil {
+		return false, r.mapUserManagementError(err)
+	}
+	if err := r.sessions.RevokeAllForUser(ctx, userID); err != nil {
+		r.log.Error("revoke sessions after deactivation", "error", err)
+		return false, gqlErr("INTERNAL", "internal error")
+	}
+	return true, nil
+}
+
+// ReactivateUser is the resolver for the reactivateUser field. It mirrors
+// handleReactivateUser: requires users:manage.
+func (r *mutationResolver) ReactivateUser(ctx context.Context, id string) (bool, error) {
+	if _, err := requireCapability(ctx, permission.UsersManage); err != nil {
+		return false, err
+	}
+	userID, err := userIDFromGraphQL(id)
+	if err != nil {
+		return false, err
+	}
+	if err := r.identities.Reactivate(ctx, domainPrincipal(ctx), userID); err != nil {
+		return false, r.mapUserManagementError(err)
+	}
+	return true, nil
 }
 
 // ContentTypes is the resolver for the contentTypes field. It mirrors GET

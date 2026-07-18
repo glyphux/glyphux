@@ -44,6 +44,17 @@ type Config struct {
 	// simply claim to be HTTPS.
 	TrustProxyHeaders bool `json:"trust_proxy_headers"`
 
+	// OAuth configures social login providers. Empty ClientID/ClientSecret
+	// means the provider is not offered — OAuth login is entirely optional,
+	// same as MFA (§ identity's Current Decisions doc).
+	OAuth OAuthConfig `json:"oauth"`
+
+	// PublicURL is this instance's externally-reachable base URL (e.g.
+	// "https://cms.example.com"), used to build the OAuth redirect_uri
+	// (must match what's registered with the provider). Defaults to
+	// "http://" + Addr, which only works for local/loopback testing.
+	PublicURL string `json:"public_url"`
+
 	// AllowedOrigins opts the daemon into CORS for exactly these origins —
 	// e.g. an external developer's frontend calling the API cross-origin
 	// (PRD's own headless-CMS positioning). Empty/unset by default,
@@ -51,6 +62,15 @@ type Config struct {
 	// (slice 1.9): no wildcard support, on purpose — every allowed origin
 	// must be named explicitly.
 	AllowedOrigins []string `json:"allowed_origins"`
+}
+
+// OAuthConfig holds one provider's registered app credentials. Only GitHub
+// is wired into cmd/glyphuxd today (see internal/identity/oauth.go's doc
+// comment for why); the shape here is provider-specific on purpose so
+// adding a second provider is additive, not a rewrite of this struct.
+type OAuthConfig struct {
+	GitHubClientID     string `json:"github_client_id"`
+	GitHubClientSecret string `json:"github_client_secret"`
 }
 
 // DatabaseConfig selects and configures the database adapter.
@@ -137,6 +157,15 @@ func Load(path string) (Config, error) {
 			return cfg, fmt.Errorf("GLYPHUX_TRUST_PROXY_HEADERS: %w", err)
 		}
 		cfg.TrustProxyHeaders = b
+	}
+	if v := os.Getenv("GLYPHUX_PUBLIC_URL"); v != "" {
+		cfg.PublicURL = v
+	}
+	if v := os.Getenv("GLYPHUX_OAUTH_GITHUB_CLIENT_ID"); v != "" {
+		cfg.OAuth.GitHubClientID = v
+	}
+	if v := os.Getenv("GLYPHUX_OAUTH_GITHUB_CLIENT_SECRET"); v != "" {
+		cfg.OAuth.GitHubClientSecret = v
 	}
 	if v := os.Getenv("GLYPHUX_ALLOWED_ORIGINS"); v != "" {
 		var origins []string

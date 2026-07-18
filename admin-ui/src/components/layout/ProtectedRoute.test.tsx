@@ -44,7 +44,7 @@ describe("ProtectedRoute", () => {
 
   it("renders the protected content when a valid session exists", async () => {
     client.token = "tok_123";
-    vi.mocked(client.auth.me).mockResolvedValue({ id: 1, email: "admin@example.com", role: "admin" });
+    vi.mocked(client.auth.me).mockResolvedValue({ id: 1, email: "admin@example.com", role: "admin", mfaEnabled: false, active: true });
     renderAt("/");
     await waitFor(() => expect(screen.getByText("PROTECTED HOME")).toBeInTheDocument());
   });

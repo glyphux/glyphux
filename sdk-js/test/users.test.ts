@@ -49,4 +49,54 @@ describe("users", () => {
     expect(caught).toBeInstanceOf(GlyphuxApiError);
     expect((caught as InstanceType<typeof GlyphuxApiError>).status).toBe(403);
   });
+
+  it("updateRole() changes an account's role", async () => {
+    const admin = await adminClient();
+    const email = `role-${Date.now()}@example.com`;
+    const created = await admin.users.create(email, "a decent password", "editor");
+
+    const updated = await admin.users.updateRole(created.id, "viewer");
+
+    expect(updated.role).toBe("viewer");
+  });
+
+  it("updateRole() is rejected for a non-admin caller as a typed 403 error", async () => {
+    const admin = await adminClient();
+    const targetEmail = `role-target-${Date.now()}@example.com`;
+    const target = await admin.users.create(targetEmail, "a decent password", "viewer");
+    const callerEmail = `role-caller-${Date.now()}@example.com`;
+    await admin.users.create(callerEmail, "a decent password", "editor");
+
+    const env = testEnv();
+    const editorClient = new GlyphuxClient({ baseUrl: env.baseUrl });
+    await editorClient.auth.login(callerEmail, "a decent password");
+
+    await expect(editorClient.users.updateRole(target.id, "admin")).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("deactivate() blocks future logins and revokes existing sessions; reactivate() restores it", async () => {
+    const admin = await adminClient();
+    const env = testEnv();
+    const email = `deactivate-${Date.now()}@example.com`;
+    const password = "a decent password";
+    const created = await admin.users.create(email, password, "editor");
+
+    const target = new GlyphuxClient({ baseUrl: env.baseUrl });
+    await target.auth.login(email, password);
+    // The session works before deactivation.
+    await target.auth.me();
+
+    await admin.users.deactivate(created.id);
+
+    // The existing session is now dead.
+    await expect(target.auth.me()).rejects.toMatchObject({ status: 401 });
+    // And a fresh login attempt is blocked.
+    const relogin = new GlyphuxClient({ baseUrl: env.baseUrl });
+    await expect(relogin.auth.login(email, password)).rejects.toMatchObject({ status: 403 });
+
+    await admin.users.reactivate(created.id);
+    const afterReactivation = await relogin.auth.login(email, password);
+    if ("mfaRequired" in afterReactivation) throw new Error("this account has no MFA enabled");
+    expect(afterReactivation.email).toBe(email);
+  });
 });

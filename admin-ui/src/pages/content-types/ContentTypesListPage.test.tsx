@@ -33,7 +33,7 @@ function renderPage() {
 
 describe("ContentTypesListPage", () => {
   beforeEach(() => {
-    vi.mocked(client.auth.me).mockResolvedValue({ id: 1, email: "admin@example.com", role: "admin" });
+    vi.mocked(client.auth.me).mockResolvedValue({ id: 1, email: "admin@example.com", role: "admin", mfaEnabled: false, active: true });
     vi.mocked(client.contentTypes.list).mockReset();
     vi.mocked(client.contentTypes.delete).mockReset();
   });

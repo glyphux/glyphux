@@ -191,8 +191,12 @@ func TestAuthLoginMeLogout(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("authed /me = %d", rec.Code)
 	}
-	if me := decode(t, rec); me["email"] != "admin@example.com" {
+	me := decode(t, rec)
+	if me["email"] != "admin@example.com" {
 		t.Errorf("/me email = %v", me["email"])
+	}
+	if me["active"] != true {
+		t.Errorf("/me active = %v, want true — regression check for Sessions.Lookup dropping the active column", me["active"])
 	}
 
 	// Logout revokes the session.

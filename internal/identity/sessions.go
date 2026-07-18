@@ -86,20 +86,23 @@ func (s *Sessions) Create(ctx context.Context, userID int64) (*Session, error) {
 // token is unknown, revoked, or expired.
 func (s *Sessions) Lookup(ctx context.Context, token string) (*User, error) {
 	var (
-		u          User
-		expiresStr string
+		u                  User
+		expiresStr         string
+		mfaEnabled, active int
 	)
 	err := s.db.QueryRow(ctx, `
-		SELECT u.id, u.email, u.role, s.expires_at
+		SELECT u.id, u.email, u.role, u.mfa_enabled, u.active, s.expires_at
 		FROM sessions s JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = ?`, hashToken(token)).
-		Scan(&u.ID, &u.Email, &u.Role, &expiresStr)
+		Scan(&u.ID, &u.Email, &u.Role, &mfaEnabled, &active, &expiresStr)
 	if errors.Is(err, db.ErrNoRows) {
 		return nil, ErrInvalidSession
 	}
 	if err != nil {
 		return nil, fmt.Errorf("lookup session: %w", err)
 	}
+	u.MFAEnabled = mfaEnabled != 0
+	u.Active = active != 0
 	expires, err := time.Parse(time.RFC3339Nano, expiresStr)
 	if err != nil {
 		return nil, fmt.Errorf("parse session expiry: %w", err)
@@ -115,6 +118,16 @@ func (s *Sessions) Lookup(ctx context.Context, token string) (*User, error) {
 func (s *Sessions) Revoke(ctx context.Context, token string) error {
 	if _, err := s.db.Exec(ctx, `DELETE FROM sessions WHERE token_hash = ?`, hashToken(token)); err != nil {
 		return fmt.Errorf("revoke session: %w", err)
+	}
+	return nil
+}
+
+// RevokeAllForUser deletes every session belonging to userID — used when
+// deactivating an account, so it cannot keep using a session opened before
+// deactivation until that session's TTL happens to expire on its own.
+func (s *Sessions) RevokeAllForUser(ctx context.Context, userID int64) error {
+	if _, err := s.db.Exec(ctx, `DELETE FROM sessions WHERE user_id = ?`, userID); err != nil {
+		return fmt.Errorf("revoke all sessions for user: %w", err)
 	}
 	return nil
 }

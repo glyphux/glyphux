@@ -35,6 +35,10 @@ type User {
   id: ID!
   email: String!
   role: String!
+  "Whether TOTP MFA is enabled for this account."
+  mfaEnabled: Boolean!
+  "Whether this account can currently authenticate."
+  active: Boolean!
 }
 
 """
@@ -102,6 +106,25 @@ type Mutation {
 
   "Create an account (mirrors POST /api/v0/users; requires users:manage, admin-only)."
   createUser(email: String!, password: String!, role: String!): User!
+
+  """
+  Change an account's role (mirrors PATCH /api/v0/users/{id}/role; requires
+  users:manage, admin-only).
+  """
+  updateUserRole(id: ID!, role: String!): User!
+
+  """
+  Deactivate an account, revoking every session it currently holds and
+  blocking future logins (mirrors POST /api/v0/users/{id}/deactivate;
+  requires users:manage, admin-only).
+  """
+  deactivateUser(id: ID!): Boolean!
+
+  """
+  Re-enable a previously deactivated account (mirrors POST
+  /api/v0/users/{id}/reactivate; requires users:manage, admin-only).
+  """
+  reactivateUser(id: ID!): Boolean!
 }
 
 "Input shape for one field of a content type definition."

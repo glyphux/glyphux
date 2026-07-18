@@ -15,7 +15,7 @@ import { client } from "@/lib/client";
 vi.mock("@/lib/client", () => ({
   client: {
     token: undefined,
-    auth: { login: vi.fn(), logout: vi.fn(), me: vi.fn() },
+    auth: { login: vi.fn(), verifyMfa: vi.fn(), logout: vi.fn(), me: vi.fn() },
   },
   setToken: vi.fn(),
 }));
@@ -51,6 +51,8 @@ describe("LoginPage", () => {
       id: 1,
       email: "admin@example.com",
       role: "admin",
+      mfaEnabled: false,
+      active: true,
       token: "tok_123",
     });
     const user = userEvent.setup();
@@ -75,5 +77,32 @@ describe("LoginPage", () => {
 
     expect(await screen.findByText(/invalid email or password/i)).toBeInTheDocument();
     expect(screen.queryByText("HOME")).not.toBeInTheDocument();
+  });
+
+  it("shows an MFA code step when login() reports mfaRequired, then verifies it", async () => {
+    vi.mocked(client.auth.login).mockResolvedValue({ mfaRequired: true, mfaToken: "challenge-token" });
+    vi.mocked(client.auth.verifyMfa).mockResolvedValue({
+      id: 1,
+      email: "admin@example.com",
+      role: "admin",
+      mfaEnabled: true,
+      active: true,
+      token: "tok_123",
+    });
+    const user = userEvent.setup();
+    renderLoginPage();
+
+    await user.type(screen.getByLabelText(/email/i), "admin@example.com");
+    await user.type(screen.getByLabelText(/password/i), "hunter2!!");
+    await user.click(screen.getByRole("button", { name: /sign in/i }));
+
+    expect(await screen.findByText(/two-factor verification/i)).toBeInTheDocument();
+    expect(screen.queryByText("HOME")).not.toBeInTheDocument();
+
+    await user.type(screen.getByLabelText(/authentication code/i), "123456");
+    await user.click(screen.getByRole("button", { name: /verify/i }));
+
+    await waitFor(() => expect(screen.getByText("HOME")).toBeInTheDocument());
+    expect(client.auth.verifyMfa).toHaveBeenCalledWith("challenge-token", "123456");
   });
 });

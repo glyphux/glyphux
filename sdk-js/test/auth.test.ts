@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { GlyphuxClient } from "../src/client.js";
 import { GlyphuxApiError } from "../src/errors.js";
 import { testEnv } from "./testenv.js";
+import { totpCode } from "./totp.js";
 
 describe("auth", () => {
   it("login returns the authenticated user and a bearer token", async () => {
@@ -9,6 +10,7 @@ describe("auth", () => {
     const client = new GlyphuxClient({ baseUrl: env.baseUrl });
 
     const result = await client.auth.login(env.adminEmail, env.adminPassword);
+    if ("mfaRequired" in result) throw new Error("admin fixture has no MFA enabled; expected a session");
 
     expect(result.email).toBe(env.adminEmail);
     expect(result.role).toBe("admin");
@@ -41,7 +43,9 @@ describe("auth", () => {
   it("logout() revokes the session token server-side", async () => {
     const env = testEnv();
     const client = new GlyphuxClient({ baseUrl: env.baseUrl });
-    const { token } = await client.auth.login(env.adminEmail, env.adminPassword);
+    const result = await client.auth.login(env.adminEmail, env.adminPassword);
+    if ("mfaRequired" in result) throw new Error("admin fixture has no MFA enabled; expected a session");
+    const { token } = result;
 
     await client.auth.logout();
 
@@ -69,5 +73,47 @@ describe("auth", () => {
 
     expect(caught).toBeInstanceOf(GlyphuxApiError);
     expect((caught as InstanceType<typeof GlyphuxApiError>).status).toBe(401);
+  });
+
+  // A dedicated account, not the shared admin fixture: enabling MFA on the
+  // admin account would break every other test file's plain-login
+  // assumption against the same long-lived daemon.
+  it("drives a full TOTP MFA round trip: enroll, confirm, login challenge", async () => {
+    const env = testEnv();
+    const admin = new GlyphuxClient({ baseUrl: env.baseUrl });
+    await admin.auth.login(env.adminEmail, env.adminPassword);
+    const email = `mfa-${Date.now()}@example.com`;
+    const password = "a decent password";
+    await admin.users.create(email, password, "viewer");
+
+    const client = new GlyphuxClient({ baseUrl: env.baseUrl });
+    await client.auth.login(email, password);
+
+    const { secret, otpauthUrl } = await client.auth.beginMfaEnrollment();
+    expect(secret.length).toBeGreaterThan(0);
+    expect(otpauthUrl).toContain("otpauth://totp/");
+
+    // A wrong code does not confirm enrollment.
+    await expect(client.auth.confirmMfaEnrollment("000000")).rejects.toMatchObject({ status: 401 });
+
+    const { recoveryCodes } = await client.auth.confirmMfaEnrollment(totpCode(secret));
+    expect(recoveryCodes.length).toBeGreaterThan(0);
+
+    // A fresh login for this account now returns an MFA challenge, not a
+    // session.
+    const fresh = new GlyphuxClient({ baseUrl: env.baseUrl });
+    const loginResult = await fresh.auth.login(email, password);
+    if (!("mfaRequired" in loginResult)) throw new Error("expected an MFA challenge");
+    expect(loginResult.mfaToken.length).toBeGreaterThan(0);
+
+    // A wrong code does not resolve the challenge.
+    await expect(fresh.auth.verifyMfa(loginResult.mfaToken, "000000")).rejects.toMatchObject({ status: 401 });
+
+    // The right code does, issuing a real session.
+    const session = await fresh.auth.verifyMfa(loginResult.mfaToken, totpCode(secret));
+    expect(session.email).toBe(email);
+    expect(session.token.length).toBeGreaterThan(0);
+    const me = await fresh.auth.me();
+    expect(me.email).toBe(email);
   });
 });

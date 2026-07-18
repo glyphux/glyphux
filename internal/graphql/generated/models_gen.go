@@ -76,4 +76,8 @@ type User struct {
 	ID    string `json:"id"`
 	Email string `json:"email"`
 	Role  string `json:"role"`
+	// Whether TOTP MFA is enabled for this account.
+	MfaEnabled bool `json:"mfaEnabled"`
+	// Whether this account can currently authenticate.
+	Active bool `json:"active"`
 }

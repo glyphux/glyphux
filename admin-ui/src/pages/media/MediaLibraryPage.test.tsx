@@ -52,7 +52,7 @@ function renderPage() {
 
 describe("MediaLibraryPage", () => {
   beforeEach(() => {
-    vi.mocked(client.auth.me).mockResolvedValue({ id: 1, email: "admin@example.com", role: "admin" });
+    vi.mocked(client.auth.me).mockResolvedValue({ id: 1, email: "admin@example.com", role: "admin", mfaEnabled: false, active: true });
     vi.mocked(client.media.list).mockReset();
     vi.mocked(client.media.delete).mockReset();
     vi.mocked(client.media.updateMetadata).mockReset();

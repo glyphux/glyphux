@@ -67,6 +67,13 @@ func NewService(database *db.DB) *Service {
 // deliberately indistinguishable.
 var ErrInvalidCredentials = errors.New("invalid credentials")
 
+// ErrAccountDeactivated is returned by Authenticate for a deactivated
+// account with otherwise-correct credentials. Unlike ErrInvalidCredentials
+// this is deliberately distinguishable: the caller legitimately owns these
+// credentials, so telling them the account was deactivated (rather than
+// "wrong password") is not a credential-enumeration risk.
+var ErrAccountDeactivated = errors.New("account deactivated")
+
 // CreateAdmin creates the initial admin account. Called once by the wizard.
 func (s *Service) CreateAdmin(ctx context.Context, email, password string) error {
 	_, err := s.createAccountWith(ctx, s.db, email, password, permission.RoleAdmin)
@@ -121,12 +128,12 @@ func (s *Service) createAccountWith(ctx context.Context, q db.Queryer, email, pa
 	if err := q.QueryRow(ctx, `SELECT id FROM users WHERE email = ?`, email).Scan(&id); err != nil {
 		return nil, fmt.Errorf("account id: %w", err)
 	}
-	return &User{ID: id, Email: email, Role: role}, nil
+	return &User{ID: id, Email: email, Role: role, Active: true}, nil
 }
 
 // ListUsers returns every account, oldest first.
 func (s *Service) ListUsers(ctx context.Context) ([]*User, error) {
-	rows, err := s.db.Query(ctx, `SELECT id, email, role FROM users ORDER BY id`)
+	rows, err := s.db.Query(ctx, `SELECT id, email, role, mfa_enabled, active FROM users ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list users: %w", err)
 	}
@@ -134,9 +141,12 @@ func (s *Service) ListUsers(ctx context.Context) ([]*User, error) {
 	var out []*User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.Email, &u.Role); err != nil {
+		var mfaEnabled, active int
+		if err := rows.Scan(&u.ID, &u.Email, &u.Role, &mfaEnabled, &active); err != nil {
 			return nil, fmt.Errorf("scan user: %w", err)
 		}
+		u.MFAEnabled = mfaEnabled != 0
+		u.Active = active != 0
 		out = append(out, &u)
 	}
 	return out, rows.Err()
@@ -152,9 +162,11 @@ func (s *Service) Verify(ctx context.Context, email, password string) error {
 // User is an authenticated principal — the identity the permission engine and
 // domain APIs reason about. It never carries credentials.
 type User struct {
-	ID    int64  `json:"id"`
-	Email string `json:"email"`
-	Role  string `json:"role"`
+	ID         int64  `json:"id"`
+	Email      string `json:"email"`
+	Role       string `json:"role"`
+	MFAEnabled bool   `json:"mfaEnabled"`
+	Active     bool   `json:"active"`
 }
 
 // Authenticate verifies credentials and returns the matching user, or
@@ -163,12 +175,13 @@ type User struct {
 func (s *Service) Authenticate(ctx context.Context, email, password string) (*User, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	var (
-		u                User
-		hashHex, saltHex string
+		u                  User
+		hashHex, saltHex   string
+		mfaEnabled, active int
 	)
 	err := s.db.QueryRow(ctx,
-		`SELECT id, email, role, password_hash, password_salt FROM users WHERE email = ?`, email).
-		Scan(&u.ID, &u.Email, &u.Role, &hashHex, &saltHex)
+		`SELECT id, email, role, password_hash, password_salt, mfa_enabled, active FROM users WHERE email = ?`, email).
+		Scan(&u.ID, &u.Email, &u.Role, &hashHex, &saltHex, &mfaEnabled, &active)
 	if errors.Is(err, db.ErrNoRows) {
 		return nil, ErrInvalidCredentials
 	}
@@ -189,6 +202,11 @@ func (s *Service) Authenticate(ctx context.Context, email, password string) (*Us
 	}
 	if subtle.ConstantTimeCompare(got, want) != 1 {
 		return nil, ErrInvalidCredentials
+	}
+	u.MFAEnabled = mfaEnabled != 0
+	u.Active = active != 0
+	if !u.Active {
+		return nil, ErrAccountDeactivated
 	}
 	return &u, nil
 }
