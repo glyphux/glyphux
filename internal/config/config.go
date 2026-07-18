@@ -3,6 +3,11 @@
 // Precedence: defaults < config file (glyphux.yaml / glyphux.json) < environment.
 // Convention over configuration (Principle 10): every value has a sensible
 // default so `glyphuxd` boots with no config at all.
+//
+// Secret values (currently just the Postgres DSN) are read through the
+// single secret() function in secrets.go (slice 1.9) rather than a bare
+// os.Getenv call, naming the one seam a future real secrets manager would
+// need to change.
 package config
 
 import (
@@ -95,7 +100,7 @@ func Load(path string) (Config, error) {
 	if v := os.Getenv("GLYPHUX_DB_DRIVER"); v != "" {
 		cfg.Database.Driver = v
 	}
-	if v := os.Getenv("GLYPHUX_DB_DSN"); v != "" {
+	if v, ok := secret("GLYPHUX_DB_DSN"); ok && v != "" {
 		cfg.Database.DSN = v
 	}
 	if v := os.Getenv("GLYPHUX_DB_MAX_OPEN_CONNS"); v != "" {

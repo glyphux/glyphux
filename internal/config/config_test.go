@@ -19,6 +19,23 @@ func TestAllowedOriginsDefaultsEmpty(t *testing.T) {
 	}
 }
 
+// TestDatabaseDSNReadAsSecret proves GLYPHUX_DB_DSN — a real secret, a
+// Postgres DSN with an embedded password — loads correctly through the
+// package's single secret() seam (internal/config/secrets.go), not a bare
+// os.Getenv call.
+func TestDatabaseDSNReadAsSecret(t *testing.T) {
+	t.Setenv("GLYPHUX_DB_DRIVER", "postgres")
+	t.Setenv("GLYPHUX_DB_DSN", "postgres://user:hunter2@localhost/db")
+
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Database.DSN != "postgres://user:hunter2@localhost/db" {
+		t.Errorf("Database.DSN = %q", cfg.Database.DSN)
+	}
+}
+
 // TestAllowedOriginsFromEnv proves GLYPHUX_ALLOWED_ORIGINS parses a
 // comma-separated origin list, trimming whitespace and dropping empties.
 func TestAllowedOriginsFromEnv(t *testing.T) {
