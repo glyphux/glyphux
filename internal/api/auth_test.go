@@ -261,24 +261,57 @@ func TestBearerTokenAuthenticates(t *testing.T) {
 	}
 }
 
-func sessionCookie(t *testing.T, rec *httptest.ResponseRecorder) *http.Cookie {
+// authCreds bundles the cookies a real authenticated browser session
+// carries: the HttpOnly session cookie and the CSRF cookie a mutating
+// request must mirror in the X-CSRF-Token header (slice 1.9). Test helpers
+// pass this around wherever a raw *http.Cookie used to suffice, so every
+// existing cookie-driven mutation test also exercises the CSRF check
+// exactly like a real browser would, without each call site needing to know
+// about it individually.
+type authCreds struct {
+	session *http.Cookie
+	csrf    *http.Cookie
+}
+
+// addTo attaches both cookies and the mirrored CSRF header to req, matching
+// what a real authenticated browser request (or the admin SPA) sends.
+func (c authCreds) addTo(req *http.Request) {
+	req.AddCookie(c.session)
+	if c.csrf != nil {
+		req.AddCookie(c.csrf)
+		req.Header.Set("X-CSRF-Token", c.csrf.Value)
+	}
+}
+
+// sessionCookie extracts the authenticated session + CSRF cookies a login
+// response set.
+func sessionCookie(t *testing.T, rec *httptest.ResponseRecorder) authCreds {
 	t.Helper()
+	var creds authCreds
 	for _, c := range rec.Result().Cookies() {
-		if c.Name == "glyphux_session" {
+		switch c.Name {
+		case "glyphux_session":
 			if !c.HttpOnly {
 				t.Error("session cookie is not HttpOnly")
 			}
-			return c
+			creds.session = c
+		case "glyphux_csrf":
+			if c.HttpOnly {
+				t.Error("CSRF cookie must not be HttpOnly — client JS must be able to read it")
+			}
+			creds.csrf = c
 		}
 	}
-	t.Fatal("no session cookie set")
-	return nil
+	if creds.session == nil {
+		t.Fatal("no session cookie set")
+	}
+	return creds
 }
 
-func doWithCookie(t *testing.T, h http.Handler, method, path string, c *http.Cookie) *httptest.ResponseRecorder {
+func doWithCookie(t *testing.T, h http.Handler, method, path string, c authCreds) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, path, nil)
-	req.AddCookie(c)
+	c.addTo(req)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec

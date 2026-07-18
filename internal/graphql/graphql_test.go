@@ -639,6 +639,59 @@ func TestMediaQueriesArePublicAndDeleteRequiresMediaWrite(t *testing.T) {
 	}
 }
 
+// TestMediaQueryExposesTagsSourceAttribution proves the GraphQL MediaItem
+// type surfaces the tags/source/attribution fields (PRD §11.4) — set via
+// the domain API directly (no GraphQL mutation for metadata edits; that's
+// intentionally REST-only, mirroring upload's REST-only scope) and read
+// back over a query.
+func TestMediaQueryExposesTagsSourceAttribution(t *testing.T) {
+	h, deps := testServer(t)
+	ctx := context.Background()
+	png := []byte{
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+		0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00,
+		0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+		0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49,
+		0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+	}
+	item, err := deps.media.Upload(ctx, adminPrincipal, "pixel.png", "image/png", png)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := deps.media.UpdateMetadata(ctx, adminPrincipal, item.ID, media.MetadataUpdate{
+		AltText:     "a pixel",
+		Tags:        []string{"stock", "hero"},
+		Source:      "https://example.com/photo",
+		Attribution: "Photo by Jane Doe",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	const query = `query($id: String!) { mediaItem(id: $id) { altText tags source attribution } }`
+	_, resp := doGraphQL(t, h, "", query, map[string]any{"id": item.ID})
+	if len(resp.Errors) != 0 {
+		t.Fatalf("mediaItem errors = %v", resp.Errors)
+	}
+	got, ok := resp.Data["mediaItem"].(map[string]any)
+	if !ok {
+		t.Fatalf("mediaItem = %v", resp.Data["mediaItem"])
+	}
+	if got["altText"] != "a pixel" {
+		t.Errorf("altText = %v, want %q", got["altText"], "a pixel")
+	}
+	tags, _ := got["tags"].([]any)
+	if len(tags) != 2 || tags[0] != "stock" || tags[1] != "hero" {
+		t.Errorf("tags = %v, want [stock hero]", got["tags"])
+	}
+	if got["source"] != "https://example.com/photo" {
+		t.Errorf("source = %v", got["source"])
+	}
+	if got["attribution"] != "Photo by Jane Doe" {
+		t.Errorf("attribution = %v", got["attribution"])
+	}
+}
+
 func TestUsersQueryAndCreateUserMutationAreAdminOnly(t *testing.T) {
 	h, deps := testServer(t)
 	adminToken := loginAdmin(t, deps)

@@ -91,6 +91,10 @@ func userIDFromGraphQL(id string) (int64, error) {
 
 // mediaItemModel converts a media.Item to its GraphQL model.
 func mediaItemModel(item *media.Item) *generated.MediaItem {
+	tags := item.Tags
+	if tags == nil {
+		tags = []string{}
+	}
 	return &generated.MediaItem{
 		ID:        item.ID,
 		Filename:  item.Filename,
@@ -98,9 +102,12 @@ func mediaItemModel(item *media.Item) *generated.MediaItem {
 		SizeBytes: int(item.SizeBytes),
 		Width:     item.Width,
 		Height:    item.Height,
-		AltText:   item.AltText,
-		CreatedAt: formatTime(item.CreatedAt),
-		UpdatedAt: formatTime(item.UpdatedAt),
+		AltText:     item.AltText,
+		Tags:        tags,
+		Source:      item.Source,
+		Attribution: item.Attribution,
+		CreatedAt:   formatTime(item.CreatedAt),
+		UpdatedAt:   formatTime(item.UpdatedAt),
 	}
 }
 

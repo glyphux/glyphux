@@ -3,6 +3,11 @@
 // Precedence: defaults < config file (glyphux.yaml / glyphux.json) < environment.
 // Convention over configuration (Principle 10): every value has a sensible
 // default so `glyphuxd` boots with no config at all.
+//
+// Secret values (currently just the Postgres DSN) are read through the
+// single secret() function in secrets.go (slice 1.9) rather than a bare
+// os.Getenv call, naming the one seam a future real secrets manager would
+// need to change.
 package config
 
 import (
@@ -49,6 +54,14 @@ type Config struct {
 	// (must match what's registered with the provider). Defaults to
 	// "http://" + Addr, which only works for local/loopback testing.
 	PublicURL string `json:"public_url"`
+
+	// AllowedOrigins opts the daemon into CORS for exactly these origins —
+	// e.g. an external developer's frontend calling the API cross-origin
+	// (PRD's own headless-CMS positioning). Empty/unset by default,
+	// preserving the "no CORS ever" posture every response has today
+	// (slice 1.9): no wildcard support, on purpose — every allowed origin
+	// must be named explicitly.
+	AllowedOrigins []string `json:"allowed_origins"`
 }
 
 // OAuthConfig holds one provider's registered app credentials. Only GitHub
@@ -107,7 +120,7 @@ func Load(path string) (Config, error) {
 	if v := os.Getenv("GLYPHUX_DB_DRIVER"); v != "" {
 		cfg.Database.Driver = v
 	}
-	if v := os.Getenv("GLYPHUX_DB_DSN"); v != "" {
+	if v, ok := secret("GLYPHUX_DB_DSN"); ok && v != "" {
 		cfg.Database.DSN = v
 	}
 	if v := os.Getenv("GLYPHUX_DB_MAX_OPEN_CONNS"); v != "" {
@@ -153,6 +166,15 @@ func Load(path string) (Config, error) {
 	}
 	if v := os.Getenv("GLYPHUX_OAUTH_GITHUB_CLIENT_SECRET"); v != "" {
 		cfg.OAuth.GitHubClientSecret = v
+	}
+	if v := os.Getenv("GLYPHUX_ALLOWED_ORIGINS"); v != "" {
+		var origins []string
+		for _, o := range strings.Split(v, ",") {
+			if o = strings.TrimSpace(o); o != "" {
+				origins = append(origins, o)
+			}
+		}
+		cfg.AllowedOrigins = origins
 	}
 
 	if err := cfg.validate(); err != nil {

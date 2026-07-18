@@ -84,59 +84,69 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v0/content/ping", s.handlePing)
 
 	// Content-type management (structural schema changes; admin-only).
+	// Mutations get requireCSRF too (slice 1.9): a cookie-authenticated
+	// state-changing request must mirror the CSRF cookie in a header.
 	mux.HandleFunc("GET /api/v0/content-types", s.handleContentTypesList)
-	mux.HandleFunc("PUT /api/v0/content-types/{name}", s.requireCapability(permission.ContentTypesManage, s.handleContentTypePut))
-	mux.HandleFunc("DELETE /api/v0/content-types/{name}", s.requireCapability(permission.ContentTypesManage, s.handleContentTypeDelete))
+	mux.HandleFunc("PUT /api/v0/content-types/{name}", s.requireCSRF(s.requireCapability(permission.ContentTypesManage, s.handleContentTypePut)))
+	mux.HandleFunc("DELETE /api/v0/content-types/{name}", s.requireCSRF(s.requireCapability(permission.ContentTypesManage, s.handleContentTypeDelete)))
 
-	// Authentication (slice 1.7).
-	mux.HandleFunc("POST /api/v0/auth/login", s.handleLogin)
-	mux.HandleFunc("POST /api/v0/auth/logout", s.handleLogout)
+	// Authentication (slice 1.7). Login has no session cookie yet on a
+	// fresh visit, so requireCSRF is a no-op there; it still protects an
+	// already-authenticated victim from a forged cross-site re-login/logout.
+	mux.HandleFunc("POST /api/v0/auth/login", s.requireCSRF(s.handleLogin))
+	mux.HandleFunc("POST /api/v0/auth/logout", s.requireCSRF(s.handleLogout))
 	mux.HandleFunc("GET /api/v0/auth/me", s.handleMe)
 
 	// TOTP MFA: opt-in per account (slice 0009). Enroll/confirm/disable are
-	// self-service (the caller must already be authenticated as the account
-	// in question); the verify step is deliberately public — the caller
-	// isn't fully logged in yet, that's the point of a second factor.
-	mux.HandleFunc("POST /api/v0/auth/mfa/enroll", s.requireUser(s.handleMFAEnroll))
-	mux.HandleFunc("POST /api/v0/auth/mfa/confirm", s.requireUser(s.handleMFAConfirm))
-	mux.HandleFunc("POST /api/v0/auth/mfa/disable", s.requireUser(s.handleMFADisable))
+	// self-service cookie-authenticated mutations, so they get requireCSRF
+	// like every other mutation (slice 1.9); the verify step is deliberately
+	// public and CSRF-exempt — the caller isn't fully logged in yet, that's
+	// the point of a second factor, and it has no session cookie to forge
+	// against.
+	mux.HandleFunc("POST /api/v0/auth/mfa/enroll", s.requireCSRF(s.requireUser(s.handleMFAEnroll)))
+	mux.HandleFunc("POST /api/v0/auth/mfa/confirm", s.requireCSRF(s.requireUser(s.handleMFAConfirm)))
+	mux.HandleFunc("POST /api/v0/auth/mfa/disable", s.requireCSRF(s.requireUser(s.handleMFADisable)))
 	mux.HandleFunc("POST /api/v0/auth/mfa/verify", s.handleMFAVerify)
 
 	// OAuth2/social login (slice 0009). 404s unless WithOAuth configured a
-	// manager — see that option's doc comment.
+	// manager — see that option's doc comment. No requireCSRF: the start
+	// route only redirects to the provider, and the callback is a GET the
+	// provider itself issues (no cookie jar to forge from); the OAuth state
+	// parameter is this flow's CSRF protection instead.
 	mux.HandleFunc("GET /api/v0/auth/oauth/{provider}/start", s.handleOAuthStart)
 	mux.HandleFunc("GET /api/v0/auth/oauth/{provider}/callback", s.handleOAuthCallback)
 
 	// User management (admin-only; slice 1.8, extended in slice 0009 with
 	// role change and deactivate/reactivate).
-	mux.HandleFunc("POST /api/v0/users", s.requireCapability(permission.UsersManage, s.handleCreateUser))
+	mux.HandleFunc("POST /api/v0/users", s.requireCSRF(s.requireCapability(permission.UsersManage, s.handleCreateUser)))
 	mux.HandleFunc("GET /api/v0/users", s.requireCapability(permission.UsersManage, s.handleListUsers))
-	mux.HandleFunc("PATCH /api/v0/users/{id}/role", s.requireCapability(permission.UsersManage, s.handleUpdateUserRole))
-	mux.HandleFunc("POST /api/v0/users/{id}/deactivate", s.requireCapability(permission.UsersManage, s.handleDeactivateUser))
-	mux.HandleFunc("POST /api/v0/users/{id}/reactivate", s.requireCapability(permission.UsersManage, s.handleReactivateUser))
+	mux.HandleFunc("PATCH /api/v0/users/{id}/role", s.requireCSRF(s.requireCapability(permission.UsersManage, s.handleUpdateUserRole)))
+	mux.HandleFunc("POST /api/v0/users/{id}/deactivate", s.requireCSRF(s.requireCapability(permission.UsersManage, s.handleDeactivateUser)))
+	mux.HandleFunc("POST /api/v0/users/{id}/reactivate", s.requireCSRF(s.requireCapability(permission.UsersManage, s.handleReactivateUser)))
 
 	// Content CRUD (slice 1.2). The literal /ping route above is more specific
 	// than {type}, so ServeMux prefers it — no shadowing. Reads are public;
 	// mutations require the content:write capability (slice 1.8).
-	mux.HandleFunc("POST /api/v0/content/{type}", s.requireCapability(permission.ContentWrite, s.handleContentCreate))
+	mux.HandleFunc("POST /api/v0/content/{type}", s.requireCSRF(s.requireCapability(permission.ContentWrite, s.handleContentCreate)))
 	mux.HandleFunc("GET /api/v0/content/{type}", s.handleContentList)
 	mux.HandleFunc("GET /api/v0/content/{type}/{id}", s.handleContentGet)
-	mux.HandleFunc("PUT /api/v0/content/{type}/{id}", s.requireCapability(permission.ContentWrite, s.handleContentUpdate))
-	mux.HandleFunc("DELETE /api/v0/content/{type}/{id}", s.requireCapability(permission.ContentWrite, s.handleContentDelete))
+	mux.HandleFunc("PUT /api/v0/content/{type}/{id}", s.requireCSRF(s.requireCapability(permission.ContentWrite, s.handleContentUpdate)))
+	mux.HandleFunc("DELETE /api/v0/content/{type}/{id}", s.requireCSRF(s.requireCapability(permission.ContentWrite, s.handleContentDelete)))
 
 	// Drafts, publish, versioning (slice 1.5).
-	mux.HandleFunc("POST /api/v0/content/{type}/{id}/publish", s.requireCapability(permission.ContentPublish, s.handleContentPublish))
-	mux.HandleFunc("POST /api/v0/content/{type}/{id}/unpublish", s.requireCapability(permission.ContentPublish, s.handleContentUnpublish))
+	mux.HandleFunc("POST /api/v0/content/{type}/{id}/publish", s.requireCSRF(s.requireCapability(permission.ContentPublish, s.handleContentPublish)))
+	mux.HandleFunc("POST /api/v0/content/{type}/{id}/unpublish", s.requireCSRF(s.requireCapability(permission.ContentPublish, s.handleContentUnpublish)))
 	mux.HandleFunc("GET /api/v0/content/{type}/{id}/versions", s.handleContentListVersions)
-	mux.HandleFunc("POST /api/v0/content/{type}/{id}/rollback/{version}", s.requireCapability(permission.ContentWrite, s.handleContentRollback))
+	mux.HandleFunc("POST /api/v0/content/{type}/{id}/rollback/{version}", s.requireCSRF(s.requireCapability(permission.ContentWrite, s.handleContentRollback)))
 
 	// Media pipeline + library (slice 1.6). Reads are public; upload/delete
 	// require media:write.
-	mux.HandleFunc("POST /api/v0/media", s.requireCapability(permission.MediaWrite, s.handleMediaUpload))
+	mux.HandleFunc("POST /api/v0/media", s.requireCSRF(s.requireCapability(permission.MediaWrite, s.handleMediaUpload)))
 	mux.HandleFunc("GET /api/v0/media", s.handleMediaList)
 	mux.HandleFunc("GET /api/v0/media/{id}", s.handleMediaGet)
 	mux.HandleFunc("GET /api/v0/media/{id}/file", s.handleMediaFile)
-	mux.HandleFunc("DELETE /api/v0/media/{id}", s.requireCapability(permission.MediaWrite, s.handleMediaDelete))
+	mux.HandleFunc("PATCH /api/v0/media/{id}", s.requireCSRF(s.requireCapability(permission.MediaWrite, s.handleMediaUpdateMetadata)))
+	mux.HandleFunc("DELETE /api/v0/media/{id}", s.requireCSRF(s.requireCapability(permission.MediaWrite, s.handleMediaDelete)))
 }
 
 func (s *Server) handleContentCreate(w http.ResponseWriter, r *http.Request) {

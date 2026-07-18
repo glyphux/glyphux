@@ -75,6 +75,7 @@ func (a *API) Create(ctx context.Context, principal *permission.Principal, typeN
 	if err := validate(typeName, ct, data); err != nil {
 		return nil, err
 	}
+	sanitizeRichText(ct, data)
 	if err := a.checkRelations(ctx, typeName, ct, data); err != nil {
 		return nil, err
 	}
@@ -290,6 +291,7 @@ func (a *API) Update(ctx context.Context, principal *permission.Principal, typeN
 	if err := validate(typeName, ct, data); err != nil {
 		return nil, err
 	}
+	sanitizeRichText(ct, data)
 	if err := a.checkRelations(ctx, typeName, ct, data); err != nil {
 		return nil, err
 	}
@@ -419,6 +421,7 @@ func (a *API) Rollback(ctx context.Context, principal *permission.Principal, typ
 	if err := validate(typeName, ct, data); err != nil {
 		return nil, err
 	}
+	sanitizeRichText(ct, data)
 	if err := a.checkRelations(ctx, typeName, ct, data); err != nil {
 		return nil, err
 	}

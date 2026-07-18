@@ -81,6 +81,34 @@ export interface MediaItem {
   width: number;
   height: number;
   alt_text: string;
+  tags: string[];
+  source: string;
+  attribution: string;
   created_at: string;
   updated_at: string;
+}
+
+/** The editable metadata on a media item — alt text, tags, and
+ * source/attribution (PRD §11.4). A full replace: send back every field
+ * you want kept (internal/media.MetadataUpdate). */
+export interface MediaMetadataUpdate {
+  alt_text: string;
+  tags: string[];
+  source: string;
+  attribution: string;
+}
+
+/** An image transform pipeline — crop, then rotate, then resize, then
+ * re-encode in an explicit format (internal/media.TransformOptions) — sent
+ * as query params on GET .../file. Omitting a field skips that stage;
+ * rotate must be 0, 90, 180, or 270 if given. */
+export interface MediaTransform {
+  cropX?: number;
+  cropY?: number;
+  cropW?: number;
+  cropH?: number;
+  rotate?: number;
+  width?: number;
+  height?: number;
+  format?: "jpeg" | "png";
 }

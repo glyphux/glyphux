@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/glyphux/glyphux/internal/composition"
@@ -572,6 +573,67 @@ func TestCreateAndGet(t *testing.T) {
 	}
 	if got.Data["body"] != "World" {
 		t.Errorf("body = %v, want World", got.Data["body"])
+	}
+}
+
+// TestCreateSanitizesRichTextField proves stored-XSS via a rich-text field
+// is closed at the write boundary (slice 1.9): a malicious <script> payload
+// is neutralized before it is ever persisted, so reading the item back never
+// serves executable script to a theme/client that renders the field as
+// HTML. Safe formatting markup survives untouched.
+func TestCreateSanitizesRichTextField(t *testing.T) {
+	api := testAPI(t, articleTypes())
+	ctx := context.Background()
+
+	created, err := api.Create(ctx, adminPrincipal, "article", map[string]any{
+		"title": "Hello",
+		"body":  `<p>safe</p><script>alert('xss')</script><img src=x onerror=alert(1)>`,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	body, _ := created.Data["body"].(string)
+	if strings.Contains(body, "<script") {
+		t.Errorf("body still contains <script> after Create: %q", body)
+	}
+	if strings.Contains(body, "onerror") {
+		t.Errorf("body still contains an inline event handler after Create: %q", body)
+	}
+	if !strings.Contains(body, "<p>safe</p>") {
+		t.Errorf("body lost safe markup: %q", body)
+	}
+
+	// Read-back (Get) serves the same neutralized value, not the raw input.
+	got, err := api.Get(ctx, adminPrincipal, "article", created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	gotBody, _ := got.Data["body"].(string)
+	if strings.Contains(gotBody, "<script") || strings.Contains(gotBody, "onerror") {
+		t.Errorf("read-back body still carries the malicious payload: %q", gotBody)
+	}
+}
+
+// TestUpdateSanitizesRichTextField proves Update (not just Create) sanitizes
+// rich-text fields at the write boundary too.
+func TestUpdateSanitizesRichTextField(t *testing.T) {
+	api := testAPI(t, articleTypes())
+	ctx := context.Background()
+
+	created, err := api.Create(ctx, adminPrincipal, "article", map[string]any{"title": "Hello", "body": "clean"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	updated, err := api.Update(ctx, adminPrincipal, "article", created.ID, map[string]any{
+		"title": "Hello",
+		"body":  `<script>alert('xss')</script>updated`,
+	})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	body, _ := updated.Data["body"].(string)
+	if strings.Contains(body, "<script") {
+		t.Errorf("body still contains <script> after Update: %q", body)
 	}
 }
 

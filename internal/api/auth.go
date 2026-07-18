@@ -70,6 +70,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, s.newSessionCookie(sess.Token, r))
+	csrfToken, err := newCSRFToken()
+	if err != nil {
+		s.log.Error("generate CSRF token", "error", err)
+		s.writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	http.SetCookie(w, s.newCSRFCookie(csrfToken, r))
 	// Browser clients authenticate via the cookie just set; programmatic
 	// clients (SDKs, scripts) have no cookie jar, so the same token is also
 	// returned in the body for Authorization: Bearer use.
@@ -96,10 +103,13 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(sessionCookieName); err == nil {
 		_ = s.sessions.Revoke(r.Context(), c.Value)
 	}
-	// Clear the cookie regardless.
+	// Clear both cookies regardless.
 	clear := s.newSessionCookie("", r)
 	clear.MaxAge = -1
 	http.SetCookie(w, clear)
+	clearCSRF := s.newCSRFCookie("", r)
+	clearCSRF.MaxAge = -1
+	http.SetCookie(w, clearCSRF)
 	w.WriteHeader(http.StatusNoContent)
 }
 
