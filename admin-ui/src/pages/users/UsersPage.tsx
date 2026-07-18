@@ -19,6 +19,7 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -34,6 +35,8 @@ export function UsersPage() {
   const [loading, setLoading] = useState(canManage);
   const [error, setError] = useState<unknown>(undefined);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [pendingDeactivate, setPendingDeactivate] = useState<User | undefined>(undefined);
+  const { toast } = useToast();
 
   const load = useCallback(() => {
     if (!canManage) return;
@@ -56,6 +59,41 @@ export function UsersPage() {
       </Alert>
     );
   }
+
+  const onRoleChange = async (u: User, role: string) => {
+    const prev = users;
+    setUsers((cur) => cur.map((x) => (x.id === u.id ? { ...x, role } : x)));
+    try {
+      await client.users.updateRole(u.id, role);
+      toast({ title: `${u.email} is now ${role}`, variant: "success" });
+    } catch (err) {
+      setUsers(prev);
+      toast({
+        title: err instanceof GlyphuxApiError ? err.message : "Could not change this user's role.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const onToggleActive = async (u: User) => {
+    try {
+      if (u.active) {
+        await client.users.deactivate(u.id);
+        toast({ title: `Deactivated ${u.email}`, variant: "success" });
+      } else {
+        await client.users.reactivate(u.id);
+        toast({ title: `Reactivated ${u.email}`, variant: "success" });
+      }
+      load();
+    } catch (err) {
+      toast({
+        title: err instanceof GlyphuxApiError ? err.message : "Could not update this account.",
+        variant: "destructive",
+      });
+    } finally {
+      setPendingDeactivate(undefined);
+    }
+  };
 
   return (
     <div className="flex flex-col gap-6">
@@ -92,22 +130,78 @@ export function UsersPage() {
             <TableRow>
               <TableHead>Email</TableHead>
               <TableHead>Role</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead />
             </TableRow>
           </TableHeader>
           <TableBody>
-            {users.map((u) => (
-              <TableRow key={u.id}>
-                <TableCell className="font-medium">{u.email}</TableCell>
-                <TableCell>
-                  <Badge variant="secondary" className="capitalize">
-                    {u.role}
-                  </Badge>
-                </TableCell>
-              </TableRow>
-            ))}
+            {users.map((u) => {
+              const isSelf = u.id === me?.id;
+              return (
+                <TableRow key={u.id}>
+                  <TableCell className="font-medium">{u.email}</TableCell>
+                  <TableCell>
+                    <Select value={u.role} onValueChange={(role) => onRoleChange(u, role)} disabled={isSelf}>
+                      <SelectTrigger aria-label={`Role for ${u.email}`} className="w-28 capitalize">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {ROLES.map((r) => (
+                          <SelectItem key={r} value={r} className="capitalize">
+                            {r}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant={u.active ? "secondary" : "destructive"}>
+                      {u.active ? "Active" : "Deactivated"}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="text-right">
+                    {u.active ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-destructive"
+                        disabled={isSelf}
+                        onClick={() => setPendingDeactivate(u)}
+                      >
+                        Deactivate
+                      </Button>
+                    ) : (
+                      <Button variant="ghost" size="sm" onClick={() => onToggleActive(u)}>
+                        Reactivate
+                      </Button>
+                    )}
+                  </TableCell>
+                </TableRow>
+              );
+            })}
           </TableBody>
         </Table>
       )}
+
+      <Dialog open={!!pendingDeactivate} onOpenChange={(open) => !open && setPendingDeactivate(undefined)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Deactivate {pendingDeactivate?.email}?</DialogTitle>
+            <DialogDescription>
+              This revokes every session the account currently holds and blocks it from logging in again until an
+              admin reactivates it.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPendingDeactivate(undefined)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={() => pendingDeactivate && onToggleActive(pendingDeactivate)}>
+              Deactivate
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

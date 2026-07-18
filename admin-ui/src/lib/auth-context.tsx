@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
-import { GlyphuxApiError, type User } from "@glyphux/sdk";
+import { GlyphuxApiError, type MfaChallenge, type User } from "@glyphux/sdk";
 import { client, setToken } from "./client";
 
 interface AuthState {
@@ -9,7 +9,13 @@ interface AuthState {
    * lets callers avoid a login-page flash for a user who already has a
    * valid persisted token. */
   loading: boolean;
-  login: (email: string, password: string) => Promise<void>;
+  /** Authenticates with email/password. If the account has TOTP MFA
+   * enabled, no session is issued yet — the returned MfaChallenge must be
+   * resolved with verifyMfa before `user` is set. Otherwise resolves to
+   * undefined once `user` is set. */
+  login: (email: string, password: string) => Promise<MfaChallenge | undefined>;
+  /** Completes a login that returned an MfaChallenge. */
+  verifyMfa: (mfaToken: string, code: string) => Promise<void>;
   logout: () => Promise<void>;
 }
 
@@ -46,8 +52,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(async (email: string, password: string) => {
     const result = await client.auth.login(email, password);
+    if ("mfaRequired" in result) return result;
     setToken(result.token);
-    setUser({ id: result.id, email: result.email, role: result.role });
+    setUser({ id: result.id, email: result.email, role: result.role, mfaEnabled: result.mfaEnabled, active: result.active });
+    return undefined;
+  }, []);
+
+  const verifyMfa = useCallback(async (mfaToken: string, code: string) => {
+    const result = await client.auth.verifyMfa(mfaToken, code);
+    setToken(result.token);
+    setUser({ id: result.id, email: result.email, role: result.role, mfaEnabled: result.mfaEnabled, active: result.active });
   }, []);
 
   const logout = useCallback(async () => {
@@ -59,7 +73,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  return <AuthContext.Provider value={{ user, loading, login, logout }}>{children}</AuthContext.Provider>;
+  return <AuthContext.Provider value={{ user, loading, login, verifyMfa, logout }}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth(): AuthState {
