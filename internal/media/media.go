@@ -20,6 +20,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/glyphux/glyphux/internal/permission"
 )
 
 // ErrUnsupportedType reports an upload whose MIME type is not in the allowed
@@ -63,7 +65,13 @@ func NewAPI(items *Store, root string) *API {
 
 // Upload validates data's MIME type, decodes image dimensions where possible,
 // stores the bytes on the local-FS adapter, and records the metadata.
-func (a *API) Upload(ctx context.Context, filename, mimeType string, data []byte) (*Item, error) {
+// principal must hold media:write — checked here at the domain-API
+// boundary (PRD §10.5) independent of whether a transport handler already
+// checked; a nil principal (anonymous) is always denied.
+func (a *API) Upload(ctx context.Context, principal *permission.Principal, filename, mimeType string, data []byte) (*Item, error) {
+	if !permission.AllowsPrincipal(principal, permission.MediaWrite) {
+		return nil, permission.ErrDenied
+	}
 	ext, ok := allowedTypes[mimeType]
 	if !ok {
 		return nil, fmt.Errorf("%w: %q", ErrUnsupportedType, mimeType)
@@ -122,8 +130,12 @@ func (a *API) List(ctx context.Context) ([]*Item, error) {
 }
 
 // Delete removes a media item's metadata and its stored file. Returns
-// ErrNotFound if it does not exist.
-func (a *API) Delete(ctx context.Context, id string) error {
+// ErrNotFound if it does not exist. principal must hold media:write,
+// checked here at the domain-API boundary.
+func (a *API) Delete(ctx context.Context, principal *permission.Principal, id string) error {
+	if !permission.AllowsPrincipal(principal, permission.MediaWrite) {
+		return permission.ErrDenied
+	}
 	r, err := a.items.getByID(ctx, id)
 	if err != nil {
 		return err
