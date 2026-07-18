@@ -92,7 +92,14 @@ export function AppShell() {
   }, [mobileOpen]);
 
   const handleLogout = async () => {
-    await logout();
+    try {
+      await logout();
+    } catch {
+      // logout() already clears local session state in its own `finally`
+      // even if the server call fails (e.g. offline) — the user is signed
+      // out locally either way, so still navigate rather than leaving them
+      // stranded on a page an unauthenticated user can no longer use.
+    }
     navigate("/login", { replace: true });
   };
 

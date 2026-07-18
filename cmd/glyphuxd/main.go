@@ -103,7 +103,7 @@ func buildFullHandler(cfg config.Config, log *slog.Logger) bootstrap.BuildFullHa
 		sessions := identity.NewSessions(database)
 		contentAPI := content.NewAPI(compositions, content.NewStore(database))
 		mediaAPI := media.NewAPI(media.NewStore(database), filepath.Join(cfg.DataDir, "media"))
-		apiServer := api.New(compositions, contentAPI, mediaAPI, identities, sessions, log)
+		apiServer := api.New(compositions, contentAPI, mediaAPI, identities, sessions, log, api.TrustProxyHeaders(cfg.TrustProxyHeaders))
 		// GraphQL (slice 1.12) is a second transport over the same domain
 		// APIs the REST apiServer above was just built from — not a new
 		// privileged path.

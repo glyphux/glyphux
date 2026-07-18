@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/glyphux/glyphux/internal/api"
@@ -57,6 +58,70 @@ func testServerWithAuth(t *testing.T) (http.Handler, authDeps) {
 	mux := http.NewServeMux()
 	srv.Routes(mux)
 	return mux, deps
+}
+
+// TestLoginCookieIgnoresUnvouchedForwardedProto proves the session cookie's
+// Secure flag isn't set from a spoofable X-Forwarded-Proto header by default
+// — only when the operator has explicitly opted in via TrustProxyHeaders,
+// mirroring setup.Wizard's identical trust decision (internal/setup/setup.go).
+// Trusting the header unconditionally would let a client behind no real
+// proxy claim HTTPS and get a cookie that looks secure but is sent in the
+// clear.
+func TestLoginCookieIgnoresUnvouchedForwardedProto(t *testing.T) {
+	d, err := db.OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+	migs := append(append([]db.Migration{}, composition.Migrations...), identity.Migrations...)
+	if err := d.Migrate(context.Background(), migs); err != nil {
+		t.Fatal(err)
+	}
+	identities := identity.NewService(d)
+	if err := identities.CreateAdmin(context.Background(), "admin@example.com", "correct horse battery"); err != nil {
+		t.Fatal(err)
+	}
+	comps := composition.NewStore(d)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	login := func(srv *api.Server) *httptest.ResponseRecorder {
+		mux := http.NewServeMux()
+		srv.Routes(mux)
+		req := httptest.NewRequest(http.MethodPost, "/api/v0/auth/login", strings.NewReader(
+			`{"email":"admin@example.com","password":"correct horse battery"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Forwarded-Proto", "https")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec
+	}
+
+	untrusted := api.New(comps, content.NewAPI(comps, content.NewStore(d)), newTestMediaAPI(t, d), identities, identity.NewSessions(d), log)
+	rec := login(untrusted)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login = %d, body %s", rec.Code, rec.Body.String())
+	}
+	if cookie := findSessionCookie(rec); cookie == nil || cookie.Secure {
+		t.Fatalf("cookie Secure = %v, want false without TrustProxyHeaders opt-in", cookie)
+	}
+
+	trusted := api.New(comps, content.NewAPI(comps, content.NewStore(d)), newTestMediaAPI(t, d), identities, identity.NewSessions(d), log, api.TrustProxyHeaders(true))
+	rec = login(trusted)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login = %d, body %s", rec.Code, rec.Body.String())
+	}
+	if cookie := findSessionCookie(rec); cookie == nil || !cookie.Secure {
+		t.Fatalf("cookie Secure = %v, want true with TrustProxyHeaders opt-in", cookie)
+	}
+}
+
+func findSessionCookie(rec *httptest.ResponseRecorder) *http.Cookie {
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "glyphux_session" {
+			return c
+		}
+	}
+	return nil
 }
 
 // testServerWithLocalizedContentType is like testServerWithAuth but declares

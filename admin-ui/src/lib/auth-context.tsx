@@ -30,9 +30,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const me = await client.auth.me();
         if (!cancelled) setUser(me);
       } catch (err) {
-        // A stale/expired token — drop it silently and fall through to the
-        // login page rather than surfacing an error on first load.
-        if (err instanceof GlyphuxApiError) setToken(undefined);
+        // Only a genuine auth rejection (401) means the token itself is
+        // stale/expired — drop it and fall through to the login page. A
+        // transient 5xx/network failure must not wipe an otherwise-valid
+        // token; that would force an unnecessary re-login on every blip.
+        if (err instanceof GlyphuxApiError && err.status === 401) setToken(undefined);
       } finally {
         if (!cancelled) setLoading(false);
       }

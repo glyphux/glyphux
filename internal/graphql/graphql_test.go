@@ -146,6 +146,30 @@ func doGraphQL(t *testing.T, h http.Handler, token, query string, variables map[
 	return rec, resp
 }
 
+// doGraphQLCookie is doGraphQL but authenticates via the session cookie
+// browser clients use, instead of a bearer header — proving GraphQL
+// recognizes the same session REST does.
+func doGraphQLCookie(t *testing.T, h http.Handler, token, query string, variables map[string]any) (*httptest.ResponseRecorder, gqlResponse) {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{"query": query, "variables": variables})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.AddCookie(&http.Cookie{Name: "glyphux_session", Value: token})
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	var resp gqlResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode graphql response %q: %v", rec.Body.String(), err)
+	}
+	return rec, resp
+}
+
 // mustReadAll is a small helper kept for future streaming-response tests;
 // unused today but documents the intended pattern for multipart/binary
 // transports if ever needed.
@@ -656,6 +680,32 @@ func TestUsersQueryAndCreateUserMutationAreAdminOnly(t *testing.T) {
 	created, ok := resp.Data["createUser"].(map[string]any)
 	if !ok || created["email"] != "newbie@example.com" || created["role"] != "viewer" {
 		t.Fatalf("createUser = %v, want newbie@example.com/viewer", resp.Data["createUser"])
+	}
+}
+
+// TestSessionCookieAuthenticatesGraphQLRequests proves a browser client
+// authenticated via the glyphux_session cookie (no bearer header at all) is
+// recognized by GraphQL exactly like REST recognizes it — the two transports
+// must agree on what "authenticated" means, since a caller shouldn't be
+// silently anonymous on one transport and privileged on the other.
+func TestSessionCookieAuthenticatesGraphQLRequests(t *testing.T) {
+	h, deps := testServer(t)
+	adminToken := loginAdmin(t, deps)
+
+	const usersQuery = `{ users { email role } }`
+
+	_, resp := doGraphQLCookie(t, h, adminToken, usersQuery, nil)
+	if len(resp.Errors) != 0 {
+		t.Fatalf("cookie-authenticated admin users query errors = %v, want none", resp.Errors)
+	}
+	if _, ok := resp.Data["users"].([]any); !ok {
+		t.Fatalf("cookie-authenticated users query data = %v, want users list", resp.Data)
+	}
+
+	// An unknown cookie value must not be treated as authenticated.
+	_, resp = doGraphQLCookie(t, h, "not-a-real-token", usersQuery, nil)
+	if len(resp.Errors) != 1 || resp.Errors[0].Extensions["code"] != "UNAUTHENTICATED" {
+		t.Fatalf("bogus cookie users query errors = %v, want 1 UNAUTHENTICATED", resp.Errors)
 	}
 }
 

@@ -23,16 +23,28 @@ type ctxKey int
 
 const principalKey ctxKey = iota
 
-// withPrincipal resolves the bearer token on r, if any, to a principal and
-// stashes it in the request context for resolvers to read via principalFrom.
-// An absent, unknown, or expired token simply leaves the context
-// unauthenticated — GraphQL has no per-transport 401 for a whole request,
-// since a single request can mix public and privileged fields; enforcement
-// happens per-field in the resolvers via requireCapability.
+// sessionCookieName mirrors sessionCookieName in internal/api/auth.go —
+// browser clients authenticate via this HttpOnly cookie, not just a bearer
+// token, and GraphQL must recognize the same session REST does.
+const sessionCookieName = "glyphux_session"
+
+// withPrincipal resolves the bearer token or session cookie on r, if any, to
+// a principal and stashes it in the request context for resolvers to read
+// via principalFrom. An absent, unknown, or expired credential simply leaves
+// the context unauthenticated — GraphQL has no per-transport 401 for a whole
+// request, since a single request can mix public and privileged fields;
+// enforcement happens per-field in the resolvers via requireCapability.
 func (r *Resolver) withPrincipal(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if token, ok := bearerToken(req); ok {
 			if u, err := r.sessions.Lookup(req.Context(), token); err == nil {
+				req = req.WithContext(context.WithValue(req.Context(), principalKey, u))
+				next.ServeHTTP(w, req)
+				return
+			}
+		}
+		if c, err := req.Cookie(sessionCookieName); err == nil {
+			if u, err := r.sessions.Lookup(req.Context(), c.Value); err == nil {
 				req = req.WithContext(context.WithValue(req.Context(), principalKey, u))
 			}
 		}

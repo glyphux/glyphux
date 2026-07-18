@@ -134,13 +134,15 @@ func (s *Server) newSessionCookie(token string, r *http.Request) *http.Cookie {
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   isHTTPS(r),
+		Secure:   s.isHTTPS(r),
 		SameSite: http.SameSiteLaxMode,
 	}
 }
 
-func isHTTPS(r *http.Request) bool {
-	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+// isHTTPS mirrors setup.Wizard's identical trust decision: an unvouched
+// X-Forwarded-Proto header is only honored when trustProxyHeaders is set.
+func (s *Server) isHTTPS(r *http.Request) bool {
+	return r.TLS != nil || (s.trustProxyHeaders && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"))
 }
 
 func bearerToken(r *http.Request) (string, bool) {

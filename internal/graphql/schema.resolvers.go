@@ -7,6 +7,7 @@ package graphql
 
 import (
 	"context"
+	"errors"
 
 	"github.com/glyphux/glyphux/internal/graphql/generated"
 	"github.com/glyphux/glyphux/internal/permission"
@@ -122,11 +123,32 @@ func (r *mutationResolver) RemoveContentType(ctx context.Context, name string) (
 	if count > 0 {
 		return false, gqlErr("CONFLICT", "content type has existing items; delete or migrate them first")
 	}
-	if _, err := r.compositions.RemoveContentType(ctx, name); err != nil {
+	// Re-checked immediately before the write (see composition.Store's
+	// RemoveContentTypeGuarded doc): closes the window where an item is
+	// created between the count check above and the delete committing.
+	guard := func(ctx context.Context) error {
+		n, err := r.content.CountItems(ctx, name)
+		if err != nil {
+			return err
+		}
+		if n > 0 {
+			return errContentTypeHasItemsGraphQL
+		}
+		return nil
+	}
+	if _, err := r.compositions.RemoveContentTypeGuarded(ctx, name, guard); err != nil {
+		if errors.Is(err, errContentTypeHasItemsGraphQL) {
+			return false, gqlErr("CONFLICT", err.Error())
+		}
 		return false, r.mapContentTypeError(err)
 	}
 	return true, nil
 }
+
+// errContentTypeHasItemsGraphQL signals the delete-guard rejected a removal
+// because content items of that type still exist — mirrors
+// errContentTypeHasItems in internal/api/contenttypes.go.
+var errContentTypeHasItemsGraphQL = errors.New("content type has existing items; delete or migrate them first")
 
 // DeleteMediaItem is the resolver for the deleteMediaItem field. It mirrors
 // handleMediaDelete in internal/api/media.go: requires media:write.

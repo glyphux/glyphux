@@ -21,18 +21,32 @@ import (
 // Server exposes the API surface. It is a client of the domain APIs — it holds
 // no privileged kernel access of its own.
 type Server struct {
-	compositions *composition.Store
-	content      *content.API
-	media        *media.API
-	identities   *identity.Service
-	sessions     *identity.Sessions
-	log          *slog.Logger
-	loginLimiter *loginLimiter
+	compositions      *composition.Store
+	content           *content.API
+	media             *media.API
+	identities        *identity.Service
+	sessions          *identity.Sessions
+	log               *slog.Logger
+	loginLimiter      *loginLimiter
+	trustProxyHeaders bool
+}
+
+// Option configures optional Server behavior beyond the required domain APIs.
+type Option func(*Server)
+
+// TrustProxyHeaders controls whether X-Forwarded-Proto is honored when
+// deciding a request arrived over HTTPS (e.g. for the session cookie's
+// Secure flag) — mirrors setup.Wizard's identical trust decision. An
+// unvouched header is just a client claim, so this defaults to false; only
+// enable it when a reverse proxy in front of the daemon is known to set (and
+// strip any client-supplied) X-Forwarded-Proto.
+func TrustProxyHeaders(trust bool) Option {
+	return func(s *Server) { s.trustProxyHeaders = trust }
 }
 
 // New builds the API transport over the given domain APIs.
-func New(comps *composition.Store, contentAPI *content.API, mediaAPI *media.API, identities *identity.Service, sessions *identity.Sessions, log *slog.Logger) *Server {
-	return &Server{
+func New(comps *composition.Store, contentAPI *content.API, mediaAPI *media.API, identities *identity.Service, sessions *identity.Sessions, log *slog.Logger, opts ...Option) *Server {
+	s := &Server{
 		compositions: comps,
 		content:      contentAPI,
 		media:        mediaAPI,
@@ -41,6 +55,10 @@ func New(comps *composition.Store, contentAPI *content.API, mediaAPI *media.API,
 		log:          log,
 		loginLimiter: newLoginLimiter(),
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // Routes registers the API endpoints on mux.

@@ -48,17 +48,31 @@ func Handler() http.Handler {
 		if clean == "" {
 			clean = "index.html"
 		}
-		if info, err := fs.Stat(Assets, clean); err != nil || info.IsDir() {
-			// Not a real asset — hand it to index.html so client-side
-			// routing can take over. Served directly via ServeContent
-			// (not by rewriting the request and delegating to
-			// http.FileServer) because FileServer treats any request whose
-			// resolved file is literally named "index.html" as a directory
-			// index and 301-redirects it to a trailing slash — exactly
-			// wrong for a deep SPA route like /content-types.
-			serveIndex(w, r)
+		info, err := fs.Stat(Assets, clean)
+		if err == nil && !info.IsDir() {
+			fileServer.ServeHTTP(w, r)
 			return
 		}
+		if strings.HasPrefix(clean, "assets/") {
+			// A path under assets/ is always a real build artifact request
+			// (a content-hashed JS/CSS chunk, a font, ...), never a
+			// client-side route. Falling back to index.html here would hand
+			// the browser an HTML document where it expected a JS module —
+			// "Unexpected token '<'" — masking a genuine missing-file bug
+			// (e.g. a stale cached index.html after a redeploy) as if the
+			// asset had loaded. A real 404 lets the browser and any error
+			// reporting see the actual failure.
+			http.NotFound(w, r)
+			return
+		}
+		// Not a real asset and not under assets/ — hand it to index.html so
+		// client-side routing can take over. Served directly via
+		// ServeContent (not by rewriting the request and delegating to
+		// http.FileServer) because FileServer treats any request whose
+		// resolved file is literally named "index.html" as a directory
+		// index and 301-redirects it to a trailing slash — exactly wrong
+		// for a deep SPA route like /content-types.
+		serveIndex(w, r)
 		fileServer.ServeHTTP(w, r)
 	})
 }
