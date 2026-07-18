@@ -26,6 +26,8 @@ type Server struct {
 	media             *media.API
 	identities        *identity.Service
 	sessions          *identity.Sessions
+	oauth             *identity.OAuthManager
+	oauthRedirectBase string
 	log               *slog.Logger
 	loginLimiter      *loginLimiter
 	trustProxyHeaders bool
@@ -42,6 +44,19 @@ type Option func(*Server)
 // strip any client-supplied) X-Forwarded-Proto.
 func TrustProxyHeaders(trust bool) Option {
 	return func(s *Server) { s.trustProxyHeaders = trust }
+}
+
+// WithOAuth enables the OAuth2/social-login routes, driven by manager, with
+// redirectBase as this instance's externally-reachable base URL (used to
+// build each provider's redirect_uri, e.g. redirectBase +
+// "/api/v0/auth/oauth/github/callback"). Omitting this option (the zero
+// value) leaves the OAuth routes returning 404 — OAuth login is opt-in
+// server-side configuration, same as MFA is opt-in per account.
+func WithOAuth(manager *identity.OAuthManager, redirectBase string) Option {
+	return func(s *Server) {
+		s.oauth = manager
+		s.oauthRedirectBase = redirectBase
+	}
 }
 
 // New builds the API transport over the given domain APIs.
@@ -78,9 +93,27 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v0/auth/logout", s.handleLogout)
 	mux.HandleFunc("GET /api/v0/auth/me", s.handleMe)
 
-	// User management (admin-only; slice 1.8).
+	// TOTP MFA: opt-in per account (slice 0009). Enroll/confirm/disable are
+	// self-service (the caller must already be authenticated as the account
+	// in question); the verify step is deliberately public — the caller
+	// isn't fully logged in yet, that's the point of a second factor.
+	mux.HandleFunc("POST /api/v0/auth/mfa/enroll", s.requireUser(s.handleMFAEnroll))
+	mux.HandleFunc("POST /api/v0/auth/mfa/confirm", s.requireUser(s.handleMFAConfirm))
+	mux.HandleFunc("POST /api/v0/auth/mfa/disable", s.requireUser(s.handleMFADisable))
+	mux.HandleFunc("POST /api/v0/auth/mfa/verify", s.handleMFAVerify)
+
+	// OAuth2/social login (slice 0009). 404s unless WithOAuth configured a
+	// manager — see that option's doc comment.
+	mux.HandleFunc("GET /api/v0/auth/oauth/{provider}/start", s.handleOAuthStart)
+	mux.HandleFunc("GET /api/v0/auth/oauth/{provider}/callback", s.handleOAuthCallback)
+
+	// User management (admin-only; slice 1.8, extended in slice 0009 with
+	// role change and deactivate/reactivate).
 	mux.HandleFunc("POST /api/v0/users", s.requireCapability(permission.UsersManage, s.handleCreateUser))
 	mux.HandleFunc("GET /api/v0/users", s.requireCapability(permission.UsersManage, s.handleListUsers))
+	mux.HandleFunc("PATCH /api/v0/users/{id}/role", s.requireCapability(permission.UsersManage, s.handleUpdateUserRole))
+	mux.HandleFunc("POST /api/v0/users/{id}/deactivate", s.requireCapability(permission.UsersManage, s.handleDeactivateUser))
+	mux.HandleFunc("POST /api/v0/users/{id}/reactivate", s.requireCapability(permission.UsersManage, s.handleReactivateUser))
 
 	// Content CRUD (slice 1.2). The literal /ping route above is more specific
 	// than {type}, so ServeMux prefers it — no shadowing. Reads are public;
