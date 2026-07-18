@@ -3,6 +3,7 @@ package sdk
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/glyphux/glyphux/internal/composition"
@@ -11,6 +12,7 @@ import (
 	"github.com/glyphux/glyphux/internal/media"
 	"github.com/glyphux/glyphux/internal/permission"
 	"github.com/glyphux/glyphux/pkg/contract"
+	"github.com/glyphux/glyphux/pkg/kernel"
 )
 
 // ErrScopeNotDeclared is returned by a HostAPI-scoped method whose required
@@ -18,6 +20,31 @@ import (
 // §8.3 requires ("a capability not declared in the manifest is not present
 // in the HostAPI surface a plugin receives").
 var ErrScopeNotDeclared = errors.New("sdk: scope not declared in manifest")
+
+// ErrUnsupportedCoreVersion is returned by NewHostAPI when the running
+// kernel (pkg/kernel.Version) does not satisfy the manifest's declared
+// requires.core constraint (PRD §7.3, §10.2's "runtime enforcement (call
+// time)"). Manifest.Validate only checks that the constraint is
+// well-formed; this is the actual runtime check against the real kernel.
+var ErrUnsupportedCoreVersion = errors.New("sdk: kernel version does not satisfy requires.core")
+
+// ErrUnsupportedContract is returned by NewHostAPI when the manifest's
+// requires.contract names a contract version this kernel does not know
+// about (see knownContractVersions below). Manifest.Validate only checks
+// that requires.contract is non-empty; this is the actual runtime check.
+var ErrUnsupportedContract = errors.New("sdk: requires.contract is not a known contract version")
+
+// knownContractVersions are the composition contract versions this running
+// kernel understands well enough to grant a plugin a HostAPI.
+// pkg/contract.ContentCompositionV0 is the only one that exists today (see
+// pkg/contract/contract.go). This lives here, not in pkg/contract itself,
+// because pkg/contract.go defines what a contract version IS; whether a
+// given plugin's declared requires.contract is one this KERNEL currently
+// supports is a HostAPI-construction concern, the same layering pkg/sdk
+// already uses for requires.core (see pkg/kernel).
+var knownContractVersions = map[string]bool{
+	string(contract.ContentCompositionV0): true,
+}
 
 // hostPrincipal is the principal every Tier-A HostAPI operation runs the
 // underlying kernel domain API call as. Tier A is first-party, fully
@@ -120,6 +147,15 @@ type HostAPI interface {
 	RegisterJob(def JobDef) error
 	Store() ScopedKV
 
+	// AllowsNetworkHost reports whether host is permitted by this plugin's
+	// declared "network" permission allowlist — delegates to
+	// Manifest.AllowsNetworkHost (see its doc comment for exact-match,
+	// deny-by-default semantics). This is the decision primitive a future
+	// WASM/RPC-host outbound-request wrapper (slices 2.4/2.5) is expected to
+	// call before making any network call on this plugin's behalf; nothing
+	// in this slice actually intercepts outbound traffic yet.
+	AllowsNetworkHost(host string) bool
+
 	// RegisterContentType and RegisterBlock are the "Composition / content
 	// domain" registration calls (PRD §8.3) — structural declarations, not
 	// item-level CRUD (that's ContentAPI). Gated by the "content" api
@@ -186,6 +222,12 @@ type hostAPI struct {
 func NewHostAPI(manifest Manifest, deps KernelDeps) (HostAPI, error) {
 	if err := manifest.Validate(); err != nil {
 		return nil, err
+	}
+	if !coreSatisfied(manifest.Requires.Core, kernel.Version) {
+		return nil, fmt.Errorf("%w: kernel version %s does not satisfy %q", ErrUnsupportedCoreVersion, kernel.Version, manifest.Requires.Core)
+	}
+	if !knownContractVersions[manifest.Requires.Contract] {
+		return nil, fmt.Errorf("%w: %q", ErrUnsupportedContract, manifest.Requires.Contract)
 	}
 	scopes := make(map[string]map[string]bool, len(manifest.API))
 	for _, s := range manifest.API {
@@ -255,6 +297,14 @@ func (h *hostAPI) Emit(ctx context.Context, event string, payload any) error {
 // capability of its own to declare (PRD §8.3).
 func (h *hostAPI) Store() ScopedKV {
 	return &scopedKV{backend: h.kv, namespace: h.manifest.Name}
+}
+
+// AllowsNetworkHost reports whether host is permitted by h's manifest's
+// declared "network" permission allowlist. See Manifest.AllowsNetworkHost
+// and the HostAPI interface doc comment on this method for the exact-match,
+// deny-by-default semantics and what remains deferred.
+func (h *hostAPI) AllowsNetworkHost(host string) bool {
+	return h.manifest.AllowsNetworkHost(host)
 }
 
 // hasScope reports whether the manifest declared capability with scope.
