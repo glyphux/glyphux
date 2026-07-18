@@ -149,6 +149,9 @@ func TestOAuthLoginCreatesAccountEndToEnd(t *testing.T) {
 	if body["role"] != "viewer" {
 		t.Errorf("new OAuth account role = %v, want viewer", body["role"])
 	}
+	if body["active"] != true {
+		t.Errorf("new OAuth account active = %v, want true", body["active"])
+	}
 	if body["token"] == nil || body["token"] == "" {
 		t.Error("expected a session token")
 	}

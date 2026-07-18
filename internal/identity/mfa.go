@@ -234,9 +234,9 @@ func (s *Service) emailByID(ctx context.Context, userID int64) (string, error) {
 
 func (s *Service) userByID(ctx context.Context, userID int64) (*User, error) {
 	var u User
-	var mfaEnabled int
-	err := s.db.QueryRow(ctx, `SELECT id, email, role, mfa_enabled FROM users WHERE id = ?`, userID).
-		Scan(&u.ID, &u.Email, &u.Role, &mfaEnabled)
+	var mfaEnabled, active int
+	err := s.db.QueryRow(ctx, `SELECT id, email, role, mfa_enabled, active FROM users WHERE id = ?`, userID).
+		Scan(&u.ID, &u.Email, &u.Role, &mfaEnabled, &active)
 	if errors.Is(err, db.ErrNoRows) {
 		return nil, fmt.Errorf("unknown user %d", userID)
 	}
@@ -244,6 +244,7 @@ func (s *Service) userByID(ctx context.Context, userID int64) (*User, error) {
 		return nil, fmt.Errorf("lookup user: %w", err)
 	}
 	u.MFAEnabled = mfaEnabled != 0
+	u.Active = active != 0
 	return &u, nil
 }
 

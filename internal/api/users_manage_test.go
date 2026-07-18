@@ -45,6 +45,9 @@ func TestUpdateUserRoleOverHTTPAdminOnly(t *testing.T) {
 	if updated["role"] != "viewer" {
 		t.Errorf("role = %v, want viewer", updated["role"])
 	}
+	if updated["active"] != true {
+		t.Errorf("active = %v, want true — regression check for userByID dropping the active column", updated["active"])
+	}
 
 	// Unknown role rejected.
 	rec = doWithCookieBody(t, h, http.MethodPatch, path, adminCookie, map[string]any{"role": "superuser"})

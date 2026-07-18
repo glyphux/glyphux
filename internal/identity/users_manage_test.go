@@ -31,6 +31,9 @@ func TestUpdateRoleChangesRoleAdminOnly(t *testing.T) {
 	if got.Role != "viewer" {
 		t.Errorf("role = %q, want viewer", got.Role)
 	}
+	if !got.Active {
+		t.Error("UpdateRole should not report an active account as inactive — regression check for userByID")
+	}
 
 	if _, err := svc.UpdateRole(ctx, adminPrincipal, u.ID, "superuser"); err == nil {
 		t.Error("accepted unknown role")

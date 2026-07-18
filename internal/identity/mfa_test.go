@@ -146,6 +146,9 @@ func TestLoginStepThenMFAChallengeEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveMFAChallenge: %v", err)
 	}
+	if !final.Active {
+		t.Error("resolved user should be active — regression check for userByID dropping the active column")
+	}
 	if final.ID != u.ID {
 		t.Errorf("resolved user id = %d, want %d", final.ID, u.ID)
 	}
