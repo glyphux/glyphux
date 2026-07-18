@@ -34,6 +34,13 @@ import (
 // cmd/glyphuxd does.
 func boot(t *testing.T, dbPath string) http.Handler {
 	t.Helper()
+	return bootWithCORS(t, dbPath, nil)
+}
+
+// bootWithCORS is boot, but with an explicit allowed-origins list wired in
+// (slice 1.9) — pass nil to preserve the "no CORS ever" default boot uses.
+func bootWithCORS(t *testing.T, dbPath string, allowedOrigins []string) http.Handler {
+	t.Helper()
 	ctx := context.Background()
 	database, err := db.OpenSQLite(dbPath)
 	if err != nil {
@@ -58,7 +65,7 @@ func boot(t *testing.T, dbPath string) http.Handler {
 	}
 	mediaAPI := media.NewAPI(media.NewStore(database), filepath.Join(filepath.Dir(dbPath), "media"))
 	apiServer := api.New(compositions, content.NewAPI(compositions, content.NewStore(database)), mediaAPI, identities, sessions, log)
-	return server.Handler(apiServer, wizard)
+	return server.Handler(apiServer, wizard, server.WithCORS(allowedOrigins))
 }
 
 func get(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
@@ -216,6 +223,46 @@ func TestSecurityHeadersAndNoCORSByDefault(t *testing.T) {
 	}
 	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
 		t.Errorf("Access-Control-Allow-Origin = %q, want unset for an unconfigured cross-origin request", got)
+	}
+}
+
+// TestCORSAppliesOnlyWhenConfigured proves CORS is opt-in (slice 1.9): an
+// origin not on the configured allow-list gets no CORS headers at all (same
+// as the default posture), while a listed origin gets the headers a
+// cross-origin browser client needs, on both a simple request and a
+// preflight OPTIONS request.
+func TestCORSAppliesOnlyWhenConfigured(t *testing.T) {
+	h := bootWithCORS(t, filepath.Join(t.TempDir(), "glyphux.db"), []string{"https://trusted.example"})
+
+	// Unlisted origin: no CORS headers, exactly like the unconfigured default.
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.Header.Set("Origin", "https://evil.example")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("unlisted origin Access-Control-Allow-Origin = %q, want unset", got)
+	}
+
+	// Listed origin: a simple GET gets the origin echoed back.
+	req = httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.Header.Set("Origin", "https://trusted.example")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://trusted.example" {
+		t.Errorf("listed origin Access-Control-Allow-Origin = %q, want https://trusted.example", got)
+	}
+
+	// Listed origin: a CORS preflight gets the methods/headers it needs.
+	req = httptest.NewRequest(http.MethodOptions, "/api/v0/content/article", nil)
+	req.Header.Set("Origin", "https://trusted.example")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("preflight = %d, want 204", rec.Code)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Methods"); !strings.Contains(got, "POST") {
+		t.Errorf("Access-Control-Allow-Methods = %q, want it to include POST", got)
 	}
 }
 

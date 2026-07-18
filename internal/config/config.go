@@ -38,6 +38,14 @@ type Config struct {
 	// and strip any client-supplied copy of it — otherwise a client can
 	// simply claim to be HTTPS.
 	TrustProxyHeaders bool `json:"trust_proxy_headers"`
+
+	// AllowedOrigins opts the daemon into CORS for exactly these origins —
+	// e.g. an external developer's frontend calling the API cross-origin
+	// (PRD's own headless-CMS positioning). Empty/unset by default,
+	// preserving the "no CORS ever" posture every response has today
+	// (slice 1.9): no wildcard support, on purpose — every allowed origin
+	// must be named explicitly.
+	AllowedOrigins []string `json:"allowed_origins"`
 }
 
 // DatabaseConfig selects and configures the database adapter.
@@ -124,6 +132,15 @@ func Load(path string) (Config, error) {
 			return cfg, fmt.Errorf("GLYPHUX_TRUST_PROXY_HEADERS: %w", err)
 		}
 		cfg.TrustProxyHeaders = b
+	}
+	if v := os.Getenv("GLYPHUX_ALLOWED_ORIGINS"); v != "" {
+		var origins []string
+		for _, o := range strings.Split(v, ",") {
+			if o = strings.TrimSpace(o); o != "" {
+				origins = append(origins, o)
+			}
+		}
+		cfg.AllowedOrigins = origins
 	}
 
 	if err := cfg.validate(); err != nil {
