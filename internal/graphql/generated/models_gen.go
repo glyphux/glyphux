@@ -51,15 +51,18 @@ type FieldInput struct {
 // over GraphQL (see the tracking doc) — it is inherently multipart/binary and
 // REST already covers it at POST /api/v0/media.
 type MediaItem struct {
-	ID        string `json:"id"`
-	Filename  string `json:"filename"`
-	MimeType  string `json:"mimeType"`
-	SizeBytes int    `json:"sizeBytes"`
-	Width     int    `json:"width"`
-	Height    int    `json:"height"`
-	AltText   string `json:"altText"`
-	CreatedAt string `json:"createdAt"`
-	UpdatedAt string `json:"updatedAt"`
+	ID          string   `json:"id"`
+	Filename    string   `json:"filename"`
+	MimeType    string   `json:"mimeType"`
+	SizeBytes   int      `json:"sizeBytes"`
+	Width       int      `json:"width"`
+	Height      int      `json:"height"`
+	AltText     string   `json:"altText"`
+	Tags        []string `json:"tags"`
+	Source      string   `json:"source"`
+	Attribution string   `json:"attribution"`
+	CreatedAt   string   `json:"createdAt"`
+	UpdatedAt   string   `json:"updatedAt"`
 }
 
 type Mutation struct {

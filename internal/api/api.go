@@ -103,6 +103,7 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v0/media", s.handleMediaList)
 	mux.HandleFunc("GET /api/v0/media/{id}", s.handleMediaGet)
 	mux.HandleFunc("GET /api/v0/media/{id}/file", s.handleMediaFile)
+	mux.HandleFunc("PATCH /api/v0/media/{id}", s.requireCapability(permission.MediaWrite, s.handleMediaUpdateMetadata))
 	mux.HandleFunc("DELETE /api/v0/media/{id}", s.requireCapability(permission.MediaWrite, s.handleMediaDelete))
 }
 

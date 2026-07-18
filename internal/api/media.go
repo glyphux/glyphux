@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 
 	"github.com/glyphux/glyphux/internal/media"
@@ -70,13 +71,33 @@ func (s *Server) handleMediaList(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
+// transformQueryParams is every query param that requests a transform on
+// the file-serving route; their presence (not just w/h) switches the
+// handler from raw passthrough to the Transform pipeline.
+var transformQueryParams = []string{"w", "h", "crop_x", "crop_y", "crop_w", "crop_h", "rotate", "format"}
+
+func hasTransformParams(q url.Values) bool {
+	for _, key := range transformQueryParams {
+		if q.Has(key) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) handleMediaFile(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	q := r.URL.Query()
-	if q.Has("w") || q.Has("h") {
-		width, _ := strconv.Atoi(q.Get("w"))
-		height, _ := strconv.Atoi(q.Get("h"))
-		data, contentType, err := s.media.Resize(r.Context(), id, width, height)
+	if hasTransformParams(q) {
+		opts := media.TransformOptions{Format: q.Get("format")}
+		opts.MaxW, _ = strconv.Atoi(q.Get("w"))
+		opts.MaxH, _ = strconv.Atoi(q.Get("h"))
+		opts.CropX, _ = strconv.Atoi(q.Get("crop_x"))
+		opts.CropY, _ = strconv.Atoi(q.Get("crop_y"))
+		opts.CropW, _ = strconv.Atoi(q.Get("crop_w"))
+		opts.CropH, _ = strconv.Atoi(q.Get("crop_h"))
+		opts.Rotate, _ = strconv.Atoi(q.Get("rotate"))
+		data, contentType, err := s.media.Transform(r.Context(), id, opts)
 		if err != nil {
 			s.writeMediaError(w, err)
 			return
@@ -106,6 +127,34 @@ func (s *Server) handleMediaDelete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// mediaMetadataUpdateRequest is the body of PATCH /api/v0/media/{id} — the
+// editable fields (alt text, tags, source/attribution), sent as a full
+// replace matching internal/media.MetadataUpdate.
+type mediaMetadataUpdateRequest struct {
+	AltText     string   `json:"alt_text"`
+	Tags        []string `json:"tags"`
+	Source      string   `json:"source"`
+	Attribution string   `json:"attribution"`
+}
+
+func (s *Server) handleMediaUpdateMetadata(w http.ResponseWriter, r *http.Request) {
+	var body mediaMetadataUpdateRequest
+	if !s.decodeJSON(w, r, &body) {
+		return
+	}
+	item, err := s.media.UpdateMetadata(r.Context(), s.principal(r), r.PathValue("id"), media.MetadataUpdate{
+		AltText:     body.AltText,
+		Tags:        body.Tags,
+		Source:      body.Source,
+		Attribution: body.Attribution,
+	})
+	if err != nil {
+		s.writeMediaError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, item)
+}
+
 func (s *Server) writeMediaError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, permission.ErrDenied):
@@ -117,6 +166,8 @@ func (s *Server) writeMediaError(w http.ResponseWriter, err error) {
 		s.writeError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, media.ErrUnsupportedType):
 		s.writeError(w, http.StatusUnsupportedMediaType, err.Error())
+	case errors.Is(err, media.ErrInvalidTransform):
+		s.writeError(w, http.StatusBadRequest, err.Error())
 	default:
 		s.log.Error("media request", "error", err)
 		s.writeError(w, http.StatusInternalServerError, "internal error")
