@@ -130,7 +130,10 @@ func (w *Wizard) handleSubmit(rw http.ResponseWriter, r *http.Request) {
 	// Writing the initial composition is the act that completes setup: the
 	// wizard is a client of the contract, and Store.Save validates before
 	// persisting, so an invalid composition can never complete first-run.
-	if err := w.compositions.Save(ctx, comp); err != nil {
+	// nil principal: this is the pre-auth bootstrap write (Store.Save allows
+	// it only when no composition exists yet); real security here is the
+	// wizard's own token/localhost gate above, not a capability check.
+	if err := w.compositions.Save(ctx, nil, comp); err != nil {
 		w.renderError(rw, needToken, "Composition: "+err.Error())
 		return
 	}

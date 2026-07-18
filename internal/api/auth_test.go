@@ -39,7 +39,7 @@ func testServerWithAuth(t *testing.T) (http.Handler, authDeps) {
 		t.Fatal(err)
 	}
 	comps := composition.NewStore(d)
-	if err := comps.Save(context.Background(), &contract.Composition{
+	if err := comps.Save(context.Background(), nil, &contract.Composition{
 		ContractVersion: contract.ContentCompositionV0,
 		Site:            contract.Site{Name: "Test"},
 		ContentTypes: map[string]contract.ContentType{
@@ -74,7 +74,7 @@ func testServerWithLocalizedContentType(t *testing.T) (http.Handler, authDeps) {
 		t.Fatal(err)
 	}
 	comps := composition.NewStore(d)
-	if err := comps.Save(context.Background(), &contract.Composition{
+	if err := comps.Save(context.Background(), nil, &contract.Composition{
 		ContractVersion: contract.ContentCompositionV0,
 		Site:            contract.Site{Name: "Test"},
 		ContentTypes: map[string]contract.ContentType{

@@ -41,7 +41,7 @@ func testAPI(t *testing.T, types map[string]contract.ContentType) *API {
 		Site:            contract.Site{Name: "Test"},
 		ContentTypes:    types,
 	}
-	if err := comps.Save(context.Background(), comp); err != nil {
+	if err := comps.Save(context.Background(), nil, comp); err != nil {
 		t.Fatal(err)
 	}
 	return NewAPI(comps, NewStore(d))

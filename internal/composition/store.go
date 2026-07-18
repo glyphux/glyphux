@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/glyphux/glyphux/internal/db"
+	"github.com/glyphux/glyphux/internal/permission"
 	"github.com/glyphux/glyphux/pkg/contract"
 )
 
@@ -58,7 +59,23 @@ func (s *Store) Load(ctx context.Context) (*contract.Composition, error) {
 // Save validates and persists the composition. Invalid compositions are
 // rejected before touching storage — the store never holds a contract-invalid
 // document.
-func (s *Store) Save(ctx context.Context, c *contract.Composition) error {
+//
+// principal must hold content-types:manage — checked here at the domain-API
+// boundary (PRD §10.5) — with one deliberate exception: the very first write
+// (first-run setup, before any composition or admin account exists) needs no
+// principal, since none can exist yet. That bootstrap write is already gated
+// by the setup wizard's own token/localhost check (internal/setup), which is
+// the real security boundary for it; every subsequent Save (a future
+// content-type-management call, once one exists) requires an authenticated
+// principal holding content-types:manage.
+func (s *Store) Save(ctx context.Context, principal *permission.Principal, c *contract.Composition) error {
+	exists, err := s.Exists(ctx)
+	if err != nil {
+		return err
+	}
+	if exists && !permission.AllowsPrincipal(principal, permission.ContentTypesManage) {
+		return permission.ErrDenied
+	}
 	if err := c.Validate(); err != nil {
 		return err
 	}
