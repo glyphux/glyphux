@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"github.com/glyphux/glyphux/blocks/firstparty"
 	"github.com/glyphux/glyphux/internal/api"
 	"github.com/glyphux/glyphux/internal/bootstrap"
 	"github.com/glyphux/glyphux/internal/composition"
@@ -23,9 +24,11 @@ import (
 	"github.com/glyphux/glyphux/internal/db"
 	"github.com/glyphux/glyphux/internal/graphql"
 	"github.com/glyphux/glyphux/internal/identity"
+	"github.com/glyphux/glyphux/internal/layout"
 	"github.com/glyphux/glyphux/internal/media"
 	"github.com/glyphux/glyphux/internal/server"
 	"github.com/glyphux/glyphux/internal/setup"
+	"github.com/glyphux/glyphux/pkg/blocks"
 )
 
 func main() {
@@ -54,6 +57,7 @@ func run() error {
 	migrations := append(append([]db.Migration{}, composition.Migrations...), identity.Migrations...)
 	migrations = append(migrations, content.Migrations...)
 	migrations = append(migrations, media.Migrations...)
+	migrations = append(migrations, layout.Migrations...)
 
 	boot, err := bootstrap.Boot(ctx, bootstrap.Options{
 		DataDir:           cfg.DataDir,
@@ -103,7 +107,26 @@ func buildFullHandler(cfg config.Config, log *slog.Logger) bootstrap.BuildFullHa
 		sessions := identity.NewSessions(database)
 		contentAPI := content.NewAPI(compositions, content.NewStore(database))
 		mediaAPI := media.NewAPI(media.NewStore(database), filepath.Join(cfg.DataDir, "media"))
-		apiOpts := []api.Option{api.TrustProxyHeaders(cfg.TrustProxyHeaders)}
+
+		// Layer-2 block/layout transport (slice 4.4a). The registry is
+		// populated with the first-party blocks at construction time — this
+		// is the first slice to actually wire blocks/firstparty into the
+		// running daemon (slices 4.1/4.2 deliberately left it unwired; see
+		// docs/implementation/completed/0026's "No daemon bootstrap wiring"
+		// risk note). RegisterAll can only fail on a duplicate/empty name,
+		// which would be a first-party programming bug, not an operator
+		// misconfiguration — fatal at startup like any other invariant
+		// violation this daemon can't recover from.
+		blockRegistry := blocks.New()
+		if err := firstparty.RegisterAll(blockRegistry); err != nil {
+			return nil, fmt.Errorf("register first-party blocks: %w", err)
+		}
+		layoutStore := layout.NewStore(database)
+
+		apiOpts := []api.Option{
+			api.TrustProxyHeaders(cfg.TrustProxyHeaders),
+			api.WithLayouts(layoutStore, blockRegistry),
+		}
 		if oauthMgr := githubOAuthManager(cfg); oauthMgr != nil {
 			apiOpts = append(apiOpts, api.WithOAuth(oauthMgr, publicURL(cfg)))
 		}

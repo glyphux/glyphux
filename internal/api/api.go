@@ -14,8 +14,10 @@ import (
 	"github.com/glyphux/glyphux/internal/composition"
 	"github.com/glyphux/glyphux/internal/content"
 	"github.com/glyphux/glyphux/internal/identity"
+	"github.com/glyphux/glyphux/internal/layout"
 	"github.com/glyphux/glyphux/internal/media"
 	"github.com/glyphux/glyphux/internal/permission"
+	"github.com/glyphux/glyphux/pkg/blocks"
 )
 
 // Server exposes the API surface. It is a client of the domain APIs — it holds
@@ -28,6 +30,8 @@ type Server struct {
 	sessions          *identity.Sessions
 	oauth             *identity.OAuthManager
 	oauthRedirectBase string
+	layouts           *layout.Store
+	blocks            *blocks.Registry
 	log               *slog.Logger
 	loginLimiter      *loginLimiter
 	trustProxyHeaders bool
@@ -56,6 +60,26 @@ func WithOAuth(manager *identity.OAuthManager, redirectBase string) Option {
 	return func(s *Server) {
 		s.oauth = manager
 		s.oauthRedirectBase = redirectBase
+	}
+}
+
+// WithLayouts enables the Layer-2 block/layout transport (PRD §14 slice
+// 4.4a): GET /api/v0/blocks, GET/PUT /api/v0/layouts/{route}. store and
+// registry are the daemon's real, shared internal/layout.Store and
+// pkg/blocks.Registry — the same registry blocks/firstparty.RegisterAll
+// populates at daemon construction time (cmd/glyphuxd/main.go), so what this
+// endpoint lists and validates against is exactly what the running instance
+// actually has registered, not a private copy.
+//
+// Omitting this option (the zero value) leaves the three routes 404ing,
+// mirroring WithOAuth's identical "opt-in, 404 unless configured" precedent
+// — every pre-existing api.New call site across the test suite predates
+// this slice and has no reason to configure block/layout support just to
+// keep testing unrelated routes.
+func WithLayouts(store *layout.Store, registry *blocks.Registry) Option {
+	return func(s *Server) {
+		s.layouts = store
+		s.blocks = registry
 	}
 }
 
@@ -89,6 +113,14 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v0/content-types", s.handleContentTypesList)
 	mux.HandleFunc("PUT /api/v0/content-types/{name}", s.requireCSRF(s.requireCapability(permission.ContentTypesManage, s.handleContentTypePut)))
 	mux.HandleFunc("DELETE /api/v0/content-types/{name}", s.requireCSRF(s.requireCapability(permission.ContentTypesManage, s.handleContentTypeDelete)))
+
+	// Layer-2 block/layout transport (slice 4.4a). Block listing is a public
+	// read, same as content-types list; layout writes are admin-only
+	// (layouts:manage) and CSRF-protected like every other mutation. 404s if
+	// WithLayouts wasn't configured — see that option's doc comment.
+	mux.HandleFunc("GET /api/v0/blocks", s.handleBlocksList)
+	mux.HandleFunc("GET /api/v0/layouts/{route...}", s.handleLayoutGet)
+	mux.HandleFunc("PUT /api/v0/layouts/{route...}", s.requireCSRF(s.requireCapability(permission.LayoutsManage, s.handleLayoutPut)))
 
 	// Authentication (slice 1.7). Login has no session cookie yet on a
 	// fresh visit, so requireCSRF is a no-op there; it still protects an

@@ -28,6 +28,17 @@ const (
 	// an already-declared type) — a structural, site-wide schema change,
 	// held only by admin.
 	ContentTypesManage Capability = "content_types:manage"
+	// LayoutsManage gates writing a Layer-2 Layout document (pkg/contract.
+	// Layout) for a route — arranging blocks into a template's regions
+	// (PRD §14 slice 4.4a). This is a new, distinct capability rather than a
+	// reuse of ContentTypesManage or ContentWrite: a Layout is neither
+	// Layer-1 schema (content types) nor a Layer-1 content item — it is
+	// Layer 2's own structural document ("additive to Layer 1, never
+	// polluting it"), so it gets its own capability rather than overloading
+	// an existing one whose name and existing call sites mean something
+	// else. Held only by admin, for the same "structural, site-wide change"
+	// reason ContentTypesManage is admin-only.
+	LayoutsManage Capability = "layouts:manage"
 )
 
 // Roles known to v1's fixed capability matrix.
@@ -42,7 +53,7 @@ var roleCapabilities = map[string]map[Capability]bool{
 	RoleAdmin: {
 		ContentRead: true, ContentReadDrafts: true, ContentWrite: true,
 		ContentPublish: true, MediaWrite: true, UsersManage: true,
-		ContentTypesManage: true,
+		ContentTypesManage: true, LayoutsManage: true,
 	},
 	RoleEditor: {
 		ContentRead: true, ContentReadDrafts: true, ContentWrite: true, MediaWrite: true,

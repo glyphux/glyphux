@@ -19,11 +19,15 @@ import (
 // authors learn one field-typing vocabulary) and, for a container-shaped
 // block, the named slots it accepts nested blocks into. A leaf block (e.g.
 // "heading") simply declares no slots.
+//
+// JSON tags (added in slice 4.4a, when GET /api/v0/blocks first serialized
+// this type over the wire) follow the same snake_case convention every other
+// wire-facing pkg/contract type already uses.
 type Definition struct {
-	Name        string
-	DisplayName string
-	Props       map[string]contract.Field
-	Slots       []string
+	Name        string                    `json:"name"`
+	DisplayName string                    `json:"display_name"`
+	Props       map[string]contract.Field `json:"props,omitempty"`
+	Slots       []string                  `json:"slots,omitempty"`
 }
 
 // Registry is a thread-safe collection of registered block definitions —
