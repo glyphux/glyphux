@@ -7,19 +7,23 @@ import (
 	"testing"
 )
 
-// TestPluginKernelImportsCheck_VacuousOnRealRepo documents, rather than
-// merely asserts, that invariant 1 is currently dormant: no plugins/ or
-// themes/ directory exists in this repo yet (Phase 1 is headless-only), so
-// the checker has nothing to walk and trivially reports zero violations.
-// This is NOT the same claim as "enforced" — see
-// TestPluginKernelImportsCheck_CatchesViolation for proof the logic works.
-func TestPluginKernelImportsCheck_VacuousOnRealRepo(t *testing.T) {
+// TestPluginKernelImportsCheck_EnforcedOnRealThemesTree proves invariant 1
+// is no longer dormant: Phase 4 slice 4.3 added a real themes/ tree
+// (themes/headless, themes/starter), so this now runs the real checker
+// against real, shipped production code instead of merely documenting an
+// empty tree (see docs/implementation/completed/0027 for the full
+// account). plugins/ remains genuinely absent (no plugin system loads
+// in-tree plugin code yet), so this only has real themes/ code to prove
+// itself against so far — that's still a real assertion, not a vacuous
+// one, because themes/headless and themes/starter are real, non-trivial
+// packages that could easily have imported internal/content or another
+// kernel-internal package directly (and did, in an earlier draft of this
+// slice, before being reworked specifically to avoid it).
+func TestPluginKernelImportsCheck_EnforcedOnRealThemesTree(t *testing.T) {
 	root := repoRoot(t)
 
-	for _, treeRoot := range pluginTreeRoots {
-		if _, err := os.Stat(filepath.Join(root, treeRoot)); err == nil {
-			t.Fatalf("expected no %q directory in Phase 1 — if this now exists, invariant 1 is no longer dormant and this test (and the completed tracking doc) need updating", treeRoot)
-		}
+	if _, err := os.Stat(filepath.Join(root, "themes")); err != nil {
+		t.Fatalf("expected a real themes/ directory to exist (Phase 4 slice 4.3) — got: %v", err)
 	}
 
 	violations, err := CheckPluginKernelImports(root)
@@ -27,7 +31,7 @@ func TestPluginKernelImportsCheck_VacuousOnRealRepo(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(violations) != 0 {
-		t.Errorf("expected zero violations against the real (plugin-less) repo, got: %v", violations)
+		t.Errorf("expected zero violations against the real repo's themes/ tree, got: %v", violations)
 	}
 }
 
