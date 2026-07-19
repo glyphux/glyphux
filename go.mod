@@ -6,6 +6,7 @@ require (
 	github.com/99designs/gqlgen v0.17.94
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/microcosm-cc/bluemonday v1.0.27
+	github.com/tetratelabs/wazero v1.12.0
 	github.com/vektah/gqlparser/v2 v2.5.36
 	golang.org/x/mod v0.38.0
 	golang.org/x/tools v0.48.0
