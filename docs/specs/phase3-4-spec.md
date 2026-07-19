@@ -197,10 +197,39 @@ the public contract... built on dnd-kit primitives with a page-builder
 framework (Craft.js or Puck) supplying the editor state model, node tree,
 and serialization... an extension of the admin shell, not a separate app."
 
-**Scope:** The visual builder UI in `admin-ui`, consuming Ticket DS's design
-system, `pkg/contract`'s layout-composition types (P4.1), and rendering via
-P4.3's contract — using only the public JS SDK, holding no privileged
-access.
+**Corrected scope (discovered when this ticket was picked up): split into
+two sequential sub-tickets, user-confirmed.** No HTTP transport exists yet
+for either the block registry (`pkg/blocks`) or Layer-2 `contract.Layout`
+documents — only Layer-1 content/media/composition have `/api/v0/...`
+routes (see `internal/api/api.go`). The builder cannot be "using only the
+public JS SDK" (the ticket's own words) if the JS SDK has nothing to call.
+
+### Ticket P4.4a — Layout/block transport (solo, foundation)
+
+Mirror the existing content/media transport pattern in `internal/api`:
+- `GET /api/v0/blocks` — lists every registered block `Definition` (name,
+  display name, prop schema, slots) from the shared `pkg/blocks.Registry`.
+- `GET /api/v0/layouts/{route}` / `PUT /api/v0/layouts/{route}` — load/save
+  a Layer-2 `contract.Layout` document for a named route, validated via
+  both `Layout.Validate()` (structural) and `blocks.ValidateLayout()`
+  (registry-existence) before being persisted, matching the existing
+  `content-types` PUT route's validate-before-persist pattern.
+- A real persistence layer (a new DB-backed store, following the existing
+  `internal/composition`/`internal/content` store conventions — check the
+  current highest migration version before picking a new one, this has
+  bitten the project multiple times already).
+- `sdk-js` client methods for both new endpoint groups, following its
+  existing generated/typed-client conventions (check `sdk-js/src/` for the
+  pattern content/media already use).
+
+### Ticket P4.4b — Visual builder UI (depends on P4.4a)
+
+The visual builder UI in `admin-ui`, consuming Ticket DS's design system,
+P4.4a's new `sdk-js` methods, and rendering via P4.3's contract — using
+only the public JS SDK, holding no privileged access. Built on dnd-kit
+primitives (already a dependency, added ahead of time in slice 1.13) with
+a page-builder framework (Craft.js or Puck) supplying the editor state
+model, node tree, and serialization to/from `contract.Layout`.
 
 ## Tickets P4.5–P4.9 — parallel batch after the builder lands
 
