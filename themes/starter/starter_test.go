@@ -146,7 +146,15 @@ func TestRenderProducesHTMLForAllFourFirstPartyBlocksIncludingNestedSlot(t *test
 	}
 }
 
-func TestRenderAutoEscapesUntrustedHeadingTextButNotRichTextParagraph(t *testing.T) {
+func TestRenderAutoEscapesUntrustedPropsOnEveryBlockType(t *testing.T) {
+	// Layer-2 block Props have no sanitization pipeline anywhere (only
+	// Layer-1 content items go through internal/content's
+	// sanitizeRichText, and only on write) — every prop on every block
+	// type, including paragraph's "text", must render auto-escaped.
+	// Earlier drafts of this theme cast paragraph's "text" prop to
+	// template.HTML on the false assumption that it was pre-sanitized
+	// rich text; it is not, so that cast was a stored-XSS hole. This test
+	// proves the corrected behavior: no exceptions.
 	registry := testRegistry(t)
 	layout := &contract.Layout{
 		ContractVersion: contract.LayoutCompositionV1,
@@ -154,7 +162,7 @@ func TestRenderAutoEscapesUntrustedHeadingTextButNotRichTextParagraph(t *testing
 			"main": {
 				Blocks: []contract.Block{
 					{Type: "heading", Props: map[string]any{"text": `<script>alert(1)</script>`}},
-					{Type: "paragraph", Props: map[string]any{"text": `<strong>bold</strong>`}},
+					{Type: "paragraph", Props: map[string]any{"text": `<script>alert(2)</script>`}},
 				},
 			},
 		},
@@ -173,11 +181,11 @@ func TestRenderAutoEscapesUntrustedHeadingTextButNotRichTextParagraph(t *testing
 	if !strings.Contains(html, "&lt;script&gt;alert(1)&lt;/script&gt;") {
 		t.Fatalf("expected escaped heading text, got:\n%s", html)
 	}
-	// Rich text (paragraph) is intentionally rendered unescaped: it is
-	// sanitized server-side at write time (internal/content's
-	// sanitizeRichText), not at render time.
-	if !strings.Contains(html, "<strong>bold</strong>") {
-		t.Fatalf("expected unescaped rich-text paragraph body, got:\n%s", html)
+	if strings.Contains(html, "<script>alert(2)</script>") {
+		t.Fatalf("paragraph text was not escaped (stored-XSS regression), got:\n%s", html)
+	}
+	if !strings.Contains(html, "&lt;script&gt;alert(2)&lt;/script&gt;") {
+		t.Fatalf("expected escaped paragraph text, got:\n%s", html)
 	}
 }
 

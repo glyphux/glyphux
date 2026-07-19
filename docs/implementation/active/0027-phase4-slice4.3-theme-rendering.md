@@ -113,19 +113,43 @@ no mocks anywhere in this slice's tests. `go build ./... && go vet ./...
 - **`themes/starter` uses `html/template`, not `text/template`** — a
   deliberate, documented call (in `themes/starter/starter.go`'s package
   doc comment), not a default reached for without thought. A `Block`'s
-  `Props` come from content authors/site editors and are rendered into a
-  real HTML document a browser executes; only `contract.FieldRichText`
-  fields are sanitized on write (`internal/content`'s
-  `sanitizeRichText`) — an ordinary string prop (e.g. `heading`'s `text`)
-  is not. `html/template` auto-escapes every interpolated value
-  contextually (HTML body, attribute, URL position); `text/template` would
-  emit a prop's raw bytes verbatim, including `<script>...</script>`,
-  directly into the page. `TestRenderAutoEscapesUntrustedHeadingTextButNot
-  RichTextParagraph` proves both halves of this: a `<script>` in a heading
-  prop is escaped, while a paragraph's rich-text body (already sanitized at
-  write time, HTML by design) is intentionally rendered unescaped via one
-  explicit `template.HTML(s)` cast at its one call site — the single
-  documented exception to the package's default auto-escaping.
+  `Props` come from a Layer-2 `contract.Layout` document (hand-authored
+  JSON, a future builder UI, or a plugin), and there is currently NO
+  sanitization pipeline anywhere for Layer-2 block props —
+  `pkg/contract.Layout.Validate` is purely structural (non-empty Type,
+  valid slot names), and `internal/content`'s `sanitizeRichText` runs only
+  on Layer-1 content items, inside `content.API.Create/Update/Rollback`;
+  it never touches a `Layout` document. Every prop on every block type is
+  therefore untrusted. `html/template` auto-escapes every interpolated
+  value contextually (HTML body, attribute, URL position); `text/template`
+  would emit a prop's raw bytes verbatim, including `<script>...
+  </script>`, directly into the page. `TestRenderAutoEscapesUntrustedProps
+  OnEveryBlockType` proves this for both `heading`'s and `paragraph`'s
+  `text` props, with no exception for either.
+  - **Post-review fix (independent `/code-review` audit against this
+    slice's own PR #9):** an earlier draft of this file had `renderBlock`'s
+    `"paragraph"` case cast its `text` prop to `template.HTML(s)`,
+    rendering it unescaped, on the claim that rich text is "sanitized
+    server-side on every write... already sanitized at write time." That
+    claim was false for the data path this code actually renders: the
+    `text` in `b.Props` here is a Layer-2 `contract.Block`'s prop, not a
+    Layer-1 content item's field — `sanitizeRichText` never runs on it.
+    The cast was a real stored-XSS hole (any `<script>` placed in a
+    paragraph block's `text` prop — hand-authored layout JSON, a future
+    builder UI, or a plugin-registered layout — would have executed in a
+    visitor's browser), and the test that existed at the time
+    (`TestRenderAutoEscapesUntrustedHeadingTextButNotRichTextParagraph`)
+    asserted the unescaped output as correct, certifying the vulnerability
+    instead of catching it. Fixed by removing the cast entirely — every
+    prop on every block type, with no exceptions, now renders through
+    html/template's ordinary auto-escaping. Rendering a prop as trusted
+    HTML (e.g. treating rich text as pre-sanitized markup) is explicitly
+    deferred until a real sanitization pipeline exists for Layer-2 block
+    props — a natural future ticket, likely alongside whatever
+    validates/sanitizes builder-authored layouts in Ticket P4.4 or P4.6.
+    The test was renamed to `TestRenderAutoEscapesUntrustedPropsOnEvery
+    BlockType` and now asserts both `heading` and `paragraph` text are
+    escaped identically.
 - **`themes/starter.Theme` takes a `*blocks.Registry` at construction
   (`New(registry *blocks.Registry) *Theme`)**, read-only (only `Get` is
   called, never `Register`) — a theme needs to know which block types it's
@@ -259,10 +283,10 @@ no mocks anywhere in this slice's tests. `go build ./... && go vet ./...
   no-layout error; all four first-party blocks rendered to HTML including
   the nested container/slot case (asserting children appear nested inside
   the container's own `<div>`, in slot order); html/template auto-escaping
-  proof (untrusted heading text escaped, rich-text paragraph body
-  intentionally not); unknown-block-type error; deterministic
-  sorted-region-order output across repeated runs and reordered map
-  construction.
+  proof (`heading` and `paragraph` text both escaped, no exceptions —
+  post-review-fixed, see Current Decisions); unknown-block-type error;
+  deterministic sorted-region-order output across repeated runs and
+  reordered map construction.
 - `internal/boundary/plugin_imports.go` — `sanctionedPluginImportPrefixes`
   gained `pkg/blocks` and `pkg/theme`; `CheckPluginKernelImports` now
   skips `_test.go` files.
@@ -291,8 +315,10 @@ no mocks anywhere in this slice's tests. `go build ./... && go vet ./...
       four first-party blocks (`heading`, `paragraph`, `image`,
       `container`) into real HTML via `html/template`, with the
       `html/template`-vs-`text/template` call made and documented
-      explicitly (auto-escaping untrusted props; one documented exception
-      for already-sanitized rich text).
+      explicitly (auto-escaping every prop on every block type, with no
+      exceptions — an earlier draft's "rich text is pre-sanitized"
+      exception was a real stored-XSS hole, fixed post-review; see Current
+      Decisions).
 - [x] Recursive slot rendering proven: a `container` block's nested
       `content`-slot children render inside its own HTML element, in
       order — `TestRenderProducesHTMLForAllFourFirstPartyBlocksIncludingNestedSlot`.
@@ -335,6 +361,18 @@ no mocks anywhere in this slice's tests. `go build ./... && go vet ./...
   distinct concern (arguably reusing Phase 1's existing media pipeline,
   `internal/media`) not asked for here, flagged rather than silently
   skipped.
+- **There is no sanitization pipeline for Layer-2 block props at all.**
+  `pkg/contract.Layout.Validate` and `pkg/blocks.ValidateLayout` check
+  structure and block-type existence only; nothing sanitizes or restricts
+  what a `Block.Props` value contains. `themes/starter` closes the
+  immediate stored-XSS risk by auto-escaping every prop unconditionally
+  (see Current Decisions' post-review fix), which is correct and
+  sufficient for HTML *rendering* safety, but does not add any validation
+  at the point a `Layout` is authored/accepted. A future ticket — likely
+  alongside whatever validates/sanitizes builder-authored layouts (Ticket
+  P4.4/P4.6) — is the natural place to decide whether any Layer-2 prop
+  should ever be allowed to carry trusted markup, and if so, how it would
+  be sanitized before being marked trusted.
 - **No prop-value type-checking before rendering** — carried over
   unchanged from slice 4.1/4.2's own flagged Risk; `themes/starter`'s
   templates degrade gracefully (missing/wrong-shaped props render as

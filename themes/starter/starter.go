@@ -17,18 +17,25 @@
 // below and no more correct.
 //
 // starter uses html/template, not text/template — deliberately: a Layout's
-// block Props come from content that plugin/theme authors and site editors
-// write, is not guaranteed sanitized for every field (only contract.
-// FieldRichText fields are sanitized on write by internal/content's
-// sanitizeRichText), and is rendered into a real HTML document a browser
-// executes. text/template would emit whatever a "text" prop contains
-// byte-for-byte, including "<script>"; html/template auto-escapes every
-// interpolated value by default (contextually, per HTML/attribute/URL
-// position), so a "heading" block's text prop can never break out of its
-// <h1> and inject markup. The one deliberate exception is documented at
-// its call site below (a paragraph's rich-text body is intentionally
-// unescaped, because it is HTML by design and already sanitized at write
-// time).
+// block Props come from a Layer-2 contract.Layout document (hand-authored
+// JSON, a future builder UI, or a plugin), and pkg/contract.Layout.Validate
+// performs only structural checks (non-empty Type, valid slot names) —
+// there is currently no sanitization pipeline anywhere for Layer-2 block
+// props (internal/content's sanitizeRichText runs only on Layer-1 content
+// items, inside content.API.Create/Update/Rollback; it never touches a
+// Layout document). Every prop must therefore be treated as untrusted when
+// rendered into a real HTML document a browser executes. text/template
+// would emit whatever a prop contains byte-for-byte, including
+// "<script>"; html/template auto-escapes every interpolated value by
+// default (contextually, per HTML/attribute/URL position), so a block's
+// text/src/alt prop can never break out of its element and inject markup.
+// There is NO exception to this — every block type's every prop,
+// including "paragraph"'s "text", is auto-escaped. Rendering a prop as
+// trusted HTML (e.g. treating rich text as pre-sanitized markup) is
+// explicitly deferred until a real sanitization pipeline exists for
+// Layer-2 block props (see this slice's tracking doc) — a natural future
+// ticket, likely alongside whatever validates/sanitizes builder-authored
+// layouts.
 package starter
 
 import (
@@ -162,17 +169,6 @@ func (t *Theme) renderBlock(b contract.Block) (template.HTML, error) {
 	case "heading":
 		if _, ok := data["level"]; !ok {
 			data["level"] = 1
-		}
-	case "paragraph":
-		// Rich text is sanitized server-side on every write
-		// (internal/content's sanitizeRichText, run inside content.API.
-		// Create/Update/Rollback) — it is HTML by design, not plain text,
-		// so it is deliberately rendered unescaped here. This is the one
-		// documented exception to html/template's default auto-escaping
-		// this package's doc comment promises; every other prop (heading
-		// text, image src/alt) stays auto-escaped.
-		if s, ok := data["text"].(string); ok {
-			data["text"] = template.HTML(s)
 		}
 	case "container":
 		children := make([]template.HTML, 0, len(b.Slots["content"]))
