@@ -1,23 +1,9 @@
 // Package notifications is the PRD §14 slice 3.1 first-party capability:
-// email / SMS / push / in-app dispatch over domain events plus a provider-
-// agnostic mailer adapter (PRD §7.2: "notifications -> events, mailer").
-//
-// Runtime-tier judgment call: this slice ships an in-process sdk.Plugin
-// (Tier A), the same convention capabilities/forms established in slice
-// 2.9, rather than extending pkg/runtime/rpc's Tier C broker (slice 2.5).
-// The PRD's own sketch (§14) names Tier C for this capability specifically
-// to "validate the RPC tier"; that remains a legitimate follow-up once a
-// real external mailer provider (with its own SDK/dependencies a Tier C
-// out-of-process plugin would isolate) is wired in. But this slice ships no
-// live provider integration at all (no credentials exist in this
-// environment) — only the MailerAdapter boundary and a stub in-memory
-// adapter. Standing up gRPC broker/subprocess plumbing to host a plugin
-// that makes zero real network calls would exercise no behavior an
-// in-process implementation doesn't already prove, and it would import
-// pkg/runtime/rpc machinery this ticket doesn't otherwise need. See this
-// slice's tracking doc (docs/implementation/active/0021) for the full
-// reasoning; a later slice that wires a real provider (Resend/Vonage/FCM)
-// is the natural point to revisit Tier C.
+// dispatching notifications over domain events through a provider-agnostic
+// mailer adapter (PRD §7.2: "notifications -> events, mailer"). Runtime
+// tier and other judgment calls are documented in this slice's tracking doc
+// (docs/implementation/active/0021-phase3-slice3.1-notifications.md), not
+// here.
 package notifications
 
 import (
@@ -106,52 +92,45 @@ type PaymentCompletedEvent struct {
 	Amount  string
 }
 
-// MembershipStartedEvent is the payload this capability expects on
-// "membership.started".
-type MembershipStartedEvent struct {
+// MembershipEvent is the payload this capability expects on both
+// "membership.started" and "membership.expired" — the two events share one
+// type rather than each getting its own, because neither event needs any
+// field the other doesn't (both are "this email, this plan" facts); only
+// the template rendered off of it differs (see renderMembershipStarted vs.
+// renderMembershipExpired in templates.go). Revisit this if a later slice's
+// event needs a field the other doesn't (e.g. an expiry date), at which
+// point splitting back into two types is the natural move.
+type MembershipEvent struct {
 	Email    string
 	PlanName string
 }
 
-// MembershipExpiredEvent is the payload this capability expects on
-// "membership.expired".
-type MembershipExpiredEvent struct {
-	Email    string
-	PlanName string
+// dispatch type-asserts payload to T, formatting a descriptive error naming
+// event if the concrete type doesn't match, then renders and sends through
+// adapter. The single seam every handler below funnels through, so the
+// assert-format-render-send shape exists exactly once regardless of how
+// many events this capability grows to support.
+func dispatch[T any](ctx context.Context, adapter MailerAdapter, event string, payload any, render func(T) (to, subject, body string)) error {
+	e, ok := payload.(T)
+	if !ok {
+		return fmt.Errorf("notifications: %s payload has unexpected type %T, want %T", event, payload, *new(T))
+	}
+	to, subject, body := render(e)
+	return adapter.Send(ctx, to, subject, body)
 }
 
 func (p *Plugin) handleUserCreated(ctx context.Context, payload any) error {
-	e, ok := payload.(UserCreatedEvent)
-	if !ok {
-		return fmt.Errorf("notifications: user.created payload has unexpected type %T, want %T", payload, UserCreatedEvent{})
-	}
-	subject, body := renderWelcome(e)
-	return p.adapter.Send(ctx, e.Email, subject, body)
+	return dispatch(ctx, p.adapter, "user.created", payload, renderWelcome)
 }
 
 func (p *Plugin) handlePaymentCompleted(ctx context.Context, payload any) error {
-	e, ok := payload.(PaymentCompletedEvent)
-	if !ok {
-		return fmt.Errorf("notifications: payment.completed payload has unexpected type %T, want %T", payload, PaymentCompletedEvent{})
-	}
-	subject, body := renderPaymentReceipt(e)
-	return p.adapter.Send(ctx, e.Email, subject, body)
+	return dispatch(ctx, p.adapter, "payment.completed", payload, renderPaymentReceipt)
 }
 
 func (p *Plugin) handleMembershipStarted(ctx context.Context, payload any) error {
-	e, ok := payload.(MembershipStartedEvent)
-	if !ok {
-		return fmt.Errorf("notifications: membership.started payload has unexpected type %T, want %T", payload, MembershipStartedEvent{})
-	}
-	subject, body := renderMembershipStarted(e)
-	return p.adapter.Send(ctx, e.Email, subject, body)
+	return dispatch(ctx, p.adapter, "membership.started", payload, renderMembershipStarted)
 }
 
 func (p *Plugin) handleMembershipExpired(ctx context.Context, payload any) error {
-	e, ok := payload.(MembershipExpiredEvent)
-	if !ok {
-		return fmt.Errorf("notifications: membership.expired payload has unexpected type %T, want %T", payload, MembershipExpiredEvent{})
-	}
-	subject, body := renderMembershipExpired(e)
-	return p.adapter.Send(ctx, e.Email, subject, body)
+	return dispatch(ctx, p.adapter, "membership.expired", payload, renderMembershipExpired)
 }

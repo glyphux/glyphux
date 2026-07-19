@@ -60,22 +60,44 @@ Complete. Built via TDD. `go build ./... && go vet ./... && go test -race
   `order.placed`, and `payment.refunded` are left unwired — see Risks.
 
 - **This capability defines its own event payload shapes**
-  (`UserCreatedEvent`, `PaymentCompletedEvent`, `MembershipStartedEvent`,
-  `MembershipExpiredEvent` — all in `capabilities/notifications/notifications.go`),
-  rather than assuming some existing canonical payload type. No PRD-defined
-  or kernel-defined payload shape exists yet for these events: payments and
-  membership don't back a real `HostAPI` method surface as of this slice
-  (see `pkg/sdk/manifest.go`'s `knownAPIScopes` doc comment — the same gap
-  slice 2.2 already documented), and `user.created` has no kernel emitter
-  yet either (`internal/identity` doesn't call `host.Emit` anywhere yet).
-  These types are this capability's documented expectation of what an
-  eventual emitter (a future commerce/membership/identity integration)
-  should populate when it starts actually emitting these events for real —
-  a contract this slice's tests exercise directly by emitting instances of
+  (`UserCreatedEvent`, `PaymentCompletedEvent`, `MembershipEvent` — all in
+  `capabilities/notifications/notifications.go`), rather than assuming some
+  existing canonical payload type. No PRD-defined or kernel-defined payload
+  shape exists yet for these events: payments and membership don't back a
+  real `HostAPI` method surface as of this slice (see
+  `pkg/sdk/manifest.go`'s `knownAPIScopes` doc comment — the same gap slice
+  2.2 already documented), and `user.created` has no kernel emitter yet
+  either (`internal/identity` doesn't call `host.Emit` anywhere yet). These
+  types are this capability's documented expectation of what an eventual
+  emitter (a future commerce/membership/identity integration) should
+  populate when it starts actually emitting these events for real — a
+  contract this slice's tests exercise directly by emitting instances of
   these exact types from a separate "emitter" `HostAPI`, mirroring how a
   real cross-plugin emitter would behave. A handler receiving any other
   payload shape returns a type-assertion error rather than panicking or
   silently dropping the notification (`TestWrongPayloadTypeReturnsErrorInsteadOfSendingAnything`).
+
+- **`membership.started` and `membership.expired` share one `MembershipEvent`
+  payload type** (`{Email, PlanName}`), rather than each getting its own
+  near-identical struct (as the first draft did, with `MembershipStartedEvent`
+  and `MembershipExpiredEvent`). Neither event needs a field the other
+  doesn't as of this slice — only the rendered template differs, not the
+  data — so one shared type avoids two structurally-identical types with no
+  behavioral difference. Revisit (split back into two) if a later event
+  needs a field the other doesn't (e.g. an expiry date on
+  `membership.expired`).
+
+- **The four event handlers funnel through one generic `dispatch[T any]`
+  helper** (`notifications.go`) rather than each repeating its own
+  assert-format-render-send sequence. `dispatch` type-asserts the payload to
+  `T`, formats one consistent error on a type mismatch, then calls a
+  `render func(T) (to, subject, body string)` and sends through the
+  adapter — the only per-event code left is `dispatch(ctx, p.adapter,
+  "<event>", payload, render<Event>)`, a one-line call per handler. Found
+  during code review (four near-identical ~8-line handlers) and fixed
+  before merge; `templates.go`'s render functions were widened to also
+  return the recipient address (`to`) so `dispatch` needs no separate
+  per-type field accessor.
 
 - **`MemoryMailerAdapter` (in `capabilities/notifications/mailer.go`) is
   the only `MailerAdapter` implementation this slice ships.** It records
@@ -132,7 +154,18 @@ Complete. Built via TDD. `go build ./... && go vet ./... && go test -race
   constructing a real `HostAPI` for this capability and a *separate*
   emitter `HostAPI` sharing the same `sdk.KernelDeps.Bus`, then asserting
   the shared `MemoryMailerAdapter` actually received a correctly-addressed,
-  non-empty notification; one malformed-payload test.
+  non-empty notification; one malformed-payload test. (Post-review update:
+  the two membership tests were repointed at the merged `MembershipEvent`
+  type; no test behavior changed, only the payload type constructed.)
+- Post-review follow-up (same PR, before merge): collapsed the four
+  handlers' duplicated assert-format-render-send logic into one generic
+  `dispatch[T any]` helper in `notifications.go`; merged
+  `MembershipStartedEvent`/`MembershipExpiredEvent` into one
+  `MembershipEvent`; widened `templates.go`'s render functions to also
+  return the recipient address; trimmed `notifications.go`'s and
+  `mailer.go`'s doc comments to point at this tracking doc instead of
+  repeating its rationale inline. No behavior change — same tests, green
+  before and after.
 - No changes to `pkg/sdk` — every api scope (`events`, `users`, `payments`,
   `membership`) and every subscribed event's `sensitiveEvents` gating rule
   already existed from slice 2.2.

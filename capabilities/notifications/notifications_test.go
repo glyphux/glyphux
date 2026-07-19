@@ -164,7 +164,7 @@ func TestMembershipStartedEventDispatchesWelcomeEmailAcrossSharedBus(t *testing.
 		t.Fatalf("NewHostAPI (emitter): %v", err)
 	}
 
-	event := notifications.MembershipStartedEvent{Email: "member@example.com", PlanName: "Gold"}
+	event := notifications.MembershipEvent{Email: "member@example.com", PlanName: "Gold"}
 	if err := emitter.Emit(context.Background(), "membership.started", event); err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestMembershipExpiredEventDispatchesReminderEmailAcrossSharedBus(t *testing
 		t.Fatalf("NewHostAPI (emitter): %v", err)
 	}
 
-	event := notifications.MembershipExpiredEvent{Email: "member@example.com", PlanName: "Gold"}
+	event := notifications.MembershipEvent{Email: "member@example.com", PlanName: "Gold"}
 	if err := emitter.Emit(context.Background(), "membership.expired", event); err != nil {
 		t.Fatalf("Emit: %v", err)
 	}

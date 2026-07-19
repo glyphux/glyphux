@@ -7,12 +7,9 @@ import (
 
 // MailerAdapter is the provider-agnostic outbound-message boundary this
 // capability dispatches through (PRD §14 slice 3.1: "over events + a mailer
-// adapter"). A real deployment would implement this against a region-
-// relevant provider (e.g. Resend/Vonage/FCM per the PRD's own examples);
-// this slice ships only MemoryMailerAdapter (below) since no live provider
-// credentials exist in this environment — see this slice's tracking doc for
-// the judgment call that the adapter BOUNDARY, not a live integration, is
-// what this ticket proves.
+// adapter"). A real deployment implements this against a region-relevant
+// provider (e.g. Resend/Vonage/FCM); see this slice's tracking doc for why
+// only MemoryMailerAdapter (below) ships here.
 type MailerAdapter interface {
 	Send(ctx context.Context, to, subject, body string) error
 }
