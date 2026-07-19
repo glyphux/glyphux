@@ -7,9 +7,11 @@ import { useContentTypes } from "@/lib/use-content-types";
 import { useAuth } from "@/lib/auth-context";
 import { allows } from "@/lib/permissions";
 import { useToast } from "@/lib/toast-context";
+import { usePagination } from "@/lib/use-pagination";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Pagination } from "@/components/ui/pagination";
 import { EmptyState } from "@/components/layout/EmptyState";
 import { ErrorState } from "@/components/layout/ErrorState";
 import { ListSkeleton } from "@/components/layout/ListSkeleton";
@@ -21,6 +23,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+
+const PAGE_SIZE = 10;
 
 export function ContentListPage() {
   const { type } = useParams<{ type: string }>();
@@ -46,6 +50,8 @@ export function ContentListPage() {
   }, [type]);
 
   useEffect(load, [load]);
+
+  const { page, setPage, totalPages, pageItems } = usePagination(items, PAGE_SIZE);
 
   if (!type) return <Navigate to="/content-types" replace />;
   if (!typesLoading && !types[type]) {
@@ -148,7 +154,7 @@ export function ContentListPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {items.map((item) => (
+            {pageItems.map((item) => (
               <TableRow key={item.id}>
                 {titleField && (
                   <TableCell className="font-medium">
@@ -196,6 +202,10 @@ export function ContentListPage() {
             ))}
           </TableBody>
         </Table>
+      )}
+
+      {!loading && !error && items.length > 0 && (
+        <Pagination page={page} totalPages={totalPages} onPageChange={setPage} />
       )}
 
       <Dialog open={!!pendingDelete} onOpenChange={(open) => !open && setPendingDelete(undefined)}>

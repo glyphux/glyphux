@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import { FileText, Image, LayoutDashboard, LogOut, Menu, Shapes, Users, X } from "lucide-react";
+import { FileText, Image, LayoutDashboard, LogOut, Menu, Palette, Shapes, Users, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useContentTypes } from "@/lib/use-content-types";
 import { allows } from "@/lib/permissions";
@@ -72,6 +72,15 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
             <Users className="size-4" /> Users
           </NavItem>
         )}
+      </div>
+
+      {/* Internal component-preview surface (ticket DS item 4) — a plain
+       * nav link rather than a separate app, so it's as discoverable as
+       * any other admin page. */}
+      <div className="mt-4 flex flex-col gap-1">
+        <NavItem to="/design-system" onClick={onNavigate}>
+          <Palette className="size-4" /> Design system
+        </NavItem>
       </div>
     </nav>
   );
