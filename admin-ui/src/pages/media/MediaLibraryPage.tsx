@@ -5,6 +5,7 @@ import { client } from "@/lib/client";
 import { useAuth } from "@/lib/auth-context";
 import { allows } from "@/lib/permissions";
 import { useToast } from "@/lib/toast-context";
+import { usePagination } from "@/lib/use-pagination";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -66,7 +67,6 @@ export function MediaLibraryPage() {
   const [search, setSearch] = useState("");
   const [pendingDelete, setPendingDelete] = useState<MediaItem | undefined>(undefined);
   const [detail, setDetail] = useState<MediaItem | undefined>(undefined);
-  const [page, setPage] = useState(1);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const load = useCallback(() => {
@@ -83,14 +83,11 @@ export function MediaLibraryPage() {
 
   const filteredItems = useMemo(() => items.filter((it) => matchesSearch(it, search)), [items, search]);
 
-  // Reset to page 1 whenever the search narrows/widens the result set, so
-  // a stale page number never lands on an out-of-range (now-empty) page.
-  useEffect(() => {
-    setPage(1);
-  }, [search, items]);
-
-  const totalPages = Math.max(1, Math.ceil(filteredItems.length / PAGE_SIZE));
-  const pageItems = filteredItems.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  // usePagination resets to page 1 whenever the array it's given is a new
+  // reference — which `filteredItems` is on every search-text change or
+  // reload, so a stale page number never lands on an out-of-range (now
+  // empty) page without a separate effect here.
+  const { page, setPage, totalPages, pageItems } = usePagination(filteredItems, PAGE_SIZE);
 
   const onFilesSelected = async (files: FileList | null) => {
     if (!files || files.length === 0) return;

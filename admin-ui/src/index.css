@@ -34,9 +34,11 @@
   --gx-neutral-400: oklch(0.65 0.01 264);
   /* 0.53, not 0.55 — 0.55 measured 4.41:1 against --gx-neutral-100 (the
      muted background text-small/caption text sits on), just under WCAG AA's
-     4.5:1 for normal-size text. Verified via a programmatic oklch -> sRGB
-     contrast check (see docs/implementation/active/0020-design-system.md);
-     0.53 clears it at ~4.8:1 with a barely perceptible shift. */
+     4.5:1 for normal-size text. Verified with the real, rerunnable check in
+     admin-ui/scripts/check-contrast.mjs (`npm run check:contrast`; also
+     asserted by scripts/check-contrast.test.mjs as part of `npm test`) —
+     see docs/implementation/active/0020-design-system.md for the full
+     audit. 0.53 clears it at ~4.8:1 with a barely perceptible shift. */
   --gx-neutral-500: oklch(0.53 0.012 264);
   --gx-neutral-600: oklch(0.44 0.014 264);
   --gx-neutral-700: oklch(0.33 0.014 264);

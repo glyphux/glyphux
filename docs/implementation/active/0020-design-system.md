@@ -50,16 +50,27 @@ vs. already present.
   Tailwind v4's default scale, used consistently — documented as such
   rather than reinvented.
 
-- **One real color-contrast bug found and fixed, not just "checked."**
-  Wrote a standalone script (oklch → linear sRGB → WCAG relative luminance
-  → contrast ratio, using the actual token values in `index.css`) rather
-  than eyeballing swatches. It found `--muted-foreground` (light mode) at
-  4.41:1 against `--muted` — under WCAG AA's 4.5:1 for normal text, used
-  for every `text-small`/caption/description line in the app. Fixed by
-  darkening `--gx-neutral-500` from `oklch(0.55 ...)` to `oklch(0.53 ...)`
-  (the only place that token is referenced), landing at ~4.8:1 with a
-  barely perceptible visual shift. Verified: script re-run after the fix,
-  full `admin-ui` test suite and build still green.
+- **One real color-contrast bug found and fixed, not just "checked" — and
+  the check itself is a committed, rerunnable artifact, not just prose.**
+  `admin-ui/scripts/contrast-lib.mjs` implements oklch → linear sRGB →
+  WCAG relative luminance → contrast ratio from scratch (no external
+  color-math dependency); `admin-ui/scripts/check-contrast.mjs` parses the
+  *actual* `:root`/`.dark` custom-property declarations straight out of
+  `src/index.css` (following `var(--x)` indirection to each token's real
+  `oklch(...)` literal — never a hand-copied snapshot of the values) and
+  prints a pass/fail report per theme; run it via `npm run check:contrast`.
+  `scripts/check-contrast.test.mjs` asserts the same computation as part of
+  `npm test`, so a future token edit that regresses contrast fails CI, not
+  just a report nobody re-reads.
+
+  Running it found `--muted-foreground` (light mode) at 4.41:1 against
+  `--muted` — under WCAG AA's 4.5:1 for normal text, used for every
+  `text-small`/caption/description line in the app. Fixed by darkening
+  `--gx-neutral-500` from `oklch(0.55 ...)` to `oklch(0.53 ...)` (the only
+  place that token is referenced), landing at ~4.8:1 with a barely
+  perceptible visual shift. Verified: script re-run after the fix (both the
+  CLI report and the vitest assertions), full `admin-ui` test suite and
+  build still green.
 
   The same script also found `--border`/`--input` (both modes) at ~1.25:1
   against their surrounding background — under the 3:1 WCAG 1.4.11
@@ -141,7 +152,17 @@ vs. already present.
     today, not indefinitely). Both now slice their already-loaded array
     client-side (10/page for content, 20/page for the media grid) and wire
     in `Pagination`; a new test in each proves the page-of-N slicing and
-    stepping.
+    stepping. The two pages' initial implementations each hand-rolled the
+    same page-state/slicing arithmetic (a `PAGE_SIZE` const, `useState(1)`,
+    `Math.max(1, Math.ceil(...))`, `.slice(...)`) — caught in review and
+    extracted into a shared `lib/use-pagination.ts` hook (own test file,
+    `use-pagination.test.ts`) that both pages now consume instead of
+    repeating the arithmetic. The hook also subsumed
+    `MediaLibraryPage`'s separate "reset to page 1 on search change" effect:
+    it resets whenever the `items` array it's given is a new reference,
+    which `filteredItems` already is on every search-text change (via its
+    own `useMemo`), so that effect was deleted rather than duplicated
+    alongside the hook.
   - Left alone: `UsersPage` (account lists are small — admin/editor counts
     in the tens, not hundreds — pagination there would be premature) and
     `ContentTypesListPage` (same reasoning: number of *declared types* is a
@@ -188,14 +209,25 @@ vs. already present.
   "Design system" sidebar link.
 - `admin-ui/src/pages/content/fields.tsx` (modified) — `"richtext"` field
   now renders `Textarea` instead of a raw, hand-styled `<textarea>`.
+- `admin-ui/src/lib/use-pagination.ts` (new) + `use-pagination.test.ts` —
+  the shared page-of-N hook extracted out of `ContentListPage`/
+  `MediaLibraryPage`'s originally-duplicated slicing arithmetic.
+- `admin-ui/scripts/contrast-lib.mjs` (new) — the oklch → linear sRGB →
+  WCAG contrast-ratio math, plus a small CSS custom-property parser that
+  reads `:root`/`.dark` declarations straight out of `src/index.css`.
+- `admin-ui/scripts/check-contrast.mjs` (new) — the CLI report (`npm run
+  check:contrast`), one command wired into `package.json`'s `scripts`.
+- `admin-ui/scripts/check-contrast.test.mjs` (new) — asserts the same
+  computation as part of `npm test`, so a future token change that
+  regresses contrast is caught by CI, not just a manually-run script.
 - `admin-ui/src/pages/content/ContentListPage.tsx` (modified) — paginates
-  its table (10/page); `ContentListPage.test.tsx` (new).
+  its table (10/page) via `usePagination`; `ContentListPage.test.tsx` (new).
 - `admin-ui/src/pages/media/MediaLibraryPage.tsx` (modified) — paginates
   its grid (20/page, reset on search).
 - `admin-ui/src/index.css` (modified) — `--gx-neutral-500` darkened
   (0.55 → 0.53 L) to clear WCAG AA text contrast; see Current Decisions.
 - `admin-ui/package.json`/`package-lock.json` — adds
-  `@radix-ui/react-radio-group`.
+  `@radix-ui/react-radio-group`; adds the `check:contrast` script.
 - `internal/adminui/dist/` — rebuilt (`npm run build`), committed per the
   existing "no Node runtime required in production" convention noted in
   `admin-ui/vite.config.ts`.
@@ -206,26 +238,35 @@ vs. already present.
       (Tailwind default), typography/color/radius/shadow/motion confirmed
       already extended-not-duplicated from slice 1.13.
 - [x] Missing components added: textarea, radio-group, pagination — each
-      with a render + interaction test.
+      with a render + interaction test; pagination's page-of-N arithmetic
+      is a single shared `usePagination` hook (own test), not duplicated
+      per consumer page.
 - [x] Toast/notification system extended with a `ui/`-level presentational
       component and a manual dismiss control; interaction-tested.
 - [x] Existing `EmptyState` given test coverage (was previously untested).
-- [x] Accessibility floor verified programmatically, not assumed: a real
-      contrast-ratio script found and led to fixing one real AA text-
-      contrast failure; found (and documented, not fixed) one non-text
-      border-contrast gap with recorded mitigating factors. Keyboard
-      navigation/focus-visible/ARIA labeling confirmed via the existing
-      global `:focus-visible` rule, Radix primitives' built-in keyboard
-      handling (exercised in `radio-group.test.tsx`), and `aria-live`
-      regions on toasts/spinners.
+- [x] Accessibility floor verified programmatically, not assumed: a real,
+      committed, rerunnable contrast-ratio check
+      (`admin-ui/scripts/check-contrast.mjs` + `contrast-lib.mjs`, run via
+      `npm run check:contrast` and asserted in `npm test` via
+      `check-contrast.test.mjs`) parses the actual token values out of
+      `src/index.css` and led to fixing one real AA text-contrast failure;
+      found (and documented, not fixed) one non-text border-contrast gap
+      with recorded mitigating factors, locked in by a regression test so
+      it can't silently drift either direction. Keyboard navigation/focus-
+      visible/ARIA labeling confirmed via the existing global
+      `:focus-visible` rule, Radix primitives' built-in keyboard handling
+      (exercised in `radio-group.test.tsx`), and `aria-live` regions on
+      toasts/spinners.
 - [x] Component-preview surface built (`/design-system` route) with
       documented Storybook-vs-simpler-alternative reasoning; itself tested.
 - [x] At least a few existing pages migrated to new/extended components
       where genuinely drop-in (`fields.tsx` textarea; `ContentListPage`/
-      `MediaLibraryPage` pagination); pages left alone are documented with
-      reasoning, not silently skipped.
-- [x] `cd admin-ui && npm test` green — 49 tests across 14 files.
+      `MediaLibraryPage` pagination via the shared `usePagination` hook);
+      pages left alone are documented with reasoning, not silently skipped.
+- [x] `cd admin-ui && npm test` green — 71 tests across 16 files.
 - [x] `cd admin-ui && npm run build` green.
+- [x] `cd admin-ui && npm run check:contrast` green (one documented,
+      intentional "known gap" line; zero unexplained failures).
 
 ## Risks
 

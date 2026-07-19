@@ -7,6 +7,7 @@ import { useContentTypes } from "@/lib/use-content-types";
 import { useAuth } from "@/lib/auth-context";
 import { allows } from "@/lib/permissions";
 import { useToast } from "@/lib/toast-context";
+import { usePagination } from "@/lib/use-pagination";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -36,7 +37,6 @@ export function ContentListPage() {
   const [error, setError] = useState<unknown>(undefined);
   const [pendingDelete, setPendingDelete] = useState<ContentItem | undefined>(undefined);
   const [busyId, setBusyId] = useState<string | undefined>(undefined);
-  const [page, setPage] = useState(1);
 
   const load = useCallback(() => {
     if (!type) return;
@@ -44,18 +44,14 @@ export function ContentListPage() {
     setError(undefined);
     client.content
       .list(type)
-      .then((loaded) => {
-        setItems(loaded);
-        setPage(1);
-      })
+      .then(setItems)
       .catch(setError)
       .finally(() => setLoading(false));
   }, [type]);
 
   useEffect(load, [load]);
 
-  const totalPages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
-  const pageItems = items.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const { page, setPage, totalPages, pageItems } = usePagination(items, PAGE_SIZE);
 
   if (!type) return <Navigate to="/content-types" replace />;
   if (!typesLoading && !types[type]) {
