@@ -22,6 +22,20 @@ func billingPeriod(interval string) time.Duration {
 	return 30 * 24 * time.Hour
 }
 
+// startPeriod returns the current_period_start/current_period_end fields for
+// a subscription period beginning at now and running for t's
+// billing_interval (billingPeriod) — the shared "begin a new billing
+// period" seam both Subscribe (a brand-new subscription's first period) and
+// ProcessRenewal's success branch (billing.go; a renewed subscription's next
+// period) need, mirroring expireSubscription's identical role as the shared
+// seam on the lapse/cancel side.
+func startPeriod(t *tier, now time.Time) map[string]any {
+	return map[string]any{
+		"current_period_start": now.Format(time.RFC3339Nano),
+		"current_period_end":   now.Add(billingPeriod(t.BillingInterval)).Format(time.RFC3339Nano),
+	}
+}
+
 // SubscriptionEvent is the payload emitted on both "membership.started" and
 // "membership.expired" — one shared type rather than a separate pair, since
 // neither event needs a field the other doesn't (both are "this user, this
@@ -52,14 +66,15 @@ func Subscribe(ctx context.Context, host sdk.HostAPI, userID, tierID string) (st
 	if err != nil {
 		return "", fmt.Errorf("membership: subscribe: look up tier %q: %w", tierID, err)
 	}
-	now := time.Now().UTC()
-	item, err := host.Content().Create(ctx, SubscriptionContentType, map[string]any{
-		"user_id":              userID,
-		"tier_id":              tierID,
-		"status":               StatusActive,
-		"current_period_start": now.Format(time.RFC3339Nano),
-		"current_period_end":   now.Add(billingPeriod(t.BillingInterval)).Format(time.RFC3339Nano),
-	})
+	data := map[string]any{
+		"user_id": userID,
+		"tier_id": tierID,
+		"status":  StatusActive,
+	}
+	for k, v := range startPeriod(t, time.Now().UTC()) {
+		data[k] = v
+	}
+	item, err := host.Content().Create(ctx, SubscriptionContentType, data)
 	if err != nil {
 		return "", err
 	}
@@ -86,16 +101,18 @@ func CancelSubscription(ctx context.Context, host sdk.HostAPI, subscriptionID st
 // membership.expired" sequence both CancelSubscription and ProcessRenewal's
 // charge-failure branch need.
 func expireSubscription(ctx context.Context, host sdk.HostAPI, subscriptionID, status string) error {
-	sub, err := patchSubscription(ctx, host, subscriptionID, map[string]any{"status": status})
+	item, err := patchSubscription(ctx, host, subscriptionID, map[string]any{"status": status})
 	if err != nil {
 		return fmt.Errorf("membership: mark subscription %s: %w", status, err)
 	}
-	userID, _ := sub.Data["user_id"].(string)
-	tierID, _ := sub.Data["tier_id"].(string)
+	sub, err := parseSubscription(item)
+	if err != nil {
+		return fmt.Errorf("membership: mark subscription %s: %w", status, err)
+	}
 	if err := host.Emit(ctx, "membership.expired", SubscriptionEvent{
 		SubscriptionID: subscriptionID,
-		UserID:         userID,
-		TierID:         tierID,
+		UserID:         sub.UserID,
+		TierID:         sub.TierID,
 	}); err != nil {
 		return fmt.Errorf("membership: emit membership.expired: %w", err)
 	}
@@ -122,4 +139,47 @@ func patchSubscription(ctx context.Context, host sdk.HostAPI, subscriptionID str
 		merged[k] = v
 	}
 	return host.Content().Update(ctx, SubscriptionContentType, subscriptionID, merged)
+}
+
+// subscription is this capability's own parsed view of a
+// membership_subscription content item's Data map — internal, never exposed
+// as this package's public shape (callers get back plain IDs from
+// Subscribe, exactly like CreateTier), mirroring tiers.go's identical
+// tier/parseTier pattern.
+type subscription struct {
+	UserID             string
+	TierID             string
+	Status             string
+	CurrentPeriodStart time.Time
+	CurrentPeriodEnd   time.Time
+}
+
+// parseSubscription parses item's Data map into this package's own
+// subscription shape, following the exact same convention parseTier
+// (tiers.go) established for membership_tier items. current_period_start/
+// current_period_end are parsed as time.RFC3339Nano (the format Subscribe
+// and ProcessRenewal's success branch both write via startPeriod) — an
+// unparseable date is reported as an error rather than silently zero-valued,
+// since every subscription this package itself ever writes has one.
+func parseSubscription(item *content.Item) (*subscription, error) {
+	userID, _ := item.Data["user_id"].(string)
+	tierID, _ := item.Data["tier_id"].(string)
+	status, _ := item.Data["status"].(string)
+	startStr, _ := item.Data["current_period_start"].(string)
+	endStr, _ := item.Data["current_period_end"].(string)
+	start, err := time.Parse(time.RFC3339Nano, startStr)
+	if err != nil {
+		return nil, fmt.Errorf("membership: subscription %q has invalid current_period_start: %w", item.ID, err)
+	}
+	end, err := time.Parse(time.RFC3339Nano, endStr)
+	if err != nil {
+		return nil, fmt.Errorf("membership: subscription %q has invalid current_period_end: %w", item.ID, err)
+	}
+	return &subscription{
+		UserID:             userID,
+		TierID:             tierID,
+		Status:             status,
+		CurrentPeriodStart: start,
+		CurrentPeriodEnd:   end,
+	}, nil
 }

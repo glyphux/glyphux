@@ -151,6 +151,38 @@ Complete. Built via TDD. `go build ./... && go vet ./... && go test -race
   `PaymentIntent`'s `metadata[subscription_id]` form field
   `StripeRecurringGateway.ChargeSubscription` sets.
 
+### Post-review fixes (same PR, before merge)
+
+An independent `/code-review` audit against this PR came back clean on the
+Spec axis; two Standards findings were fixed before merge:
+
+- **`Subscribe` and `ProcessRenewal`'s success branch were independently
+  building the identical "current_period_start"/"current_period_end" map**
+  (`now.Format(...)` / `now.Add(billingPeriod(...)).Format(...)`). Extracted
+  `startPeriod(t *tier, now time.Time) map[string]any` (`subscriptions.go`)
+  — the shared "begin a new billing period" seam, mirroring
+  `expireSubscription`'s existing role as the shared seam on the lapse/cancel
+  side. Both `Subscribe` and `ProcessRenewal` now call it instead of
+  duplicating the two-field map construction.
+- **Subscription records were hand-extracted via raw type assertions in
+  three separate places** (`gating.go`'s `HasActiveMembership`,
+  `subscriptions.go`'s `expireSubscription`, `billing.go`'s `ProcessRenewal`)
+  even though `tiers.go` already established a `parseTier`-into-a-typed-
+  value convention for `membership_tier` items. Added `subscription` (a
+  package-internal struct: `UserID`, `TierID`, `Status`,
+  `CurrentPeriodStart`, `CurrentPeriodEnd time.Time`) and
+  `parseSubscription(item *content.Item) (*subscription, error)`
+  (`subscriptions.go`), following `parseTier`'s exact shape; all three call
+  sites now use it instead of repeating field extraction.
+  `HasActiveMembership` treats a parse failure (e.g. unparseable dates) as
+  "not currently active" for that one record rather than aborting the whole
+  scan — one malformed record should not prevent gating from resolving
+  correctly for every other subscription.
+
+No behavior change — same tests, green before and after (17/17 in this
+package; full repo `go build ./... && go vet ./... && go test -race ./...`
+still green).
+
 ## Open Questions — resolved
 
 - **Should `ProcessRenewal` check `AllowsNetworkHost` itself, or trust
@@ -180,7 +212,11 @@ Complete. Built via TDD. `go build ./... && go vet ./... && go test -race
   parsed-view type, `getTier`/`parseTier`/`numberField` helpers.
 - `capabilities/membership/subscriptions.go` (new) — `Subscribe` (+
   `SubscriptionEvent`), `CancelSubscription`, `expireSubscription` and
-  `patchSubscription` shared helpers, `billingPeriod`.
+  `patchSubscription` shared helpers, `billingPeriod`, internal
+  `subscription` parsed-view type, `parseSubscription` (post-review:
+  added to mirror `tiers.go`'s `parseTier` convention), `startPeriod`
+  (post-review: extracted shared "begin a new billing period" helper used
+  by both `Subscribe` and `billing.go`'s `ProcessRenewal`).
 - `capabilities/membership/gating.go` (new) — `HasActiveMembership`: the
   ticket's headline new content-gating logic.
 - `capabilities/membership/billing.go` (new) — `RecurringGateway` interface,

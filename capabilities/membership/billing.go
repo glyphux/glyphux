@@ -142,14 +142,17 @@ func ProcessRenewal(ctx context.Context, host sdk.HostAPI, gateway RecurringGate
 	if !host.AllowsNetworkHost(gateway.AllowlistHost()) {
 		return fmt.Errorf("%w: %q", ErrGatewayHostNotAllowed, gateway.AllowlistHost())
 	}
-	sub, err := host.Content().Get(ctx, SubscriptionContentType, subscriptionID)
+	item, err := host.Content().Get(ctx, SubscriptionContentType, subscriptionID)
 	if err != nil {
 		return err
 	}
-	tierID, _ := sub.Data["tier_id"].(string)
-	t, err := getTier(ctx, host, tierID)
+	sub, err := parseSubscription(item)
 	if err != nil {
-		return fmt.Errorf("membership: process renewal: look up tier %q: %w", tierID, err)
+		return fmt.Errorf("membership: process renewal: %w", err)
+	}
+	t, err := getTier(ctx, host, sub.TierID)
+	if err != nil {
+		return fmt.Errorf("membership: process renewal: look up tier %q: %w", sub.TierID, err)
 	}
 	result, err := gateway.ChargeSubscription(ctx, ChargeRequest{
 		SubscriptionID: subscriptionID,
@@ -162,12 +165,7 @@ func ProcessRenewal(ctx context.Context, host sdk.HostAPI, gateway RecurringGate
 	if !result.Succeeded {
 		return expireSubscription(ctx, host, subscriptionID, StatusExpired)
 	}
-	now := time.Now().UTC()
-	_, err = patchSubscription(ctx, host, subscriptionID, map[string]any{
-		"current_period_start": now.Format(time.RFC3339Nano),
-		"current_period_end":   now.Add(billingPeriod(t.BillingInterval)).Format(time.RFC3339Nano),
-	})
-	if err != nil {
+	if _, err := patchSubscription(ctx, host, subscriptionID, startPeriod(t, time.Now().UTC())); err != nil {
 		return fmt.Errorf("membership: extend subscription period: %w", err)
 	}
 	return nil

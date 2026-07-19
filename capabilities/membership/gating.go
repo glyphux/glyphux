@@ -44,21 +44,18 @@ func HasActiveMembership(ctx context.Context, host sdk.HostAPI, userID, required
 	}
 	now := time.Now().UTC()
 	for _, item := range items {
-		uid, _ := item.Data["user_id"].(string)
-		if uid != userID {
+		sub, err := parseSubscription(item)
+		if err != nil {
+			// A malformed record (e.g. unparseable dates) is treated as not
+			// currently active rather than aborting the whole scan — one
+			// bad record should not prevent gating from resolving correctly
+			// for every other subscription, including other tiers/users.
 			continue
 		}
-		status, _ := item.Data["status"].(string)
-		if status != StatusActive {
+		if sub.UserID != userID || sub.Status != StatusActive || now.After(sub.CurrentPeriodEnd) {
 			continue
 		}
-		periodEndStr, _ := item.Data["current_period_end"].(string)
-		periodEnd, err := time.Parse(time.RFC3339Nano, periodEndStr)
-		if err != nil || now.After(periodEnd) {
-			continue
-		}
-		tierID, _ := item.Data["tier_id"].(string)
-		t, err := getTier(ctx, host, tierID)
+		t, err := getTier(ctx, host, sub.TierID)
 		if err != nil {
 			return false, err
 		}
