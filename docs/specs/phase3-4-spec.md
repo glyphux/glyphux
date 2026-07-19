@@ -159,10 +159,35 @@ real block registry with real first-party blocks shipped in-tree.
 
 ## Ticket P4.3 — Server-side layout rendering
 
-**PRD anchor:** §14 slice 4.3: "themes render Layer-2 composition."
+**PRD anchor:** §14 slice 4.3: "themes render Layer-2 composition." §9
+(read in full — 9.1 themes never mutate composition; 9.2 theme
+capabilities: declares content types/layouts rendered, receives a
+read-only typed composition view, emits output, may declare slots/regions;
+9.3 rendering contract: the typed interface between resolved composition
+and a theme, with a built-in "headless" theme emitting JSON only, proving
+the platform is fully usable headlessly; V1 target is server-side Go
+templating + static assets).
 
-**Scope:** Extend the theme rendering contract (§9.3) to consume Layer-2
-composition (blocks/slots/regions) alongside Layer-1 content, server-side.
+**Corrected scope (discovered when this ticket was picked up): no theme
+system exists at all yet** — Phase 1 deliberately shipped "no renderer, no
+builder" (§14's own Phase 1 goal text), so §9's contract has never been
+built, not merely something to "extend." This ticket therefore builds, from
+scratch:
+- A new public `pkg/theme` package: a `Theme` interface every theme
+  implements, and a read-only `CompositionView` type combining resolved
+  Layer-1 content (via the existing `content.API`/`ContentAPI` shape) with
+  an optional Layer-2 `contract.Layout` for the current route — no mutation
+  methods anywhere on the view, per §9.1's hard law.
+- `themes/headless` (new top-level package, sibling to `capabilities/`):
+  the built-in default theme emitting the view as JSON — the "fully usable
+  headlessly" guarantee.
+- Server-side rendering of Layer-2 blocks/slots/regions through the
+  contract, proven against the real `pkg/blocks` registry and first-party
+  blocks from Ticket P4.1 (`blocks/firstparty`) — the actual behavior this
+  ticket must prove end to end, not just a type shape.
+- User-confirmed scope: the HTML/Go-template "starter" reference theme
+  (§9.3's other V1 target) IS in scope for this ticket alongside the
+  headless JSON theme — build both, not headless-only.
 
 ## Ticket P4.4 — Visual builder (client)
 
