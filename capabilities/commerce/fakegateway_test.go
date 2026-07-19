@@ -37,10 +37,10 @@ type fakeGateway struct {
 	srv           *httptest.Server
 	webhookSecret string
 
-	mu           sync.Mutex
-	sessions     map[string]fakeSession
-	webhookURL   string
-	nextID       int
+	mu         sync.Mutex
+	sessions   map[string]fakeSession
+	webhookURL string
+	nextID     int
 }
 
 type fakeSession struct {

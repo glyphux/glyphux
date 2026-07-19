@@ -137,6 +137,46 @@ Complete. Built via TDD. `go build ./... && go vet ./... && go test -race
   legitimate no-op, not a failure worth surfacing as an error to the
   gateway's retry logic.
 
+### Post-review fixes (same PR, before merge)
+
+An independent `/code-review` audit against this PR came back clean on the
+Spec axis; three Standards findings were fixed before merge:
+
+- **`HandleWebhook`'s two branches (`checkout.session.completed` /
+  `charge.refunded`) were duplicating the same
+  patch-status-then-emit-then-wrap-error sequence**, differing only in the
+  target status, event name, and (before this fix) payload type. Extracted
+  `transitionOrder(ctx, host, orderID, status, eventName string) error`
+  (`webhook.go`) — both branches are now a single `return
+  transitionOrder(...)` call. This is the same "go one level further than
+  `patchOrder`" pattern the reviewer pointed at.
+- **`PaymentCompletedEvent`/`PaymentRefundedEvent` were structurally
+  identical** (`{OrderID string}`). Merged into one `PaymentEvent{OrderID
+  string}` used for both "payment.completed" and "payment.refunded" —
+  `capabilities/notifications` (slice 3.1, already merged) established
+  exactly this precedent for `MembershipStartedEvent`/`MembershipExpiredEvent`
+  → `MembershipEvent`, for the identical reason ("neither event needs a
+  field the other doesn't"). Revisit (split back into two) if a later need
+  arises for a field one event carries that the other doesn't (e.g. a
+  refund reason/amount `payment.completed` has no counterpart for).
+- **`StartCheckout` took six loose positional parameters
+  (`orderID, amountCents, currency, productName, successURL, cancelURL`)
+  that were immediately reassembled into a `CheckoutRequest` inside the
+  function body.** Since `CheckoutRequest` already exists and bundles
+  exactly these fields, `StartCheckout` now accepts a `CheckoutRequest`
+  directly (`StartCheckout(ctx, host, gateway, req CheckoutRequest)`); the
+  no-longer-needed internal reassembly is gone.
+
+No behavior change — same tests (updated to the new call shapes), green
+before and after. The reviewer's non-required suggestion (a `Money{Cents
+int64; Currency string}` type to stop `amountCents`/`currency` traveling as
+a raw pair across `CreateProduct`/`CreateOrder`/`StartCheckout`/
+`CheckoutRequest`/`OrderPlacedEvent`) was left as a documented future
+cleanup rather than applied now — it's a larger, more invasive change
+touching many signatures for a naming/grouping improvement with no
+behavioral payoff, better done deliberately in its own pass than folded
+into a post-review fixup.
+
 ## Open Questions — resolved
 
 - **Should `StartCheckout` check `AllowsNetworkHost` itself, or should
@@ -172,10 +212,13 @@ Complete. Built via TDD. `go build ./... && go vet ./... && go test -race
   `AllowlistHost`, `CreateCheckoutSession`, `ParseWebhook`) — the real
   `stripe-go` client wiring.
 - `capabilities/commerce/checkout.go` (new) — `CreateProduct`,
-  `CreateOrder` (+ `OrderPlacedEvent`), `StartCheckout`, `patchOrder`
-  helper.
-- `capabilities/commerce/webhook.go` (new) — `HandleWebhook`,
-  `PaymentCompletedEvent`, `PaymentRefundedEvent`.
+  `CreateOrder` (+ `OrderPlacedEvent`), `StartCheckout` (post-review:
+  takes a `CheckoutRequest` directly instead of six loose params),
+  `patchOrder` helper.
+- `capabilities/commerce/webhook.go` (new) — `HandleWebhook`, `PaymentEvent`
+  (post-review: merged from the initial `PaymentCompletedEvent`/
+  `PaymentRefundedEvent` pair), `transitionOrder` helper (post-review:
+  extracted from `HandleWebhook`'s two duplicated branches).
 - `capabilities/commerce/fakegateway_test.go` (new, test-only) —
   `fakeGateway`: an `httptest.Server` implementing
   `POST /v1/checkout/sessions` (real form-decoding, real JSON response
@@ -262,4 +305,10 @@ Complete. Built via TDD. `go build ./... && go vet ./... && go test -race
   `charge.refunded`-shaped callbacks to reach `payment.refunded`.
 - **Currency/amount stored as opaque cents integers with no currency-aware
   validation** (e.g. no check that `currency` is a supported ISO code
-  beyond what the gateway itself would reject).
+  beyond what the gateway itself would reject). `amountCents`/`currency`
+  also travel as a raw pair across several signatures
+  (`CreateProduct`/`CreateOrder`/`StartCheckout`'s `CheckoutRequest`/
+  `OrderPlacedEvent`) rather than one `Money{Cents int64; Currency string}`
+  type — flagged in code review as worth a look but deliberately deferred
+  as a larger, more invasive follow-up rather than folded into this PR's
+  fixups (see Current Decisions' Post-review fixes note).

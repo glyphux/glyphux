@@ -7,15 +7,18 @@ import (
 	"github.com/glyphux/glyphux/pkg/sdk"
 )
 
-// PaymentCompletedEvent is the payload emitted on "payment.completed" when
-// HandleWebhook processes a completed-checkout callback.
-type PaymentCompletedEvent struct {
-	OrderID string
-}
-
-// PaymentRefundedEvent is the payload emitted on "payment.refunded" when
-// HandleWebhook processes a refund/failure callback.
-type PaymentRefundedEvent struct {
+// PaymentEvent is the payload emitted on both "payment.completed" and
+// "payment.refunded" — one shared type rather than a separate
+// PaymentCompletedEvent/PaymentRefundedEvent pair, since neither outcome
+// needs a field the other doesn't (both are simply "this order" facts;
+// only the event NAME and the order's resulting status differ, not the
+// payload shape). capabilities/notifications (slice 3.1) established this
+// exact precedent for membership.started/membership.expired
+// (MembershipEvent) for the identical reason; revisit (split back into two
+// types) if a later need arises for a field one event carries that the
+// other doesn't (e.g. a refund reason/amount payment.completed has no
+// counterpart for).
+type PaymentEvent struct {
 	OrderID string
 }
 
@@ -41,19 +44,24 @@ func HandleWebhook(ctx context.Context, host sdk.HostAPI, gateway PaymentGateway
 	}
 	switch event.Type {
 	case "checkout.session.completed":
-		if err := patchOrder(ctx, host, event.OrderID, map[string]any{"status": OrderStatusPaid}); err != nil {
-			return fmt.Errorf("commerce: mark order paid: %w", err)
-		}
-		if err := host.Emit(ctx, "payment.completed", PaymentCompletedEvent{OrderID: event.OrderID}); err != nil {
-			return fmt.Errorf("commerce: emit payment.completed: %w", err)
-		}
+		return transitionOrder(ctx, host, event.OrderID, OrderStatusPaid, "payment.completed")
 	case "charge.refunded":
-		if err := patchOrder(ctx, host, event.OrderID, map[string]any{"status": OrderStatusRefunded}); err != nil {
-			return fmt.Errorf("commerce: mark order refunded: %w", err)
-		}
-		if err := host.Emit(ctx, "payment.refunded", PaymentRefundedEvent{OrderID: event.OrderID}); err != nil {
-			return fmt.Errorf("commerce: emit payment.refunded: %w", err)
-		}
+		return transitionOrder(ctx, host, event.OrderID, OrderStatusRefunded, "payment.refunded")
+	}
+	return nil
+}
+
+// transitionOrder is the shared "patch order status, then emit the
+// corresponding PaymentEvent" sequence both HandleWebhook branches need —
+// the only difference between marking an order paid vs. refunded is the
+// target status and the event name, so both funnel through this one seam
+// rather than each branch repeating patch-then-emit-then-wrap-error.
+func transitionOrder(ctx context.Context, host sdk.HostAPI, orderID, status, eventName string) error {
+	if err := patchOrder(ctx, host, orderID, map[string]any{"status": status}); err != nil {
+		return fmt.Errorf("commerce: mark order %s: %w", status, err)
+	}
+	if err := host.Emit(ctx, eventName, PaymentEvent{OrderID: orderID}); err != nil {
+		return fmt.Errorf("commerce: emit %s: %w", eventName, err)
 	}
 	return nil
 }

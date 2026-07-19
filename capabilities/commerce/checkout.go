@@ -59,30 +59,23 @@ type OrderPlacedEvent struct {
 	Currency    string
 }
 
-// StartCheckout initiates a gateway-hosted checkout session for orderID
-// against gateway, refusing the call outright (ErrGatewayHostNotAllowed) if
-// this plugin's manifest does not allowlist gateway.AllowlistHost() via its
+// StartCheckout initiates a gateway-hosted checkout session for req against
+// gateway, refusing the call outright (ErrGatewayHostNotAllowed) if this
+// plugin's manifest does not allowlist gateway.AllowlistHost() via its
 // declared "network" permission (slice 2.6's host.AllowsNetworkHost) —
 // network access from this capability always goes through that check
 // before any outbound request is attempted. On success, stores the
 // gateway's session ID on the order (host.Content().Update) so the webhook
 // handler can later recover which order a callback concerns.
-func StartCheckout(ctx context.Context, host sdk.HostAPI, gateway PaymentGateway, orderID string, amountCents int64, currency, productName, successURL, cancelURL string) (*CheckoutSession, error) {
+func StartCheckout(ctx context.Context, host sdk.HostAPI, gateway PaymentGateway, req CheckoutRequest) (*CheckoutSession, error) {
 	if !host.AllowsNetworkHost(gateway.AllowlistHost()) {
 		return nil, fmt.Errorf("%w: %q", ErrGatewayHostNotAllowed, gateway.AllowlistHost())
 	}
-	sess, err := gateway.CreateCheckoutSession(ctx, CheckoutRequest{
-		OrderID:     orderID,
-		AmountCents: amountCents,
-		Currency:    currency,
-		ProductName: productName,
-		SuccessURL:  successURL,
-		CancelURL:   cancelURL,
-	})
+	sess, err := gateway.CreateCheckoutSession(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	if err := patchOrder(ctx, host, orderID, map[string]any{"checkout_session_id": sess.ID}); err != nil {
+	if err := patchOrder(ctx, host, req.OrderID, map[string]any{"checkout_session_id": sess.ID}); err != nil {
 		return nil, fmt.Errorf("commerce: record checkout session on order: %w", err)
 	}
 	return sess, nil

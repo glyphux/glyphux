@@ -295,7 +295,14 @@ func TestStartCheckoutHitsFakeGatewayAndReturnsSession(t *testing.T) {
 		t.Fatalf("CreateOrder: %v", err)
 	}
 
-	sess, err := commerce.StartCheckout(ctx, host, stripeGW, orderID, 1000, "usd", "Mug", "https://example.com/success", "https://example.com/cancel")
+	sess, err := commerce.StartCheckout(ctx, host, stripeGW, commerce.CheckoutRequest{
+		OrderID:     orderID,
+		AmountCents: 1000,
+		Currency:    "usd",
+		ProductName: "Mug",
+		SuccessURL:  "https://example.com/success",
+		CancelURL:   "https://example.com/cancel",
+	})
 	if err != nil {
 		t.Fatalf("StartCheckout: %v", err)
 	}
@@ -351,7 +358,14 @@ func TestStartCheckoutRefusedAgainstDisallowedGatewayHost(t *testing.T) {
 		t.Fatalf("CreateOrder: %v", err)
 	}
 
-	_, err = commerce.StartCheckout(ctx, host, disallowedGateway, orderID, 1000, "usd", "Mug", "https://example.com/success", "https://example.com/cancel")
+	_, err = commerce.StartCheckout(ctx, host, disallowedGateway, commerce.CheckoutRequest{
+		OrderID:     orderID,
+		AmountCents: 1000,
+		Currency:    "usd",
+		ProductName: "Mug",
+		SuccessURL:  "https://example.com/success",
+		CancelURL:   "https://example.com/cancel",
+	})
 	if err == nil {
 		t.Fatal("expected StartCheckout to be refused against a gateway host the manifest doesn't allowlist")
 	}
@@ -376,7 +390,14 @@ func TestWebhookCompletedMarksOrderPaidAndEmitsPaymentCompleted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateOrder: %v", err)
 	}
-	sess, err := commerce.StartCheckout(ctx, host, stripeGW, orderID, 1000, "usd", "Mug", "https://example.com/success", "https://example.com/cancel")
+	sess, err := commerce.StartCheckout(ctx, host, stripeGW, commerce.CheckoutRequest{
+		OrderID:     orderID,
+		AmountCents: 1000,
+		Currency:    "usd",
+		ProductName: "Mug",
+		SuccessURL:  "https://example.com/success",
+		CancelURL:   "https://example.com/cancel",
+	})
 	if err != nil {
 		t.Fatalf("StartCheckout: %v", err)
 	}
@@ -387,7 +408,7 @@ func TestWebhookCompletedMarksOrderPaidAndEmitsPaymentCompleted(t *testing.T) {
 
 	// A separate subscriber HostAPI on the shared bus verifies
 	// payment.completed the same cross-plugin way notifications's tests do.
-	var received *commerce.PaymentCompletedEvent
+	var received *commerce.PaymentEvent
 	subscriberManifest := sdk.Manifest{
 		Name: "subscriber-plugin", Version: "1.0.0", Runtime: sdk.RuntimeInProcess,
 		Requires: sdk.Requires{Core: ">=0.1.0", Contract: "content-composition/v0"},
@@ -401,7 +422,7 @@ func TestWebhookCompletedMarksOrderPaidAndEmitsPaymentCompleted(t *testing.T) {
 		t.Fatalf("NewHostAPI (subscriber): %v", err)
 	}
 	if err := subscriber.On("payment.completed", func(ctx context.Context, payload any) error {
-		e := payload.(commerce.PaymentCompletedEvent)
+		e := payload.(commerce.PaymentEvent)
 		received = &e
 		return nil
 	}); err != nil {
@@ -451,7 +472,14 @@ func TestWebhookRefundedMarksOrderRefundedAndEmitsPaymentRefunded(t *testing.T) 
 	if err != nil {
 		t.Fatalf("CreateOrder: %v", err)
 	}
-	sess, err := commerce.StartCheckout(ctx, host, stripeGW, orderID, 1000, "usd", "Mug", "https://example.com/success", "https://example.com/cancel")
+	sess, err := commerce.StartCheckout(ctx, host, stripeGW, commerce.CheckoutRequest{
+		OrderID:     orderID,
+		AmountCents: 1000,
+		Currency:    "usd",
+		ProductName: "Mug",
+		SuccessURL:  "https://example.com/success",
+		CancelURL:   "https://example.com/cancel",
+	})
 	if err != nil {
 		t.Fatalf("StartCheckout: %v", err)
 	}
@@ -460,7 +488,7 @@ func TestWebhookRefundedMarksOrderRefundedAndEmitsPaymentRefunded(t *testing.T) 
 	defer receiver.Close()
 	gw.SetWebhookURL(receiver.URL)
 
-	var received *commerce.PaymentRefundedEvent
+	var received *commerce.PaymentEvent
 	subscriberManifest := sdk.Manifest{
 		Name: "subscriber-plugin", Version: "1.0.0", Runtime: sdk.RuntimeInProcess,
 		Requires: sdk.Requires{Core: ">=0.1.0", Contract: "content-composition/v0"},
@@ -474,7 +502,7 @@ func TestWebhookRefundedMarksOrderRefundedAndEmitsPaymentRefunded(t *testing.T) 
 		t.Fatalf("NewHostAPI (subscriber): %v", err)
 	}
 	if err := subscriber.On("payment.refunded", func(ctx context.Context, payload any) error {
-		e := payload.(commerce.PaymentRefundedEvent)
+		e := payload.(commerce.PaymentEvent)
 		received = &e
 		return nil
 	}); err != nil {
