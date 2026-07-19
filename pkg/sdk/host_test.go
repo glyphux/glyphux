@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/glyphux/glyphux/internal/audit"
 	"github.com/glyphux/glyphux/internal/composition"
 	"github.com/glyphux/glyphux/internal/content"
 	"github.com/glyphux/glyphux/internal/db"
@@ -211,6 +212,75 @@ func TestHostAPIRegisterJobWorksWithPermission(t *testing.T) {
 	}
 	if err := host.RegisterJob(sdk.JobDef{Name: "cleanup"}); err != nil {
 		t.Fatalf("register job: %v", err)
+	}
+}
+
+func newTestAuditLogger(t *testing.T) *audit.Logger {
+	t.Helper()
+	d, err := db.OpenSQLite(filepath.Join(t.TempDir(), "audit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+	if err := d.Migrate(context.Background(), audit.Migrations); err != nil {
+		t.Fatal(err)
+	}
+	return audit.NewLogger(d)
+}
+
+func TestHostAPIAuditsRegisterAdminPageAllowAndDeny(t *testing.T) {
+	logger := newTestAuditLogger(t)
+	deps := testKernel(t)
+	deps.Audit = logger
+
+	denied, err := sdk.NewHostAPI(validManifest(), deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := denied.RegisterAdminPage(sdk.AdminPageDef{Slug: "forms"}); err == nil {
+		t.Fatal("expected denial without admin_ui permission")
+	}
+
+	allowedManifest := manifestWithPermissions(sdk.Permission{Name: "admin_ui"})
+	allowedManifest.Name = "forms-plugin"
+	allowed, err := sdk.NewHostAPI(allowedManifest, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := allowed.RegisterAdminPage(sdk.AdminPageDef{Slug: "forms"}); err != nil {
+		t.Fatalf("register admin page: %v", err)
+	}
+
+	deniedRecords, err := logger.ListByPlugin(context.Background(), validManifest().Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deniedRecords) != 1 || deniedRecords[0].Allowed {
+		t.Fatalf("expected exactly one denied audit record for %q, got %+v", validManifest().Name, deniedRecords)
+	}
+
+	allowedRecords, err := logger.ListByPlugin(context.Background(), "forms-plugin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(allowedRecords) != 1 || !allowedRecords[0].Allowed {
+		t.Fatalf("expected exactly one allowed audit record for forms-plugin, got %+v", allowedRecords)
+	}
+	if allowedRecords[0].Action != "hostapi.register_admin_page" {
+		t.Fatalf("unexpected action: %q", allowedRecords[0].Action)
+	}
+}
+
+func TestHostAPIWithoutAudit_StillWorks(t *testing.T) {
+	// KernelDeps.Audit left nil (the default in every other test in this
+	// file) must not panic or otherwise change behavior — audit logging is
+	// strictly additive.
+	host, err := sdk.NewHostAPI(manifestWithPermissions(sdk.Permission{Name: "admin_ui"}), testKernel(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host.RegisterAdminPage(sdk.AdminPageDef{Slug: "forms"}); err != nil {
+		t.Fatalf("register admin page without audit configured: %v", err)
 	}
 }
 

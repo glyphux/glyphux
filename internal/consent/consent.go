@@ -27,6 +27,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/glyphux/glyphux/internal/audit"
 	"github.com/glyphux/glyphux/internal/db"
 	"github.com/glyphux/glyphux/pkg/sdk"
 )
@@ -157,13 +158,30 @@ var ErrGrantExceedsRequest = errors.New("consent: granted scopes exceed the requ
 // ConsentRequest, records an admin's decision, and answers whether a given
 // manifest shape currently has a live (non-denied) decision on file.
 type Engine struct {
-	db *db.DB
+	db    *db.DB
+	audit *audit.Logger
+}
+
+// Option configures an Engine at construction time.
+type Option func(*Engine)
+
+// WithAudit wires logger so every Decide call also records an audit entry
+// (PRD §10.5: "every sensitive grant... is recorded by the audit
+// subsystem") — an install-time consent decision is exactly such a grant.
+// Optional: an Engine built without this option behaves exactly as slice
+// 2.7 shipped it, audit logging is strictly additive.
+func WithAudit(logger *audit.Logger) Option {
+	return func(e *Engine) { e.audit = logger }
 }
 
 // NewEngine wires the consent engine to the database abstraction. Callers
 // must have already run Migrations (via db.Migrate) against database.
-func NewEngine(database *db.DB) *Engine {
-	return &Engine{db: database}
+func NewEngine(database *db.DB, opts ...Option) *Engine {
+	e := &Engine{db: database}
+	for _, opt := range opts {
+		opt(e)
+	}
+	return e
 }
 
 // Request validates m and produces the ConsentRequest a consent-screen UI
@@ -230,6 +248,23 @@ func (e *Engine) Decide(ctx context.Context, req ConsentRequest, grantedAPI []sd
 		return Decision{}, err
 	}
 	d.ID = id
+
+	if e.audit != nil {
+		// Best-effort: an audit-log failure must not undo an already-
+		// persisted consent decision (the decision itself is the
+		// source of truth this Engine answers IsConsented from), but it
+		// also must not be silently invisible, so it errors here to the
+		// caller alongside the (already valid) Decision.
+		logErr := e.audit.Log(ctx, audit.Record{
+			PluginName: d.PluginName,
+			Action:     "consent.decide",
+			Allowed:    d.Status != StatusDenied,
+			Detail:     fmt.Sprintf("status=%s granted_api=%d/%d granted_permissions=%d/%d decided_by=%d", d.Status, apiScopeCount(d.GrantedAPI), apiScopeCount(d.RequestedAPI), len(d.GrantedPermissions), len(d.RequestedPermissions), d.DecidedBy),
+		})
+		if logErr != nil {
+			return d, fmt.Errorf("consent: decision recorded but audit log failed: %w", logErr)
+		}
+	}
 	return d, nil
 }
 

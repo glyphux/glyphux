@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/glyphux/glyphux/internal/audit"
 	"github.com/glyphux/glyphux/internal/composition"
 	"github.com/glyphux/glyphux/internal/content"
 	"github.com/glyphux/glyphux/internal/identity"
@@ -80,6 +81,16 @@ type KernelDeps struct {
 	// tests that only exercise a single HostAPI's own On/Emit), NewHostAPI
 	// gives that single HostAPI its own private bus.
 	Bus *EventBus
+
+	// Audit, if non-nil, records every capability-gated boundary crossing
+	// this HostAPI enforces (PRD §10.5: "every sensitive grant and every
+	// cross-boundary call is recorded by the audit subsystem") — both
+	// allowed and denied attempts, on RegisterContentType, RegisterBlock,
+	// RegisterAdminPage, RegisterJob, On, and Emit (slice 2.8). Left nil
+	// (the default in every HostAPI test that predates this slice), a
+	// HostAPI behaves exactly as before — audit logging is strictly
+	// additive, never a hard dependency of the gating logic itself.
+	Audit *audit.Logger
 }
 
 // EventBus is the real, cross-plugin event bus underlying every HostAPI's
@@ -361,13 +372,39 @@ func NewHostAPI(manifest Manifest, deps KernelDeps) (HostAPI, error) {
 	}, nil
 }
 
+// auditLog records a boundary-crossing attempt if this HostAPI was built
+// with KernelDeps.Audit configured (slice 2.8); a no-op otherwise. Uses
+// context.Background() when ctx isn't available to the caller (several
+// HostAPI methods predate context plumbing and are out of scope to change
+// here) — audit logging is best-effort infrastructure, not on the request's
+// own cancellation path.
+func (h *hostAPI) auditLog(ctx context.Context, action string, allowed bool, detail string) {
+	if h.deps.Audit == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// Best-effort: a logging failure must never mask the boundary decision
+	// itself (the caller already has their allow/deny answer); there is no
+	// caller-visible error path for it to surface through here.
+	_ = h.deps.Audit.Log(ctx, audit.Record{
+		PluginName: h.manifest.Name,
+		Action:     action,
+		Allowed:    allowed,
+		Detail:     detail,
+	})
+}
+
 // RegisterContentType defines or updates a content type, gated on the
 // declared "content" api capability's write scope.
 func (h *hostAPI) RegisterContentType(ctx context.Context, name string, def contract.ContentType) error {
 	if !h.hasScope("content", "write") {
+		h.auditLog(ctx, "hostapi.register_content_type", false, "content:write not declared")
 		return errors.New("content:write: " + ErrScopeNotDeclared.Error())
 	}
 	_, err := h.deps.Compositions.DefineContentType(ctx, hostPrincipal, name, def)
+	h.auditLog(ctx, "hostapi.register_content_type", err == nil, "name="+name)
 	return err
 }
 
@@ -376,9 +413,11 @@ func (h *hostAPI) RegisterContentType(ctx context.Context, name string, def cont
 // the HostAPI interface doc comment on this judgment call).
 func (h *hostAPI) RegisterBlock(def BlockDef) error {
 	if _, declared := h.apiScope["content"]; !declared {
+		h.auditLog(nil, "hostapi.register_block", false, "content not declared")
 		return errors.New("content: " + ErrScopeNotDeclared.Error())
 	}
 	h.blocks = append(h.blocks, def)
+	h.auditLog(nil, "hostapi.register_block", true, "name="+def.Name)
 	return nil
 }
 
@@ -391,18 +430,22 @@ func (h *hostAPI) RegisterBlock(def BlockDef) error {
 // different risk and are scoped separately").
 func (h *hostAPI) On(event string, handler EventHandler) error {
 	if !h.hasScope("events", "subscribe") {
+		h.auditLog(nil, "hostapi.on", false, "event="+event+" events:subscribe not declared")
 		return errors.New("events:subscribe: " + ErrScopeNotDeclared.Error())
 	}
 	if rule, sensitive := sensitiveEvents[event]; sensitive {
 		if rule.Scope == "" {
 			if _, declared := h.apiScope[rule.Capability]; !declared {
+				h.auditLog(nil, "hostapi.on", false, "event="+event+" "+rule.Capability+" not declared")
 				return errors.New(rule.Capability + ": " + ErrScopeNotDeclared.Error())
 			}
 		} else if !h.hasScope(rule.Capability, rule.Scope) {
+			h.auditLog(nil, "hostapi.on", false, "event="+event+" "+rule.Capability+":"+rule.Scope+" not declared")
 			return errors.New(rule.Capability + ":" + rule.Scope + ": " + ErrScopeNotDeclared.Error())
 		}
 	}
 	h.bus.subscribe(event, handler)
+	h.auditLog(nil, "hostapi.on", true, "event="+event)
 	return nil
 }
 
@@ -419,9 +462,12 @@ func (h *hostAPI) On(event string, handler EventHandler) error {
 // the collected errors via errors.Join.
 func (h *hostAPI) Emit(ctx context.Context, event string, payload any) error {
 	if !h.hasScope("events", "emit") {
+		h.auditLog(ctx, "hostapi.emit", false, "event="+event+" events:emit not declared")
 		return errors.New("events:emit: " + ErrScopeNotDeclared.Error())
 	}
-	return h.bus.emit(ctx, event, payload)
+	err := h.bus.emit(ctx, event, payload)
+	h.auditLog(ctx, "hostapi.emit", err == nil, "event="+event)
+	return err
 }
 
 // Store returns this plugin's namespaced key-value store — always present,
@@ -448,9 +494,11 @@ func (h *hostAPI) hasScope(capability, scope string) bool {
 // declare the admin_ui permission (PRD §8.3).
 func (h *hostAPI) RegisterAdminPage(def AdminPageDef) error {
 	if !h.permissions["admin_ui"] {
+		h.auditLog(nil, "hostapi.register_admin_page", false, "admin_ui not declared")
 		return errors.New("admin_ui: " + ErrScopeNotDeclared.Error())
 	}
 	h.adminPages = append(h.adminPages, def)
+	h.auditLog(nil, "hostapi.register_admin_page", true, "slug="+def.Slug)
 	return nil
 }
 
@@ -458,9 +506,11 @@ func (h *hostAPI) RegisterAdminPage(def AdminPageDef) error {
 // declare the scheduled_jobs permission (PRD §8.3).
 func (h *hostAPI) RegisterJob(def JobDef) error {
 	if !h.permissions["scheduled_jobs"] {
+		h.auditLog(nil, "hostapi.register_job", false, "scheduled_jobs not declared")
 		return errors.New("scheduled_jobs: " + ErrScopeNotDeclared.Error())
 	}
 	h.jobs = append(h.jobs, def)
+	h.auditLog(nil, "hostapi.register_job", true, "name="+def.Name)
 	return nil
 }
 

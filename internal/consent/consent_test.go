@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/glyphux/glyphux/internal/audit"
 	"github.com/glyphux/glyphux/internal/consent"
 	"github.com/glyphux/glyphux/internal/db"
 	"github.com/glyphux/glyphux/pkg/sdk"
@@ -334,5 +335,66 @@ func TestDecision_PersistsAcrossEngineInstances(t *testing.T) {
 	}
 	if decision.DecidedBy != 99 {
 		t.Fatalf("expected persisted DecidedBy=99, got %d", decision.DecidedBy)
+	}
+}
+
+func TestDecide_WithAudit_LogsApprovalAndDenial(t *testing.T) {
+	ctx := context.Background()
+	d, err := db.OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { d.Close() })
+	if err := d.Migrate(ctx, consent.Migrations); err != nil {
+		t.Fatalf("migrate consent: %v", err)
+	}
+	if err := d.Migrate(ctx, audit.Migrations); err != nil {
+		t.Fatalf("migrate audit: %v", err)
+	}
+	logger := audit.NewLogger(d)
+	e := consent.NewEngine(d, consent.WithAudit(logger))
+
+	m := commerceManifest()
+	req, err := e.Request(m)
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if _, err := e.Approve(ctx, req, 1); err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+	if _, err := e.Deny(ctx, req, 1); err != nil {
+		t.Fatalf("Deny: %v", err)
+	}
+
+	records, err := logger.ListByPlugin(ctx, "commerce")
+	if err != nil {
+		t.Fatalf("ListByPlugin: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("expected 2 audit records (approve + deny), got %d", len(records))
+	}
+	if !records[0].Allowed {
+		t.Fatalf("expected first record to reflect the approval, got %+v", records[0])
+	}
+	if records[1].Allowed {
+		t.Fatalf("expected second record to reflect the denial, got %+v", records[1])
+	}
+	if records[0].Action != "consent.decide" {
+		t.Fatalf("expected action %q, got %q", "consent.decide", records[0].Action)
+	}
+}
+
+func TestDecide_WithoutAudit_StillWorks(t *testing.T) {
+	// NewEngine with no WithAudit option must behave exactly as before this
+	// slice — audit logging is opt-in, not a hard dependency.
+	ctx := context.Background()
+	e := newTestEngine(t)
+	m := commerceManifest()
+	req, err := e.Request(m)
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if _, err := e.Approve(ctx, req, 1); err != nil {
+		t.Fatalf("Approve without audit configured: %v", err)
 	}
 }
