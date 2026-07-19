@@ -69,7 +69,7 @@ func (l *Layout) Validate() error {
 				Message: "region name must be a lowercase identifier (a-z, 0-9, _)",
 			})
 		}
-		errs = append(errs, validateBlocks("regions."+regionName+".blocks", region.Blocks)...)
+		errs = append(errs, WalkBlocks("regions."+regionName+".blocks", region.Blocks, validateBlock)...)
 	}
 
 	if len(errs) > 0 {
@@ -78,24 +78,41 @@ func (l *Layout) Validate() error {
 	return nil
 }
 
-// validateBlocks recursively validates blocks (and every block's nested
-// slot blocks), returning every violation found at or below path.
-func validateBlocks(path string, blocks []Block) ValidationErrors {
+// validateBlock is Layout.Validate's per-block check (non-empty Type, valid
+// slot-name identifiers), passed to WalkBlocks so the recursive tree-walk
+// itself lives in exactly one place.
+func validateBlock(path string, b Block) ValidationErrors {
+	var errs ValidationErrors
+	if b.Type == "" {
+		errs = append(errs, ValidationError{Path: path + ".type", Message: "must not be empty"})
+	}
+	for slotName := range b.Slots {
+		if !validIdent(slotName) {
+			errs = append(errs, ValidationError{
+				Path:    path + ".slots." + slotName,
+				Message: "slot name must be a lowercase identifier (a-z, 0-9, _)",
+			})
+		}
+	}
+	return errs
+}
+
+// WalkBlocks recursively visits every block in blocks — and, for every
+// block, every nested block in every named slot — calling visit once per
+// block with its resolved path (e.g. "regions.main.blocks[0].slots.
+// content[1]"). This is the one place the blocks/slots tree-walk itself
+// lives; both Layout.Validate (structural checks) and
+// pkg/blocks.ValidateLayout (registry-existence checks) call it with their
+// own per-block visit function rather than each re-implementing the same
+// recursion, which is the only thing genuinely shared between those two
+// otherwise-different checks (see this slice's tracking doc).
+func WalkBlocks(path string, blocks []Block, visit func(path string, b Block) ValidationErrors) ValidationErrors {
 	var errs ValidationErrors
 	for i, b := range blocks {
 		blockPath := fmt.Sprintf("%s[%d]", path, i)
-		if b.Type == "" {
-			errs = append(errs, ValidationError{Path: blockPath + ".type", Message: "must not be empty"})
-		}
+		errs = append(errs, visit(blockPath, b)...)
 		for slotName, slotBlocks := range b.Slots {
-			slotPath := blockPath + ".slots." + slotName
-			if !validIdent(slotName) {
-				errs = append(errs, ValidationError{
-					Path:    slotPath,
-					Message: "slot name must be a lowercase identifier (a-z, 0-9, _)",
-				})
-			}
-			errs = append(errs, validateBlocks(slotPath, slotBlocks)...)
+			errs = append(errs, WalkBlocks(blockPath+".slots."+slotName, slotBlocks, visit)...)
 		}
 	}
 	return errs

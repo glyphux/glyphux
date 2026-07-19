@@ -85,27 +85,19 @@ func (r *Registry) List() []Definition {
 func ValidateLayout(layout *contract.Layout, registry *Registry) error {
 	var errs contract.ValidationErrors
 	for regionName, region := range layout.Regions {
-		errs = append(errs, validateBlockTypes(registry, "regions."+regionName+".blocks", region.Blocks)...)
+		errs = append(errs, contract.WalkBlocks("regions."+regionName+".blocks", region.Blocks,
+			func(path string, b contract.Block) contract.ValidationErrors {
+				if _, ok := registry.Get(b.Type); !ok {
+					return contract.ValidationErrors{{
+						Path:    path + ".type",
+						Message: fmt.Sprintf("block type %q is not registered", b.Type),
+					}}
+				}
+				return nil
+			})...)
 	}
 	if len(errs) > 0 {
 		return errs
 	}
 	return nil
-}
-
-func validateBlockTypes(registry *Registry, path string, blks []contract.Block) contract.ValidationErrors {
-	var errs contract.ValidationErrors
-	for i, b := range blks {
-		blockPath := fmt.Sprintf("%s[%d]", path, i)
-		if _, ok := registry.Get(b.Type); !ok {
-			errs = append(errs, contract.ValidationError{
-				Path:    blockPath + ".type",
-				Message: fmt.Sprintf("block type %q is not registered", b.Type),
-			})
-		}
-		for slotName, slotBlocks := range b.Slots {
-			errs = append(errs, validateBlockTypes(registry, blockPath+".slots."+slotName, slotBlocks)...)
-		}
-	}
-	return errs
 }

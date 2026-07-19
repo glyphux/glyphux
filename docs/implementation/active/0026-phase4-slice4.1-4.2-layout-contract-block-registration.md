@@ -103,6 +103,24 @@ blocks`, `blocks/firstparty`).
   asked for. `RegisterAll(registry)` is real, tested, and ready for whatever
   future slice adds the daemon's actual plugin/block bootstrap sequence.
 
+- **Post-review fix (independent `/code-review` audit against this
+  slice's own PR #8):** `pkg/contract/layout.go`'s `validateBlocks` and
+  `pkg/blocks/registry.go`'s `validateBlockTypes` originally duplicated the
+  identical recursive blocks/slots tree-walk (index/path-building logic)
+  across two packages, differing only in their per-block check (structural
+  non-emptiness vs. registry existence). Extracted the shared walk into an
+  exported `contract.WalkBlocks(path string, blocks []Block, visit
+  func(path string, b Block) ValidationErrors) ValidationErrors`; both
+  `Layout.Validate` and `blocks.ValidateLayout` now call it with their own
+  per-block visit function instead of each re-implementing the recursion.
+  The Standards axis's other finding — `sdk.BlockDef` being a field-for-field
+  parallel of `blocks.Definition` — was left as-is: the doc comment's stated
+  rationale (avoid forcing every `pkg/sdk` caller to import `pkg/blocks`)
+  is a real, deliberate design choice, not an oversight, so introducing a
+  shared type or interface just to remove two structurally-identical struct
+  literals would trade one small, well-understood duplication for a layer
+  of indirection with no real benefit.
+
 ## Open Questions — resolved
 
 - **Should `Layout` support more than one document per route/template
