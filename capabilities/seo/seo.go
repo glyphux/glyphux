@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -65,10 +66,21 @@ func (p *Plugin) Manifest() sdk.Manifest {
 // own gate" guarantee: a host built without content:read cannot be used by
 // this capability at all.
 func (p *Plugin) Register(host sdk.HostAPI) error {
-	if host.Content() == nil {
-		return errors.New("seo: content:read scope required to register")
+	_, err := requireContent(host)
+	return err
+}
+
+// requireContent returns host's ContentAPI, or an error if host was built
+// from a manifest that dropped content:read — the one scope-gate check
+// this capability needs, shared by Register and GenerateSitemap (the only
+// two entry points that touch a HostAPI at all) so the guard and its error
+// message live in exactly one place.
+func requireContent(host sdk.HostAPI) (sdk.ContentAPI, error) {
+	contentAPI := host.Content()
+	if contentAPI == nil {
+		return nil, errors.New("seo: content:read scope required")
 	}
-	return nil
+	return contentAPI, nil
 }
 
 // MetaTags is the <title>/<meta name="description">/Open Graph tag set a
@@ -173,7 +185,7 @@ func GenerateStructuredData(item *content.Item, baseURL string) (string, error) 
 	}
 	raw, err := json.Marshal(a)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("seo: encode structured data: %w", err)
 	}
 	return string(raw), nil
 }
@@ -202,13 +214,13 @@ const sitemapXMLNS = "http://www.sitemaps.org/schemas/sitemap/0.9"
 // filtering client-side (like forms's List does for form_name) needs no
 // pkg/sdk change.
 func GenerateSitemap(ctx context.Context, host sdk.HostAPI, typeName, baseURL string) (string, error) {
-	contentAPI := host.Content()
-	if contentAPI == nil {
-		return "", errors.New("seo: content:read scope required to generate a sitemap")
+	contentAPI, err := requireContent(host)
+	if err != nil {
+		return "", err
 	}
 	items, err := contentAPI.List(ctx, typeName)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("seo: list %s items: %w", typeName, err)
 	}
 
 	set := sitemapURLSet{Xmlns: sitemapXMLNS}
@@ -224,7 +236,7 @@ func GenerateSitemap(ctx context.Context, host sdk.HostAPI, typeName, baseURL st
 
 	body, err := xml.MarshalIndent(set, "", "  ")
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("seo: encode sitemap: %w", err)
 	}
 	return xml.Header + string(body), nil
 }

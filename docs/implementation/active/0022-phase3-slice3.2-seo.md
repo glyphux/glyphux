@@ -108,6 +108,18 @@ go test -race ./...` green.
   tracking doc explains this asymmetry in full). No other kernel internals
   are imported; `pkg/sdk` itself was not modified.
 
+- **Post-review fixes (parent session's independent `/code-review` audit on
+  PR #4):** two Standards findings, both addressed before merge. (1) The
+  `host.Content() == nil` scope-gate check was duplicated verbatim in
+  `Register` and `GenerateSitemap` — extracted into a shared
+  `requireContent(host sdk.HostAPI) (sdk.ContentAPI, error)` helper, called
+  from both. (2) Error wrapping was inconsistent — hand-written guard
+  clauses were prefixed (`"seo: ..."`) but `json.Marshal`/
+  `xml.MarshalIndent` passthroughs in `GenerateStructuredData`/
+  `GenerateSitemap` returned bare `err`. Normalized both to
+  `fmt.Errorf("seo: ...: %w", err)`, matching `capabilities/forms`'s own
+  convention. Spec axis of the audit came back clean with no findings.
+
 ## Open Questions — resolved
 
 - **Should `seo` run through a real WASM boundary to more rigorously prove
