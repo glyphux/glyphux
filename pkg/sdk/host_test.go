@@ -12,6 +12,7 @@ import (
 	"github.com/glyphux/glyphux/internal/db"
 	"github.com/glyphux/glyphux/internal/identity"
 	"github.com/glyphux/glyphux/internal/media"
+	"github.com/glyphux/glyphux/pkg/blocks"
 	"github.com/glyphux/glyphux/pkg/contract"
 	"github.com/glyphux/glyphux/pkg/kernel"
 	"github.com/glyphux/glyphux/pkg/sdk"
@@ -399,6 +400,69 @@ func TestHostAPIRegisterBlockWorksWithContentCapability(t *testing.T) {
 	}
 	if err := host.RegisterBlock(sdk.BlockDef{Name: "hero"}); err != nil {
 		t.Fatalf("register block: %v", err)
+	}
+}
+
+func TestHostAPIRegisterBlockDefinesItInSharedRegistry(t *testing.T) {
+	registry := blocks.New()
+	deps := testKernel(t)
+	deps.Blocks = registry
+	m := manifestWithAPI(sdk.APIScope{Capability: "content", Scopes: []string{"read"}})
+	host, err := sdk.NewHostAPI(m, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host.RegisterBlock(sdk.BlockDef{
+		Name:        "hero",
+		DisplayName: "Hero",
+		Props:       map[string]contract.Field{"title": {Type: contract.FieldString}},
+		Slots:       []string{"content"},
+	}); err != nil {
+		t.Fatalf("register block: %v", err)
+	}
+
+	def, ok := registry.Get("hero")
+	if !ok {
+		t.Fatal("expected \"hero\" to be defined in the shared block registry")
+	}
+	if def.DisplayName != "Hero" || len(def.Slots) != 1 || def.Slots[0] != "content" {
+		t.Fatalf("unexpected definition: %+v", def)
+	}
+}
+
+func TestHostAPIRegisterBlockRejectsDuplicateAcrossPlugins(t *testing.T) {
+	registry := blocks.New()
+	deps := testKernel(t)
+	deps.Blocks = registry
+	m := manifestWithAPI(sdk.APIScope{Capability: "content", Scopes: []string{"read"}})
+
+	hostA, err := sdk.NewHostAPI(m, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := hostA.RegisterBlock(sdk.BlockDef{Name: "hero"}); err != nil {
+		t.Fatalf("register block: %v", err)
+	}
+
+	hostB, err := sdk.NewHostAPI(m, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := hostB.RegisterBlock(sdk.BlockDef{Name: "hero"}); err == nil {
+		t.Fatal("expected a second plugin registering the same block name to be denied")
+	}
+}
+
+func TestHostAPIRegisterBlockWithoutSharedRegistryStillWorks(t *testing.T) {
+	// KernelDeps.Blocks left nil (the default in every other test in this
+	// file) must not panic — a private registry is used instead.
+	m := manifestWithAPI(sdk.APIScope{Capability: "content", Scopes: []string{"read"}})
+	host, err := sdk.NewHostAPI(m, testKernel(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host.RegisterBlock(sdk.BlockDef{Name: "hero"}); err != nil {
+		t.Fatalf("register block without shared registry configured: %v", err)
 	}
 }
 

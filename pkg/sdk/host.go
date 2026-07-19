@@ -12,6 +12,7 @@ import (
 	"github.com/glyphux/glyphux/internal/identity"
 	"github.com/glyphux/glyphux/internal/media"
 	"github.com/glyphux/glyphux/internal/permission"
+	"github.com/glyphux/glyphux/pkg/blocks"
 	"github.com/glyphux/glyphux/pkg/contract"
 	"github.com/glyphux/glyphux/pkg/kernel"
 )
@@ -91,6 +92,16 @@ type KernelDeps struct {
 	// HostAPI behaves exactly as before — audit logging is strictly
 	// additive, never a hard dependency of the gating logic itself.
 	Audit *audit.Logger
+
+	// Blocks backs every plugin's RegisterBlock from this KernelDeps — the
+	// real, shared Layer-2 block registry (PRD §14 slice 4.2). Shared
+	// across every HostAPI built from the same KernelDeps, exactly like
+	// KV/Bus above, so block type names are a flat namespace across every
+	// plugin sharing one running daemon, not per-plugin. Left nil (the
+	// common case in tests exercising a single HostAPI's own
+	// RegisterBlock), NewHostAPI gives that single HostAPI its own private
+	// registry.
+	Blocks *blocks.Registry
 }
 
 // EventBus is the real, cross-plugin event bus underlying every HostAPI's
@@ -295,11 +306,15 @@ type HostAPI interface {
 type EventHandler func(ctx context.Context, payload any) error
 
 // BlockDef declares a Layer-2 layout block a plugin registers (PRD §8.3,
-// Phase-4 extension point). Rendering/slot mechanics belong to Phase 4;
-// this only records that registration happened and enforces this slice's
-// gate.
+// Phase-4 extension point) — the HostAPI-facing shape of a
+// pkg/blocks.Definition, kept as a distinct type so pkg/sdk's public
+// surface doesn't require every caller to import pkg/blocks just to call
+// RegisterBlock.
 type BlockDef struct {
-	Name string
+	Name        string
+	DisplayName string
+	Props       map[string]contract.Field
+	Slots       []string
 }
 
 // AdminPageDef declares an admin-UI page a plugin registers (requires the
@@ -327,9 +342,9 @@ type hostAPI struct {
 	permissions map[string]bool
 	adminPages  []AdminPageDef
 	jobs        []JobDef
-	blocks      []BlockDef
 	bus         *EventBus
 	kv          *MemoryKVBackend
+	blocks      *blocks.Registry
 }
 
 // NewHostAPI builds the HostAPI a plugin declaring manifest receives,
@@ -366,9 +381,13 @@ func NewHostAPI(manifest Manifest, deps KernelDeps) (HostAPI, error) {
 	if bus == nil {
 		bus = NewEventBus()
 	}
+	blockRegistry := deps.Blocks
+	if blockRegistry == nil {
+		blockRegistry = blocks.New()
+	}
 	return &hostAPI{
 		manifest: manifest, deps: deps, apiScope: scopes, permissions: perms, kv: kv,
-		bus: bus,
+		bus: bus, blocks: blockRegistry,
 	}, nil
 }
 
@@ -416,7 +435,12 @@ func (h *hostAPI) RegisterBlock(def BlockDef) error {
 		h.auditLog(nil, "hostapi.register_block", false, "content not declared")
 		return errors.New("content: " + ErrScopeNotDeclared.Error())
 	}
-	h.blocks = append(h.blocks, def)
+	if err := h.blocks.Register(blocks.Definition{
+		Name: def.Name, DisplayName: def.DisplayName, Props: def.Props, Slots: def.Slots,
+	}); err != nil {
+		h.auditLog(nil, "hostapi.register_block", false, err.Error())
+		return err
+	}
 	h.auditLog(nil, "hostapi.register_block", true, "name="+def.Name)
 	return nil
 }
