@@ -8,17 +8,36 @@ import (
 	"testing"
 )
 
-// TestCapabilityDeclarationCheck_VacuousOnRealRepo documents that invariant
-// 4 is currently dormant: there is no manifest file and no plugin/theme
-// code anywhere in this repo to scan, since Phase 1 has no manifest system.
-// This is deliberately not asserted as "no violations found" against a real
-// manifest — there is no real manifest to point the checker at yet.
-func TestCapabilityDeclarationCheck_VacuousOnRealRepo(t *testing.T) {
+// TestCapabilityDeclarationCheck_StillVacuousOnRealThemesTree re-evaluates
+// invariant 4 now that Phase 4 slice 4.3 made themes/ real (previously this
+// test asserted the directory didn't exist at all — see
+// docs/implementation/completed/0027 for the full account). Invariant 4 is
+// about a manifest declaring which capabilities plugin/theme code requests
+// at runtime (capabilityCallName, "RequireCapability") — but themes have no
+// such mechanism at all: PRD §9.1's hard law is that a theme is read-only
+// and never mutates composition, so it never calls into any
+// capability-gated API a manifest would need to declare (unlike a
+// pkg/sdk.Plugin, which does). This is proven for real, not just asserted:
+// scanning the actual themes/ tree with CheckCapabilityDeclarations
+// against an empty manifest reports zero violations, because no
+// RequireCapability-shaped call exists anywhere in themes/headless or
+// themes/starter's real code. Invariant 4 therefore remains dormant for
+// themes specifically — not because there's nothing to scan, but because
+// nothing scanned uses the pattern it checks for — which is a materially
+// different (and now real, not hypothetical) claim than before this slice.
+func TestCapabilityDeclarationCheck_StillVacuousOnRealThemesTree(t *testing.T) {
 	root := repoRoot(t)
-	for _, treeRoot := range pluginTreeRoots {
-		if _, err := os.Stat(filepath.Join(root, treeRoot)); err == nil {
-			t.Fatalf("expected no %q directory in Phase 1 — invariant 4 needs re-evaluating against real manifests now", treeRoot)
-		}
+	themesDir := filepath.Join(root, "themes")
+	if _, err := os.Stat(themesDir); err != nil {
+		t.Fatalf("expected a real themes/ directory to exist (Phase 4 slice 4.3) — got: %v", err)
+	}
+
+	violations, err := CheckCapabilityDeclarations(themesDir, ManifestStub{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 0 {
+		t.Errorf("expected zero RequireCapability-shaped calls anywhere under themes/ (themes have no capability-request mechanism, PRD §9.1), got: %v", violations)
 	}
 }
 
