@@ -23,7 +23,10 @@ compiled subprocess binary, not a mock.
 ## Status
 
 Complete for this slice's scope. `pkg/sdk` untouched (only imported).
-`pkg/runtime/wasm` untouched (parallel slice 2.4's territory).
+`pkg/runtime/wasm` untouched (parallel slice 2.4's territory). Merged into
+`dev`; independently re-verified via full repo build/vet/test -race after
+reconciling with the parallel 2.4/2.7 slices (a clean merge — no file
+overlap with either).
 
 ## Current Decisions
 

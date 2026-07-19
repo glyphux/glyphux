@@ -22,7 +22,13 @@ a call might do.
 
 ## Status
 
-In-flight (implementation complete, pending parent-session review/merge).
+Complete. Merged into `dev` (go.mod/go.sum auto-merged cleanly alongside
+slice 2.5's own new dependencies). Independently re-verified: full repo
+build/vet/test -race, plus a hand-driven program chaining the real consent
+engine (slice 2.7) → a real `sdk.HostAPI` → this runtime loading the actual
+compiled `events_guest.wasm` → a real emitted event reaching a real Go
+subscriber over the shared EventBus, and confirming the same guest refuses
+to instantiate against a manifest that doesn't declare `events:emit`.
 
 ## Current Decisions
 

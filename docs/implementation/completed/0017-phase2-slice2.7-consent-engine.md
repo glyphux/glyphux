@@ -23,7 +23,10 @@ not wire into either of them.
 
 ## Status
 
-Complete. Built and tested in this worktree; not yet merged into `dev`.
+Complete. Merged into `dev`; independently re-verified via full repo
+build/vet/test -race, and via a hand-driven program proving a real
+`consent.Engine`-approved manifest can actually be loaded by the slice 2.4
+WASM runtime end to end.
 
 ## Current Decisions
 
