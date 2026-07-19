@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { ContentTypeField } from "@glyphux/sdk";
 import { client } from "@/lib/client";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -25,12 +26,11 @@ export function FieldControl({
       return <Input id={id} value={typeof value === "string" ? value : ""} onChange={(e) => onChange(e.target.value)} />;
     case "richtext":
       return (
-        <textarea
+        <Textarea
           id={id}
           value={typeof value === "string" ? value : ""}
           onChange={(e) => onChange(e.target.value)}
           rows={6}
-          className="border-input bg-background text-body focus-visible:ring-ring/40 flex w-full rounded-md border px-3 py-2 shadow-xs outline-none focus-visible:ring-[3px]"
         />
       );
     case "number":

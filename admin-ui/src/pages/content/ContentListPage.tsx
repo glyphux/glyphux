@@ -10,6 +10,7 @@ import { useToast } from "@/lib/toast-context";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Pagination } from "@/components/ui/pagination";
 import { EmptyState } from "@/components/layout/EmptyState";
 import { ErrorState } from "@/components/layout/ErrorState";
 import { ListSkeleton } from "@/components/layout/ListSkeleton";
@@ -22,6 +23,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
+const PAGE_SIZE = 10;
+
 export function ContentListPage() {
   const { type } = useParams<{ type: string }>();
   const { user } = useAuth();
@@ -33,6 +36,7 @@ export function ContentListPage() {
   const [error, setError] = useState<unknown>(undefined);
   const [pendingDelete, setPendingDelete] = useState<ContentItem | undefined>(undefined);
   const [busyId, setBusyId] = useState<string | undefined>(undefined);
+  const [page, setPage] = useState(1);
 
   const load = useCallback(() => {
     if (!type) return;
@@ -40,12 +44,18 @@ export function ContentListPage() {
     setError(undefined);
     client.content
       .list(type)
-      .then(setItems)
+      .then((loaded) => {
+        setItems(loaded);
+        setPage(1);
+      })
       .catch(setError)
       .finally(() => setLoading(false));
   }, [type]);
 
   useEffect(load, [load]);
+
+  const totalPages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
+  const pageItems = items.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   if (!type) return <Navigate to="/content-types" replace />;
   if (!typesLoading && !types[type]) {
@@ -148,7 +158,7 @@ export function ContentListPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {items.map((item) => (
+            {pageItems.map((item) => (
               <TableRow key={item.id}>
                 {titleField && (
                   <TableCell className="font-medium">
@@ -196,6 +206,10 @@ export function ContentListPage() {
             ))}
           </TableBody>
         </Table>
+      )}
+
+      {!loading && !error && items.length > 0 && (
+        <Pagination page={page} totalPages={totalPages} onPageChange={setPage} />
       )}
 
       <Dialog open={!!pendingDelete} onOpenChange={(open) => !open && setPendingDelete(undefined)}>

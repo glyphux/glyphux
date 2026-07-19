@@ -12,6 +12,7 @@ import { ContentListPage } from "@/pages/content/ContentListPage";
 import { ContentFormPage } from "@/pages/content/ContentFormPage";
 import { MediaLibraryPage } from "@/pages/media/MediaLibraryPage";
 import { UsersPage } from "@/pages/users/UsersPage";
+import { DesignSystemPage } from "@/pages/design-system/DesignSystemPage";
 
 function App() {
   return (
@@ -34,6 +35,7 @@ function App() {
                   <Route path="content/:type/:id" element={<ContentFormPage />} />
                   <Route path="media" element={<MediaLibraryPage />} />
                   <Route path="users" element={<UsersPage />} />
+                  <Route path="design-system" element={<DesignSystemPage />} />
                 </Route>
               </Route>
             </Routes>

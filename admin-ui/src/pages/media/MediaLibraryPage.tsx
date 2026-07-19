@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/layout/EmptyState";
 import { ErrorState } from "@/components/layout/ErrorState";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Pagination } from "@/components/ui/pagination";
 import {
   Dialog,
   DialogContent,
@@ -29,6 +30,7 @@ function formatBytes(n: number): string {
 }
 
 const IMAGE_MIME = new Set(["image/png", "image/jpeg", "image/gif"]);
+const PAGE_SIZE = 20;
 
 /** Splits a comma-separated tags input into a trimmed, non-empty list —
  * the inverse of joining `MediaItem.tags` with ", " for display. */
@@ -64,6 +66,7 @@ export function MediaLibraryPage() {
   const [search, setSearch] = useState("");
   const [pendingDelete, setPendingDelete] = useState<MediaItem | undefined>(undefined);
   const [detail, setDetail] = useState<MediaItem | undefined>(undefined);
+  const [page, setPage] = useState(1);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const load = useCallback(() => {
@@ -79,6 +82,15 @@ export function MediaLibraryPage() {
   useEffect(load, [load]);
 
   const filteredItems = useMemo(() => items.filter((it) => matchesSearch(it, search)), [items, search]);
+
+  // Reset to page 1 whenever the search narrows/widens the result set, so
+  // a stale page number never lands on an out-of-range (now-empty) page.
+  useEffect(() => {
+    setPage(1);
+  }, [search, items]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredItems.length / PAGE_SIZE));
+  const pageItems = filteredItems.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   const onFilesSelected = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -182,7 +194,7 @@ export function MediaLibraryPage() {
       )}
       {!loading && !error && filteredItems.length > 0 && (
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-          {filteredItems.map((it) => (
+          {pageItems.map((it) => (
             <Card key={it.id} className="gap-2 p-3">
               <button
                 type="button"
@@ -226,6 +238,10 @@ export function MediaLibraryPage() {
             </Card>
           ))}
         </div>
+      )}
+
+      {!loading && !error && filteredItems.length > 0 && (
+        <Pagination page={page} totalPages={totalPages} onPageChange={setPage} />
       )}
 
       <Dialog open={!!pendingDelete} onOpenChange={(open) => !open && setPendingDelete(undefined)}>
