@@ -10,10 +10,16 @@ import (
 	"github.com/glyphux/glyphux/pkg/sdk"
 )
 
-// Package is a distributable unit of a plugin or theme (PRD §12.1: "the
-// same package machinery serves both plugins and themes; only the registry
-// namespace differs"), built directly on pkg/sdk.Manifest — the existing
-// extension-contract manifest type, not a parallel reinvention of it.
+// Package is a distributable unit of a plugin, theme, or (Ticket P4.7, PRD
+// §13.4) composition preset/bundle — "the same package machinery serves
+// [every artifact kind]; only the registry namespace and artifact shape
+// differ" (generalizing PRD §12.1's original "plugins and themes" framing
+// now that presets/bundles flow through it too). Built directly on
+// pkg/sdk.Manifest for the plugin/theme case — the existing
+// extension-contract manifest type, not a parallel reinvention of it — and
+// on pkg/contract.Manifest (embedded inside the preset/bundle artifact
+// itself) for the composition-artifact case; see Kind's doc comment and
+// this package's composition.go for the full reasoning.
 type Package struct {
 	// Name is the package's registry name. This is deliberately separate
 	// from Manifest.Name: the manifest's name is the plugin's own declared
@@ -25,18 +31,59 @@ type Package struct {
 	// Version is the package's own release version (semver), independent
 	// of Manifest.Version for the same reason as Name above.
 	Version string
+	// Kind discriminates what Artifact decodes to (added by Ticket P4.7;
+	// zero value "" is the original plugin/theme shape predating Kind's
+	// introduction — treated identically to KindPlugin). See ArtifactKind's
+	// doc comment (artifact_kind.go) for the full per-kind breakdown,
+	// including which kinds are exercised by real code today vs. documented
+	// as a structurally-supported-but-not-yet-wired extension point.
+	Kind ArtifactKind
+	// License is the artifact's declared license (PRD §13.4: "each carries
+	// a manifest with license..." — e.g. an SPDX identifier, or
+	// "proprietary" for a paid artifact with no open license). This package
+	// does not interpret or enforce License in any way beyond including it
+	// in the signed payload (tamper-evident, like every other field) — it
+	// is descriptive metadata for a future marketplace listing/admin view,
+	// not a gate this package's own logic branches on. Paid-artifact
+	// protection is entirely the entitlement-token mechanism
+	// (entitlement.go), independent of what License says.
+	License string
+	// RequiresCore is the running kernel version constraint this artifact
+	// declares (PRD §13.4: "requires.core"), in the same operator-prefixed
+	// semver format as pkg/sdk.Requires.Core (">=1.0.0", exact-match if no
+	// operator prefix — see CoreConstraintSatisfied). Checked against the
+	// installing host's kernel version at import time (PRD §13.4: "checked
+	// at publish and import"); empty means no declared constraint.
+	//
+	// This is deliberately a package-level field, not folded into
+	// Manifest/sdk.Manifest.Requires: for a preset/bundle (Kind ==
+	// KindPreset/KindBundle) there is no sdk.Manifest at all (see Kind's
+	// doc comment), so requires.core needs a home that exists for every
+	// kind uniformly. requires.contract, by contrast, has no such problem —
+	// pkg/contract.Manifest.RequiresContract (embedded in every
+	// CompositionPreset/CompositionBundle artifact already, since slice
+	// 4.6) already carries it for the composition-artifact kinds, and
+	// sdk.Manifest.Requires.Contract already carries it for the
+	// plugin/theme kind — so requires.contract is read from whichever of
+	// those two places Kind says to look, never duplicated here.
+	RequiresCore string
 	// Manifest is the plugin/theme's extension-contract manifest (PRD
 	// §7.3), included in the signed payload so a tampered manifest (e.g.
 	// smuggling in an extra Permission after review) is detected the same
-	// way a tampered artifact is.
+	// way a tampered artifact is. Only meaningful when Kind is KindPlugin
+	// or "" (legacy); zero-value and ignored for KindPreset/KindBundle,
+	// whose own compatibility-contract manifest instead lives inside the
+	// artifact bytes (see composition.go).
 	Manifest sdk.Manifest
-	// Artifact is the package's actual payload bytes (the compiled WASM
-	// module, the RPC plugin binary, or the theme archive). Only its
-	// SHA-256 hash is included in the signed payload (not the full bytes),
-	// so signing/verification cost stays proportional to a fixed-size
-	// digest rather than the artifact's own size — the artifact bytes
-	// still travel alongside the signature, but the signature itself
-	// commits to the hash.
+	// Artifact is the package's actual payload bytes: the compiled WASM
+	// module or RPC plugin binary (Kind == KindPlugin), or the JSON-encoded
+	// pkg/contract.CompositionPreset/CompositionBundle document (Kind ==
+	// KindPreset/KindBundle — see composition.go's PackagePreset/
+	// PackageBundle). Only its SHA-256 hash is included in the signed
+	// payload (not the full bytes), so signing/verification cost stays
+	// proportional to a fixed-size digest rather than the artifact's own
+	// size — the artifact bytes still travel alongside the signature, but
+	// the signature itself commits to the hash.
 	Artifact []byte
 }
 
@@ -88,9 +135,15 @@ func Verify(pub ed25519.PublicKey, sp SignedPackage) error {
 }
 
 // signingPayload builds the canonical byte payload signed/verified for pkg:
-// name, version, the manifest (JSON-encoded), and the artifact's SHA-256
-// hash (hex-encoded) — never the raw artifact bytes themselves, so payload
-// size stays bounded regardless of artifact size.
+// name, version, kind, license, requires-core, the manifest (JSON-encoded),
+// and the artifact's SHA-256 hash (hex-encoded) — never the raw artifact
+// bytes themselves, so payload size stays bounded regardless of artifact
+// size. Kind/License/RequiresCore were added by Ticket P4.7 alongside Name/
+// Version/Manifest/ArtifactHash's original fields — included in the signed
+// envelope for the same reason those are: a tampered field (e.g. quietly
+// changing a paid artifact's License to "free", or loosening RequiresCore
+// after review) must be caught by Verify exactly like a tampered artifact
+// byte or a tampered Permission already are.
 func signingPayload(pkg Package) ([]byte, error) {
 	manifestJSON, err := json.Marshal(pkg.Manifest)
 	if err != nil {
@@ -100,11 +153,17 @@ func signingPayload(pkg Package) ([]byte, error) {
 	envelope := struct {
 		Name         string          `json:"name"`
 		Version      string          `json:"version"`
+		Kind         ArtifactKind    `json:"kind"`
+		License      string          `json:"license"`
+		RequiresCore string          `json:"requires_core"`
 		Manifest     json.RawMessage `json:"manifest"`
 		ArtifactHash string          `json:"artifact_hash"`
 	}{
 		Name:         pkg.Name,
 		Version:      pkg.Version,
+		Kind:         pkg.Kind,
+		License:      pkg.License,
+		RequiresCore: pkg.RequiresCore,
 		Manifest:     manifestJSON,
 		ArtifactHash: fmt.Sprintf("%x", hash),
 	}
