@@ -290,6 +290,76 @@ push.
   the way `commerce`/`membership` scope their own operations, rather than
   each adapter reimplementing it.
 
+## Ticket P4.8 — AI authoring in the builder (Surface 2; follow-up to P3.6)
+
+**PRD anchor:** §14.1's four-surface table, row 2: "AI authoring inside the
+builder — Builder client feature — Phase 4 (needs builder)." §14.1's own
+paragraph: "**AI in the builder emits composition, not markup.** AI output
+is a Layer-2 composition fragment (blocks + presets) run through the *same
+validation path as a preset import* (§13.3) — so 'AI used a block you don't
+have' is a catchable, explainable condition, not silent breakage. This is
+the structural advantage over WordPress AI builders (which emit opaque
+markup)." Also PRD line 1173 (Phase 4 ticket list): "4.8 — AI authoring in
+the builder (optional, enhancement; §14.1 Surface 2): prompt-to-composition
+assistance that emits Layer-2 composition validated through the same path
+as preset import (4.6) — never opaque markup. Depends on the `ai`
+capability (3.6) and the builder existing; ships only as an enhancement
+once the builder is real."
+
+**Scope decision confirmed with the user:** dispatched only now that P3.6
+(the `ai` capability) has merged into `dev`, per the user's explicitly
+confirmed sequencing ("ai capability first, P4.8 as a follow-up").
+
+**Scope:**
+- A builder-facing feature — "describe what you want, get a composition
+  fragment back" — that calls `capabilities/ai`'s `Generate` (via the admin
+  server's own backend, since `ai.Service` is a Go-level API, not something
+  the browser SPA calls directly) with a prompt engineered to return a
+  JSON Layer-2 composition fragment (blocks + preset references) in the
+  shape `pkg/contract.CompositionPreset` (or a subset/fragment of it — the
+  implementing agent should look at what `internal/preset`'s existing
+  import path actually validates and target that same document shape) —
+  never raw markup, never a raw HTML/DOM string.
+- The returned fragment is run through **the exact same validation path an
+  ordinary preset import already uses** — `internal/preset.Store`'s
+  existing `Import`/validate machinery (`pkg/compat.CheckPreset`,
+  `blocks.ValidateLayout`, `contract.CompositionPreset.Validate`) — not a
+  parallel, AI-specific validation path. "AI used a block you don't have"
+  must fail exactly the way an incompatible preset import already fails
+  today (a `compat.Result` with real diagnostics), not a special-cased AI
+  error type.
+- A new admin-API endpoint (e.g. `POST /api/v0/ai/compose` or similar —
+  implementing agent's call, follow `internal/api`'s existing route-naming
+  convention) that: takes a principal + prompt + target route/theme
+  context, builds a scoped `sdk.HostAPI` for this call (declaring
+  `api: [ai: [generate]]` in its own manifest — the admin server itself
+  becomes the "calling plugin" for this purpose, exactly as it already is
+  for other first-party capability calls from `internal/api`, if that
+  precedent exists — investigate and follow it), calls
+  `ai.Service.Generate`, parses/validates the result via the preset-import
+  path above, and returns either a validated fragment + a preview (reusing
+  slice 4.5's `handleLayoutPreview`/`ValidateDraft` machinery so the admin
+  UI can render what the AI proposed before the user accepts it) or a
+  `compat.Result`-shaped rejection.
+- Gated behind whatever permission scope existing builder/preset endpoints
+  already require (e.g. `layouts:manage`/`presets:manage` — check
+  `internal/api/layouts.go` and the preset-handling endpoints for the
+  established convention) **plus** the `ai` capability's own
+  `ai:generate` scope and rate limit — this endpoint does not bypass either
+  gate.
+- Admin UI (Surface 2): a minimal panel/input in the builder (e.g. inside
+  `admin-ui/src/pages/builder/`) — a prompt text box, a "generate" action
+  calling the new endpoint, and a way to preview then accept/discard the
+  returned fragment (reusing `LivePreview.tsx`'s existing iframe-preview
+  pattern from slice 4.5 rather than building a new preview surface).
+  Rejected/incompatible results must show the real `compat.Result`
+  diagnostics to the user, not a generic error.
+- **Explicitly out of scope:** no AI agent/workflow execution (Surface 3,
+  Layer-3, Phase 5 — do not build anything resembling an autonomous
+  multi-step agent here); no "generate a whole site" one-shot flow beyond
+  a single fragment-at-a-time compose-and-review loop; no new provider
+  adapters (reuse P3.6's `ai` capability exactly as it ships today).
+
 ## Cross-cutting requirements (every ticket)
 
 - TDD per the `/tdd` skill: seams confirmed, behavior-first tests, real
