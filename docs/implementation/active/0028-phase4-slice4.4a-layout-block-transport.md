@@ -108,6 +108,27 @@ against the real compiled `glyphuxd` binary end-to-end (setup wizard, login,
   serialized over HTTP; the previous tag-less struct relied on Go's default
   field-name-as-key encoding, which nothing before this slice depended on.
 
+- **Post-review fix (independent `/code-review` audit against this
+  slice's own PR #10):** `internal/api/layouts.go`'s `writeLayoutError`
+  originally duplicated `contenttypes.go`'s `writeContentTypeError` in
+  full — both switches shared an identical tail (`permission.ErrDenied` →
+  403, `contract.ValidationErrors` → 422 with an issue list, unknown error →
+  logged + 500), differing only in which not-found sentinel each domain
+  uses and the log tag. Extracted the shared tail into
+  `(s *Server) writeDomainError(w, err, logTag string)` in a new
+  `internal/api/errors.go`; both `writeContentTypeError` and
+  `writeLayoutError` now check only their own domain-specific not-found
+  sentinel(s) before falling through to it. Two other Standards findings
+  from the same review were left as-is, by the reviewer's own explicit
+  call: `internal/layout.Store.Save`'s upsert SQL duplicates the same
+  shape already present in `internal/composition`/`internal/content` (real
+  duplication, but fixing it means touching already-stable, unrelated
+  store code well beyond this ticket's scope — a documented future-cleanup
+  candidate, not required here); and `WithLayouts(store, registry)`
+  bundling two parameters plus a one-line-vs-separate-line formatting
+  inconsistency in `permission.go`'s roles map, both flagged as
+  minor/marginal with no action needed.
+
 ## Open Questions — resolved
 
 - **Should layout writes support optimistic concurrency (CAS), like
@@ -143,6 +164,12 @@ against the real compiled `glyphuxd` binary end-to-end (setup wizard, login,
   `GET`/`PUT /api/v0/layouts/{route...}`).
 - `internal/api/layouts.go` (new) — `handleBlocksList`, `handleLayoutGet`,
   `handleLayoutPut`, `writeLayoutError`.
+- `internal/api/errors.go` (new, post-review) — `writeDomainError`, the
+  shared error-mapping tail `writeContentTypeError` and `writeLayoutError`
+  both call.
+- `internal/api/contenttypes.go` — `writeContentTypeError` shortened to
+  its own not-found-sentinel cases plus a fallthrough to `writeDomainError`
+  (post-review); unused `permission` import dropped.
 - `internal/api/layouts_test.go` (new) — 11 tests (`testServerWithLayouts`
   helper + blocks-list and layout GET/PUT coverage, including 404-when-
   unconfigured, multi-segment routes, validation-failure mapping, and the

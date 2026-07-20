@@ -6,7 +6,6 @@ import (
 	"net/http"
 
 	"github.com/glyphux/glyphux/internal/composition"
-	"github.com/glyphux/glyphux/internal/permission"
 	"github.com/glyphux/glyphux/pkg/contract"
 )
 
@@ -89,28 +88,16 @@ func (s *Server) handleContentTypeDelete(w http.ResponseWriter, r *http.Request)
 }
 
 // writeContentTypeError maps composition domain errors to HTTP status codes.
+// Its own not-found-shaped sentinels are checked here; everything else
+// (permission denial, structural validation, the unknown-error fallback) is
+// the identical tail writeDomainError shares with writeLayoutError.
 func (s *Server) writeContentTypeError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, composition.ErrContentTypeNotFound):
 		s.writeError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, composition.ErrNotFound):
 		s.writeError(w, http.StatusConflict, "setup not completed; visit /setup")
-	case errors.Is(err, permission.ErrDenied):
-		s.writeError(w, http.StatusForbidden, "insufficient permissions")
 	default:
-		var verrs contract.ValidationErrors
-		if errors.As(err, &verrs) {
-			issues := make([]string, len(verrs))
-			for i, v := range verrs {
-				issues[i] = v.Error()
-			}
-			s.writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
-				"error":  "validation failed",
-				"issues": issues,
-			})
-			return
-		}
-		s.log.Error("content type request", "error", err)
-		s.writeError(w, http.StatusInternalServerError, "internal error")
+		s.writeDomainError(w, err, "content type request")
 	}
 }

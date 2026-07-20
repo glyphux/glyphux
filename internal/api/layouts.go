@@ -5,7 +5,6 @@ import (
 	"net/http"
 
 	"github.com/glyphux/glyphux/internal/layout"
-	"github.com/glyphux/glyphux/internal/permission"
 	"github.com/glyphux/glyphux/pkg/blocks"
 	"github.com/glyphux/glyphux/pkg/contract"
 )
@@ -77,31 +76,17 @@ func (s *Server) handleLayoutPut(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, saved)
 }
 
-// writeLayoutError maps internal/layout domain errors to HTTP status codes,
-// mirroring writeContentTypeError's shape: not-found is 404, permission
-// denial is 403, and both flavors of validation failure (structural
-// contract.ValidationErrors and route-format errors, which layout.Store.Save
-// also reports as contract.ValidationErrors) are 422 with the issue list.
+// writeLayoutError maps internal/layout domain errors to HTTP status codes.
+// Its own not-found sentinel is checked here; everything else (permission
+// denial, both flavors of validation failure — structural
+// contract.ValidationErrors and route-format errors, which
+// layout.Store.Save also reports as contract.ValidationErrors — and the
+// unknown-error fallback) is the identical tail writeDomainError shares with
+// writeContentTypeError.
 func (s *Server) writeLayoutError(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, layout.ErrNotFound):
+	if errors.Is(err, layout.ErrNotFound) {
 		s.writeError(w, http.StatusNotFound, err.Error())
-	case errors.Is(err, permission.ErrDenied):
-		s.writeError(w, http.StatusForbidden, "insufficient permissions")
-	default:
-		var verrs contract.ValidationErrors
-		if errors.As(err, &verrs) {
-			issues := make([]string, len(verrs))
-			for i, v := range verrs {
-				issues[i] = v.Error()
-			}
-			s.writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
-				"error":  "validation failed",
-				"issues": issues,
-			})
-			return
-		}
-		s.log.Error("layout request", "error", err)
-		s.writeError(w, http.StatusInternalServerError, "internal error")
+		return
 	}
+	s.writeDomainError(w, err, "layout request")
 }
