@@ -1,10 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Image as ImageIcon, Search, Upload } from "lucide-react";
-import { GlyphuxApiError, type MediaItem } from "@glyphux/sdk";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Image as ImageIcon, Search } from "lucide-react";
+import type { MediaItem } from "@glyphux/sdk";
 import { client } from "@/lib/client";
-import { useToast } from "@/lib/toast-context";
 import { usePagination } from "@/lib/use-pagination";
-import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/layout/EmptyState";
@@ -13,6 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Pagination } from "@/components/ui/pagination";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { IMAGE_MIME, formatBytes, matchesSearch } from "./MediaLibraryPage";
+import { UploadButton } from "./UploadButton";
 
 const PAGE_SIZE = 12;
 
@@ -34,13 +33,10 @@ export function MediaPicker({
   onOpenChange: (open: boolean) => void;
   onSelect: (item: MediaItem) => void;
 }) {
-  const { toast } = useToast();
   const [items, setItems] = useState<MediaItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(undefined);
-  const [uploading, setUploading] = useState(false);
   const [search, setSearch] = useState("");
-  const fileInput = useRef<HTMLInputElement>(null);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -64,27 +60,6 @@ export function MediaPicker({
 
   const filteredItems = useMemo(() => items.filter((it) => matchesSearch(it, search)), [items, search]);
   const { page, setPage, totalPages, pageItems } = usePagination(filteredItems, PAGE_SIZE);
-
-  const onFilesSelected = async (files: FileList | null) => {
-    if (!files || files.length === 0) return;
-    setUploading(true);
-    try {
-      for (const file of Array.from(files)) {
-        await client.media.upload(file, file.name);
-      }
-      toast({ title: files.length > 1 ? `Uploaded ${files.length} files` : "Uploaded", variant: "success" });
-      load();
-    } catch (err) {
-      toast({
-        title: "Upload failed",
-        description: err instanceof GlyphuxApiError ? err.message : "Something went wrong.",
-        variant: "destructive",
-      });
-    } finally {
-      setUploading(false);
-      if (fileInput.current) fileInput.current.value = "";
-    }
-  };
 
   const choose = (item: MediaItem) => {
     onSelect(item);
@@ -111,19 +86,7 @@ export function MediaPicker({
               aria-label="Search media"
             />
           </div>
-          <input
-            ref={fileInput}
-            type="file"
-            multiple
-            accept="image/png,image/jpeg,image/gif"
-            className="sr-only"
-            tabIndex={-1}
-            aria-hidden="true"
-            onChange={(e) => onFilesSelected(e.target.files)}
-          />
-          <Button type="button" variant="outline" disabled={uploading} onClick={() => fileInput.current?.click()}>
-            <Upload /> {uploading ? "Uploading…" : "Upload"}
-          </Button>
+          <UploadButton onUploaded={load} variant="outline" />
         </div>
 
         {loading && (

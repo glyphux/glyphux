@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Image as ImageIcon, Search, Trash2, Upload } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Image as ImageIcon, Search, Trash2 } from "lucide-react";
 import { GlyphuxApiError, type MediaItem } from "@glyphux/sdk";
 import { client } from "@/lib/client";
 import { useAuth } from "@/lib/auth-context";
@@ -23,6 +23,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { UploadButton } from "./UploadButton";
 
 export function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -63,11 +64,9 @@ export function MediaLibraryPage() {
   const [items, setItems] = useState<MediaItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(undefined);
-  const [uploading, setUploading] = useState(false);
   const [search, setSearch] = useState("");
   const [pendingDelete, setPendingDelete] = useState<MediaItem | undefined>(undefined);
   const [detail, setDetail] = useState<MediaItem | undefined>(undefined);
-  const fileInput = useRef<HTMLInputElement>(null);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -88,27 +87,6 @@ export function MediaLibraryPage() {
   // reload, so a stale page number never lands on an out-of-range (now
   // empty) page without a separate effect here.
   const { page, setPage, totalPages, pageItems } = usePagination(filteredItems, PAGE_SIZE);
-
-  const onFilesSelected = async (files: FileList | null) => {
-    if (!files || files.length === 0) return;
-    setUploading(true);
-    try {
-      for (const file of Array.from(files)) {
-        await client.media.upload(file, file.name);
-      }
-      toast({ title: files.length > 1 ? `Uploaded ${files.length} files` : "Uploaded", variant: "success" });
-      load();
-    } catch (err) {
-      toast({
-        title: "Upload failed",
-        description: err instanceof GlyphuxApiError ? err.message : "Something went wrong.",
-        variant: "destructive",
-      });
-    } finally {
-      setUploading(false);
-      if (fileInput.current) fileInput.current.value = "";
-    }
-  };
 
   const confirmDelete = async () => {
     if (!pendingDelete) return;
@@ -134,27 +112,7 @@ export function MediaLibraryPage() {
           <h1 className="text-display">Media</h1>
           <p className="text-muted-foreground text-body mt-1">Upload and manage your media library.</p>
         </div>
-        {canWrite && (
-          <>
-            <input
-              ref={fileInput}
-              type="file"
-              multiple
-              accept="image/png,image/jpeg,image/gif"
-              className="sr-only"
-              tabIndex={-1}
-              aria-hidden="true"
-              onChange={(e) => onFilesSelected(e.target.files)}
-            />
-            {/* A real <button> (not a styled <label>) triggering the hidden
-             * input via ref — a <label for=...> has no implicit ARIA
-             * button role, so it wouldn't be announced or keyboard-operable
-             * as a control (WCAG 2.1 AA, PRD §5.7). */}
-            <Button type="button" disabled={uploading} onClick={() => fileInput.current?.click()}>
-              <Upload /> {uploading ? "Uploading…" : "Upload"}
-            </Button>
-          </>
-        )}
+        {canWrite && <UploadButton onUploaded={load} />}
       </div>
 
       {!loading && !error && items.length > 0 && (

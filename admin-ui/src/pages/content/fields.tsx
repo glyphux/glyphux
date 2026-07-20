@@ -164,7 +164,19 @@ function MediaField({ id, value, onChange }: { id: string; value: unknown; onCha
             {selectedId ? (selected?.filename ?? "Loading…") : "No media selected"}
           </p>
           <div className="flex gap-2">
-            <Button id={id} type="button" variant="outline" size="sm" onClick={() => setPickerOpen(true)}>
+            {/* aria-label pins the accessible name to this button's own
+             * action ("Change"/"Choose media") rather than letting the
+             * surrounding field's <label htmlFor={id}> (e.g. "src *" in
+             * the builder's PropsEditor) silently replace it — id is still
+             * set so that label click-to-focus keeps working. */}
+            <Button
+              id={id}
+              type="button"
+              variant="outline"
+              size="sm"
+              aria-label={selectedId ? "Change" : "Choose media"}
+              onClick={() => setPickerOpen(true)}
+            >
               {selectedId ? "Change" : "Choose media"}
             </Button>
             {selectedId && (

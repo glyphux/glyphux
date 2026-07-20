@@ -2,7 +2,9 @@
 
 ## Status
 
-Complete — PR opened onto `dev`, awaiting `/code-review` and merge.
+Complete — PR #12 opened onto `dev`; addressed both Standards findings from
+an independent `/code-review` audit (see "Code-review follow-up" below) and
+pushed the fixes to the same branch. Awaiting re-review and merge.
 
 ## Scope (recap)
 
@@ -69,6 +71,11 @@ image-provider integration (that's the separately-deferred ticket 3.7).
    had no direct test before this ticket — empty state, resolves/displays
    the selected item, picker-driven selection flows through `onChange`,
    clear flows through `onChange(undefined)`).
+5. `admin-ui/src/pages/media/useMediaUpload.ts` + `UploadButton.tsx` (added
+   in the code-review follow-up): the upload flow and its hidden-input-
+   plus-button markup, extracted out of `MediaLibraryPage.tsx` and shared
+   with `MediaPicker.tsx` rather than left duplicated — see "Code-review
+   follow-up" below.
 
 ## Shared-vs-builder-specific `FieldControl` decision
 
@@ -86,8 +93,59 @@ field both ultimately want "pick or upload an existing library asset, get
 back its id" — same interaction, same backend, same stored value shape.
 Fixing `MediaField` once inside the shared switch means the builder's
 `PropsEditor` gets the real picker automatically, with zero changes to
-`PropsEditor.tsx` itself (verified: its existing test suite,
-`PropsEditor.test.tsx`, still passes unmodified).
+`PropsEditor.tsx`'s own implementation. (An earlier draft of this doc
+claimed `PropsEditor.test.tsx`'s pre-existing suite "verified" this passes
+unmodified — true, but that suite only ever exercised a `type: "string"`
+prop and could not have caught a regression in the media-field path
+specifically. Corrected: see "Code-review follow-up" below, which adds a
+real `FieldMedia`-kind case to that file.)
+
+## Code-review follow-up
+
+An independent `/code-review` audit against PR #12 came back clean on the
+Spec axis (every claim above re-verified against the actual code and by
+re-running the full test suites in a clean worktree) but raised two
+Standards findings, both addressed in a follow-up push to the same branch:
+
+1. **Duplicated upload-handler logic** between `MediaPicker.tsx` and
+   `MediaLibraryPage.tsx` — the `onFilesSelected` handler (try/catch, toast
+   copy, finally-reset of the file input ref) and the hidden
+   `<input type="file">` + trigger-`<Button>` markup were copy-pasted
+   near-verbatim between the two files. Extracted into:
+   - `admin-ui/src/pages/media/useMediaUpload.ts`: the upload flow itself
+     (state, `client.media.upload` loop, toast, input-reset) as a hook
+     taking an `onUploaded` callback.
+   - `admin-ui/src/pages/media/UploadButton.tsx`: the hidden-input-plus-
+     button markup, built on the hook, taking `onUploaded` and passing
+     `variant`/`size` through to the underlying `Button` (the two call
+     sites style it differently — primary in `MediaLibraryPage`, outline
+     in `MediaPicker`).
+   Both `MediaLibraryPage.tsx` and `MediaPicker.tsx` now render
+   `<UploadButton onUploaded={load} .../>` instead of owning the flow
+   themselves — the same drift risk `formatBytes`/`matchesSearch`/
+   `IMAGE_MIME` were already exported to avoid, now closed for the more
+   bug-prone upload logic too.
+2. **Tracking-doc overclaim** — see the corrected paragraph above. Fixed by
+   adding a real regression test: `PropsEditor.test.tsx` now includes an
+   `image` block (`src: { type: "media", required: true }`) in its test
+   registry and a case that selects it, opens the picker via the "Choose
+   media" button, selects a fixture asset, and asserts the field re-
+   resolves and displays it (`client.media.get` called with the chosen id,
+   the button relabels to "Change"). This required wrapping the test
+   harness's `<Editor>`/`<Frame>` tree in a `<ToastProvider>` (`MediaPicker`
+   calls `useToast()` internally, which throws without one) and adding a
+   `vi.mock("@/lib/client", ...)` to the test file (previously unmocked,
+   since no prior case exercised a field that talks to the client).
+   This also surfaced and fixed a real accessibility bug in `MediaField`:
+   the "Choose media"/"Change" `<Button>` shared its `id` with the
+   `<Label htmlFor={fieldId}>` `PropsEditor`/content forms render above
+   it, which per accessible-name computation let the label's text (e.g.
+   `"src *"`) silently replace the button's own accessible name instead of
+   supplementing it — screen-reader users would have heard "src *" for
+   every media field's action button regardless of state, not "Choose
+   media" vs. "Change". Fixed with an explicit `aria-label` on the button
+   pinned to its own visible text, while keeping `id` so label-click-to-
+   focus still works.
 
 ## Go changes
 
@@ -105,10 +163,11 @@ in-tree media library.
 
 ## Verification
 
-- `admin-ui`: `npm run build` green; `npm test` — 23 files / 105 tests
-  passed (was 22 files / ~95 tests before this ticket's two new/changed
-  test files).
+- `admin-ui`: `npm run build` green; `npm test` — 23 files / 106 tests
+  passed (up from 105 after adding the `PropsEditor.test.tsx` `FieldMedia`
+  case in the code-review follow-up).
 - `sdk-js`: `npm test` — 7 files / 49 tests passed, including the
   pre-existing 14-test `media.test.ts` suite, unmodified and unaffected.
 - Go: `go build ./...`, `go vet ./...`, `go test -race ./...` all green
-  repo-wide (see above — no Go files changed).
+  repo-wide, both before and after the follow-up push (no Go files changed
+  at any point in this ticket).
