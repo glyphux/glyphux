@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@craftjs/core": "^0.2.12",
     "@glyphux/sdk": "file:../sdk-js",
     "@radix-ui/react-radio-group": "^1.4.3",
     "react": "^19.2.7",
