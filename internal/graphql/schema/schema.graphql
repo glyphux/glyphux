@@ -1,0 +1,167 @@
+# Glyphux GraphQL schema — a transport over the existing domain APIs
+# (internal/content, internal/composition, internal/media, internal/identity).
+# Grown incrementally, one query/mutation per TDD cycle; see
+# docs/implementation/active/0004-slice-1-12-graphql-transport.md.
+
+type Query {
+  "The declared content types (mirrors GET /api/v0/content-types)."
+  contentTypes: [ContentTypeDef!]!
+
+  """
+  A single content item (mirrors GET /api/v0/content/{type}/{id}). Drafts
+  are visible only to callers holding content:read_drafts; everyone else
+  sees published items only.
+  """
+  contentItem(type: String!, id: String!, locale: String): ContentItem
+
+  "All items of a type (mirrors GET /api/v0/content/{type})."
+  contentItems(type: String!, locale: String): [ContentItem!]!
+
+  "An item's version history, oldest first (mirrors GET .../versions)."
+  contentVersions(type: String!, id: String!): [ContentVersion!]!
+
+  "A single media asset (mirrors GET /api/v0/media/{id})."
+  mediaItem(id: String!): MediaItem
+
+  "Every stored media asset (mirrors GET /api/v0/media)."
+  mediaItems: [MediaItem!]!
+
+  "Every account (mirrors GET /api/v0/users; requires users:manage, admin-only)."
+  users: [User!]!
+}
+
+"An authenticated principal. Never carries credentials."
+type User {
+  id: ID!
+  email: String!
+  role: String!
+  "Whether TOTP MFA is enabled for this account."
+  mfaEnabled: Boolean!
+  "Whether this account can currently authenticate."
+  active: Boolean!
+}
+
+"""
+A stored media asset and its metadata. Upload is intentionally not exposed
+over GraphQL (see the tracking doc) — it is inherently multipart/binary and
+REST already covers it at POST /api/v0/media.
+"""
+type MediaItem {
+  id: String!
+  filename: String!
+  mimeType: String!
+  sizeBytes: Int!
+  width: Int!
+  height: Int!
+  altText: String!
+  tags: [String!]!
+  source: String!
+  attribution: String!
+  createdAt: String!
+  updatedAt: String!
+}
+
+"One immutable historical snapshot of a content item."
+type ContentVersion {
+  version: Int!
+  data: Map!
+  status: String!
+  createdAt: String!
+}
+
+type Mutation {
+  "Create a draft item (mirrors POST /api/v0/content/{type}; requires content:write)."
+  createContentItem(type: String!, data: Map!): ContentItem!
+
+  "Replace an item's data, recording a new version (requires content:write)."
+  updateContentItem(type: String!, id: String!, data: Map!): ContentItem!
+
+  "Delete an item (requires content:write)."
+  deleteContentItem(type: String!, id: String!): Boolean!
+
+  "Publish a draft item (requires content:publish)."
+  publishContentItem(type: String!, id: String!): ContentItem!
+
+  "Revert a published item to draft (requires content:publish)."
+  unpublishContentItem(type: String!, id: String!): ContentItem!
+
+  "Restore an item's data to an earlier version (requires content:write)."
+  rollbackContentItem(type: String!, id: String!, version: Int!): ContentItem!
+
+  """
+  Create a content type or replace an existing one's field set (mirrors PUT
+  /api/v0/content-types/{name}; requires content_types:manage, admin-only).
+  """
+  defineContentType(name: String!, fields: [FieldInput!]!): ContentTypeDef!
+
+  """
+  Remove a content type (mirrors DELETE /api/v0/content-types/{name});
+  requires content_types:manage. Rejected if items of that type still
+  exist.
+  """
+  removeContentType(name: String!): Boolean!
+
+  "Delete a media asset (mirrors DELETE /api/v0/media/{id}; requires media:write)."
+  deleteMediaItem(id: String!): Boolean!
+
+  "Create an account (mirrors POST /api/v0/users; requires users:manage, admin-only)."
+  createUser(email: String!, password: String!, role: String!): User!
+
+  """
+  Change an account's role (mirrors PATCH /api/v0/users/{id}/role; requires
+  users:manage, admin-only).
+  """
+  updateUserRole(id: ID!, role: String!): User!
+
+  """
+  Deactivate an account, revoking every session it currently holds and
+  blocking future logins (mirrors POST /api/v0/users/{id}/deactivate;
+  requires users:manage, admin-only).
+  """
+  deactivateUser(id: ID!): Boolean!
+
+  """
+  Re-enable a previously deactivated account (mirrors POST
+  /api/v0/users/{id}/reactivate; requires users:manage, admin-only).
+  """
+  reactivateUser(id: ID!): Boolean!
+}
+
+"Input shape for one field of a content type definition."
+input FieldInput {
+  name: String!
+  type: String!
+  required: Boolean = false
+  localized: Boolean = false
+  "Target content type name, required for relation fields."
+  to: String
+}
+
+"A single piece of content: a typed, identified JSON document."
+type ContentItem {
+  id: String!
+  type: String!
+  data: Map!
+  status: String!
+  version: Int!
+  createdAt: String!
+  updatedAt: String!
+}
+
+"A declared content type and its fields."
+type ContentTypeDef {
+  name: String!
+  fields: [FieldDef!]!
+}
+
+"A single typed field on a content type."
+type FieldDef {
+  name: String!
+  type: String!
+  required: Boolean!
+  localized: Boolean!
+  "Target content type name, present only for relation fields."
+  to: String
+}
+
+scalar Map

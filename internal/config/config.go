@@ -3,6 +3,11 @@
 // Precedence: defaults < config file (glyphux.yaml / glyphux.json) < environment.
 // Convention over configuration (Principle 10): every value has a sensible
 // default so `glyphuxd` boots with no config at all.
+//
+// Secret values (currently just the Postgres DSN) are read through the
+// single secret() function in secrets.go (slice 1.9) rather than a bare
+// os.Getenv call, naming the one seam a future real secrets manager would
+// need to change.
 package config
 
 import (
@@ -31,6 +36,41 @@ type Config struct {
 
 	// OpenBrowser controls whether first-run opens a local browser (Scenario 1).
 	OpenBrowser bool `json:"open_browser"`
+
+	// TrustProxyHeaders controls whether the wizard honors X-Forwarded-Proto
+	// when deciding if a remote request arrived over HTTPS (§6.4). Only
+	// enable this behind a reverse proxy known to set that header correctly
+	// and strip any client-supplied copy of it — otherwise a client can
+	// simply claim to be HTTPS.
+	TrustProxyHeaders bool `json:"trust_proxy_headers"`
+
+	// OAuth configures social login providers. Empty ClientID/ClientSecret
+	// means the provider is not offered — OAuth login is entirely optional,
+	// same as MFA (§ identity's Current Decisions doc).
+	OAuth OAuthConfig `json:"oauth"`
+
+	// PublicURL is this instance's externally-reachable base URL (e.g.
+	// "https://cms.example.com"), used to build the OAuth redirect_uri
+	// (must match what's registered with the provider). Defaults to
+	// "http://" + Addr, which only works for local/loopback testing.
+	PublicURL string `json:"public_url"`
+
+	// AllowedOrigins opts the daemon into CORS for exactly these origins —
+	// e.g. an external developer's frontend calling the API cross-origin
+	// (PRD's own headless-CMS positioning). Empty/unset by default,
+	// preserving the "no CORS ever" posture every response has today
+	// (slice 1.9): no wildcard support, on purpose — every allowed origin
+	// must be named explicitly.
+	AllowedOrigins []string `json:"allowed_origins"`
+}
+
+// OAuthConfig holds one provider's registered app credentials. Only GitHub
+// is wired into cmd/glyphuxd today (see internal/identity/oauth.go's doc
+// comment for why); the shape here is provider-specific on purpose so
+// adding a second provider is additive, not a rewrite of this struct.
+type OAuthConfig struct {
+	GitHubClientID     string `json:"github_client_id"`
+	GitHubClientSecret string `json:"github_client_secret"`
 }
 
 // DatabaseConfig selects and configures the database adapter.
@@ -80,7 +120,7 @@ func Load(path string) (Config, error) {
 	if v := os.Getenv("GLYPHUX_DB_DRIVER"); v != "" {
 		cfg.Database.Driver = v
 	}
-	if v := os.Getenv("GLYPHUX_DB_DSN"); v != "" {
+	if v, ok := secret("GLYPHUX_DB_DSN"); ok && v != "" {
 		cfg.Database.DSN = v
 	}
 	if v := os.Getenv("GLYPHUX_DB_MAX_OPEN_CONNS"); v != "" {
@@ -110,6 +150,31 @@ func Load(path string) (Config, error) {
 			return cfg, fmt.Errorf("GLYPHUX_OPEN_BROWSER: %w", err)
 		}
 		cfg.OpenBrowser = b
+	}
+	if v := os.Getenv("GLYPHUX_TRUST_PROXY_HEADERS"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return cfg, fmt.Errorf("GLYPHUX_TRUST_PROXY_HEADERS: %w", err)
+		}
+		cfg.TrustProxyHeaders = b
+	}
+	if v := os.Getenv("GLYPHUX_PUBLIC_URL"); v != "" {
+		cfg.PublicURL = v
+	}
+	if v := os.Getenv("GLYPHUX_OAUTH_GITHUB_CLIENT_ID"); v != "" {
+		cfg.OAuth.GitHubClientID = v
+	}
+	if v := os.Getenv("GLYPHUX_OAUTH_GITHUB_CLIENT_SECRET"); v != "" {
+		cfg.OAuth.GitHubClientSecret = v
+	}
+	if v := os.Getenv("GLYPHUX_ALLOWED_ORIGINS"); v != "" {
+		var origins []string
+		for _, o := range strings.Split(v, ",") {
+			if o = strings.TrimSpace(o); o != "" {
+				origins = append(origins, o)
+			}
+		}
+		cfg.AllowedOrigins = origins
 	}
 
 	if err := cfg.validate(); err != nil {

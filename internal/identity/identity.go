@@ -9,7 +9,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
-	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -68,9 +67,25 @@ func NewService(database *db.DB) *Service {
 // deliberately indistinguishable.
 var ErrInvalidCredentials = errors.New("invalid credentials")
 
+// ErrAccountDeactivated is returned by Authenticate for a deactivated
+// account with otherwise-correct credentials. Unlike ErrInvalidCredentials
+// this is deliberately distinguishable: the caller legitimately owns these
+// credentials, so telling them the account was deactivated (rather than
+// "wrong password") is not a credential-enumeration risk.
+var ErrAccountDeactivated = errors.New("account deactivated")
+
 // CreateAdmin creates the initial admin account. Called once by the wizard.
 func (s *Service) CreateAdmin(ctx context.Context, email, password string) error {
-	_, err := s.createAccount(ctx, email, password, permission.RoleAdmin)
+	_, err := s.createAccountWith(ctx, s.db, email, password, permission.RoleAdmin)
+	return err
+}
+
+// CreateAdminWith creates the initial admin account using q instead of the
+// service's own database handle — q is typically a transaction from
+// db.WithTx, so bootstrap can create the admin and save the initial
+// composition atomically: both commit together, or neither does.
+func (s *Service) CreateAdminWith(ctx context.Context, q db.Queryer, email, password string) error {
+	_, err := s.createAccountWith(ctx, q, email, password, permission.RoleAdmin)
 	return err
 }
 
@@ -81,10 +96,10 @@ func (s *Service) CreateUser(ctx context.Context, email, password, role string) 
 	if !permission.ValidRole(role) {
 		return nil, fmt.Errorf("unknown role %q", role)
 	}
-	return s.createAccount(ctx, email, password, role)
+	return s.createAccountWith(ctx, s.db, email, password, role)
 }
 
-func (s *Service) createAccount(ctx context.Context, email, password, role string) (*User, error) {
+func (s *Service) createAccountWith(ctx context.Context, q db.Queryer, email, password, role string) (*User, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	if email == "" || !strings.Contains(email, "@") {
 		return nil, fmt.Errorf("invalid email address")
@@ -103,22 +118,22 @@ func (s *Service) createAccount(ctx context.Context, email, password, role strin
 	// Query the id back explicitly rather than via Result.LastInsertId, which
 	// Postgres's driver does not implement (§11.6: the db abstraction must
 	// work identically on both engines).
-	_, err = s.db.Exec(ctx,
+	_, err = q.Exec(ctx,
 		`INSERT INTO users (email, password_hash, password_salt, role, created_at) VALUES (?, ?, ?, ?, ?)`,
 		email, hex.EncodeToString(hash), hex.EncodeToString(salt), role, time.Now().UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return nil, fmt.Errorf("create account: %w", err)
 	}
 	var id int64
-	if err := s.db.QueryRow(ctx, `SELECT id FROM users WHERE email = ?`, email).Scan(&id); err != nil {
+	if err := q.QueryRow(ctx, `SELECT id FROM users WHERE email = ?`, email).Scan(&id); err != nil {
 		return nil, fmt.Errorf("account id: %w", err)
 	}
-	return &User{ID: id, Email: email, Role: role}, nil
+	return &User{ID: id, Email: email, Role: role, Active: true}, nil
 }
 
 // ListUsers returns every account, oldest first.
 func (s *Service) ListUsers(ctx context.Context) ([]*User, error) {
-	rows, err := s.db.Query(ctx, `SELECT id, email, role FROM users ORDER BY id`)
+	rows, err := s.db.Query(ctx, `SELECT id, email, role, mfa_enabled, active FROM users ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list users: %w", err)
 	}
@@ -126,9 +141,12 @@ func (s *Service) ListUsers(ctx context.Context) ([]*User, error) {
 	var out []*User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.Email, &u.Role); err != nil {
+		var mfaEnabled, active int
+		if err := rows.Scan(&u.ID, &u.Email, &u.Role, &mfaEnabled, &active); err != nil {
 			return nil, fmt.Errorf("scan user: %w", err)
 		}
+		u.MFAEnabled = mfaEnabled != 0
+		u.Active = active != 0
 		out = append(out, &u)
 	}
 	return out, rows.Err()
@@ -144,9 +162,11 @@ func (s *Service) Verify(ctx context.Context, email, password string) error {
 // User is an authenticated principal — the identity the permission engine and
 // domain APIs reason about. It never carries credentials.
 type User struct {
-	ID    int64  `json:"id"`
-	Email string `json:"email"`
-	Role  string `json:"role"`
+	ID         int64  `json:"id"`
+	Email      string `json:"email"`
+	Role       string `json:"role"`
+	MFAEnabled bool   `json:"mfaEnabled"`
+	Active     bool   `json:"active"`
 }
 
 // Authenticate verifies credentials and returns the matching user, or
@@ -155,13 +175,14 @@ type User struct {
 func (s *Service) Authenticate(ctx context.Context, email, password string) (*User, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	var (
-		u                User
-		hashHex, saltHex string
+		u                  User
+		hashHex, saltHex   string
+		mfaEnabled, active int
 	)
 	err := s.db.QueryRow(ctx,
-		`SELECT id, email, role, password_hash, password_salt FROM users WHERE email = ?`, email).
-		Scan(&u.ID, &u.Email, &u.Role, &hashHex, &saltHex)
-	if errors.Is(err, sql.ErrNoRows) {
+		`SELECT id, email, role, password_hash, password_salt, mfa_enabled, active FROM users WHERE email = ?`, email).
+		Scan(&u.ID, &u.Email, &u.Role, &hashHex, &saltHex, &mfaEnabled, &active)
+	if errors.Is(err, db.ErrNoRows) {
 		return nil, ErrInvalidCredentials
 	}
 	if err != nil {
@@ -181,6 +202,11 @@ func (s *Service) Authenticate(ctx context.Context, email, password string) (*Us
 	}
 	if subtle.ConstantTimeCompare(got, want) != 1 {
 		return nil, ErrInvalidCredentials
+	}
+	u.MFAEnabled = mfaEnabled != 0
+	u.Active = active != 0
+	if !u.Active {
+		return nil, ErrAccountDeactivated
 	}
 	return &u, nil
 }

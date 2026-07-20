@@ -12,3 +12,6 @@ glyphuxd
 
 # Editor / OS
 .DS_Store
+
+# Agent worktrees (background-agent isolation scratch space)
+/.claude/

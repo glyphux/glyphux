@@ -20,6 +20,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/glyphux/glyphux/internal/permission"
 )
 
 // ErrUnsupportedType reports an upload whose MIME type is not in the allowed
@@ -36,15 +38,31 @@ var allowedTypes = map[string]string{
 
 // Item is a single stored media asset and its metadata.
 type Item struct {
-	ID        string    `json:"id"`
-	Filename  string    `json:"filename"`
-	MimeType  string    `json:"mime_type"`
-	SizeBytes int64     `json:"size_bytes"`
-	Width     int       `json:"width"`
-	Height    int       `json:"height"`
-	AltText   string    `json:"alt_text"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID          string    `json:"id"`
+	Filename    string    `json:"filename"`
+	MimeType    string    `json:"mime_type"`
+	SizeBytes   int64     `json:"size_bytes"`
+	Width       int       `json:"width"`
+	Height      int       `json:"height"`
+	AltText     string    `json:"alt_text"`
+	Tags        []string  `json:"tags"`
+	Source      string    `json:"source"`
+	Attribution string    `json:"attribution"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// MetadataUpdate is the set of editable fields on a stored media item —
+// alt text, tags, and source/attribution (PRD §11.4) — distinct from the
+// immutable upload-time fields (filename, dimensions, mime type). It is a
+// full replace, not a partial patch: the caller sends back every field it
+// wants kept, matching how the admin UI's edit dialog holds the whole
+// editable record in one form.
+type MetadataUpdate struct {
+	AltText     string
+	Tags        []string
+	Source      string
+	Attribution string
 }
 
 // API is the media domain API — the only sanctioned way for clients to touch
@@ -63,7 +81,13 @@ func NewAPI(items *Store, root string) *API {
 
 // Upload validates data's MIME type, decodes image dimensions where possible,
 // stores the bytes on the local-FS adapter, and records the metadata.
-func (a *API) Upload(ctx context.Context, filename, mimeType string, data []byte) (*Item, error) {
+// principal must hold media:write — checked here at the domain-API
+// boundary (PRD §10.5) independent of whether a transport handler already
+// checked; a nil principal (anonymous) is always denied.
+func (a *API) Upload(ctx context.Context, principal *permission.Principal, filename, mimeType string, data []byte) (*Item, error) {
+	if !permission.AllowsPrincipal(principal, permission.MediaWrite) {
+		return nil, permission.ErrDenied
+	}
 	ext, ok := allowedTypes[mimeType]
 	if !ok {
 		return nil, fmt.Errorf("%w: %q", ErrUnsupportedType, mimeType)
@@ -86,11 +110,11 @@ func (a *API) Upload(ctx context.Context, filename, mimeType string, data []byte
 	now := time.Now().UTC()
 	item := &Item{
 		ID: id, Filename: filename, MimeType: mimeType, SizeBytes: int64(len(data)),
-		Width: width, Height: height, CreatedAt: now, UpdatedAt: now,
+		Width: width, Height: height, Tags: []string{}, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := a.items.insert(ctx, record{
 		ID: id, Filename: filename, MimeType: mimeType, SizeBytes: item.SizeBytes,
-		Width: width, Height: height, StoragePath: storagePath,
+		Width: width, Height: height, StoragePath: storagePath, Tags: []string{},
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		_ = os.Remove(filepath.Join(a.root, storagePath))
@@ -122,8 +146,12 @@ func (a *API) List(ctx context.Context) ([]*Item, error) {
 }
 
 // Delete removes a media item's metadata and its stored file. Returns
-// ErrNotFound if it does not exist.
-func (a *API) Delete(ctx context.Context, id string) error {
+// ErrNotFound if it does not exist. principal must hold media:write,
+// checked here at the domain-API boundary.
+func (a *API) Delete(ctx context.Context, principal *permission.Principal, id string) error {
+	if !permission.AllowsPrincipal(principal, permission.MediaWrite) {
+		return permission.ErrDenied
+	}
 	r, err := a.items.getByID(ctx, id)
 	if err != nil {
 		return err
@@ -133,6 +161,23 @@ func (a *API) Delete(ctx context.Context, id string) error {
 	}
 	_ = os.Remove(filepath.Join(a.root, r.StoragePath))
 	return nil
+}
+
+// UpdateMetadata replaces id's editable metadata — alt text, tags, and
+// source/attribution — and returns the updated item. Returns ErrNotFound if
+// id does not exist. principal must hold media:write, checked here at the
+// domain-API boundary (PRD §10.5).
+func (a *API) UpdateMetadata(ctx context.Context, principal *permission.Principal, id string, update MetadataUpdate) (*Item, error) {
+	if !permission.AllowsPrincipal(principal, permission.MediaWrite) {
+		return nil, permission.ErrDenied
+	}
+	if _, err := a.items.getByID(ctx, id); err != nil {
+		return nil, err
+	}
+	if err := a.items.updateMetadata(ctx, id, update.AltText, update.Tags, update.Source, update.Attribution, time.Now().UTC()); err != nil {
+		return nil, err
+	}
+	return a.Get(ctx, id)
 }
 
 // Open returns a reader over a media item's stored bytes and its metadata.
@@ -159,37 +204,156 @@ func (a *API) StoragePath(item *Item) string {
 	return filepath.Join(a.root, r.StoragePath)
 }
 
-// Resize decodes a stored image and scales it to fit within (maxW, maxH),
-// preserving aspect ratio. A zero dimension is unconstrained. It returns the
-// re-encoded bytes and their content type; the stored original is untouched.
-func (a *API) Resize(ctx context.Context, id string, maxW, maxH int) ([]byte, string, error) {
-	rc, item, err := a.Open(ctx, id)
+// ErrInvalidTransform reports a malformed crop rectangle, an unsupported
+// rotation angle, or an unsupported output format requested of Transform.
+var ErrInvalidTransform = errors.New("invalid media transform")
+
+// TransformOptions describes an image transform pipeline applied in a fixed
+// order — crop, then rotate, then resize, then re-encode in an explicit
+// output format — so a caller can request any combination in one call, the
+// same way width/height have always been passed as HTTP query params on
+// the file-serving route. A zero value for a stage skips it: CropW == 0 &&
+// CropH == 0 skips crop, Rotate == 0 skips rotation, MaxW == 0 && MaxH == 0
+// skips resize, and Format == "" keeps the source's own encoding (jpeg
+// stays jpeg; anything else — png, gif — encodes as png), matching the
+// pre-existing behavior before Format became an explicit, overridable
+// parameter.
+type TransformOptions struct {
+	CropX, CropY, CropW, CropH int
+	Rotate                     int
+	MaxW, MaxH                 int
+	Format                     string
+}
+
+// Transform decodes a stored image and applies crop -> rotate -> resize ->
+// format-encode, in that order, returning the transformed bytes and the
+// content type that actually matches those bytes (not necessarily the
+// stored original's MIME type — a caller can request a different output
+// format than the source). The stored original is untouched.
+func (a *API) Transform(ctx context.Context, id string, opts TransformOptions) ([]byte, string, error) {
+	rc, _, err := a.Open(ctx, id)
 	if err != nil {
 		return nil, "", err
 	}
 	defer rc.Close()
 
-	src, format, err := image.Decode(rc)
+	src, srcFormat, err := image.Decode(rc)
 	if err != nil {
 		return nil, "", fmt.Errorf("decode media image: %w", err)
 	}
 
-	bounds := src.Bounds()
-	w, h := scaledDimensions(bounds.Dx(), bounds.Dy(), maxW, maxH)
-	dst := nearestNeighborResize(src, w, h)
+	img := src
+	if opts.CropW > 0 || opts.CropH > 0 {
+		img, err = cropImage(img, opts.CropX, opts.CropY, opts.CropW, opts.CropH)
+		if err != nil {
+			return nil, "", err
+		}
+	}
+
+	if opts.Rotate != 0 {
+		switch opts.Rotate {
+		case 90, 180, 270:
+			img = rotateImage(img, opts.Rotate)
+		default:
+			return nil, "", fmt.Errorf("%w: rotate must be 0, 90, 180, or 270, got %d", ErrInvalidTransform, opts.Rotate)
+		}
+	}
+
+	if opts.MaxW > 0 || opts.MaxH > 0 {
+		bounds := img.Bounds()
+		w, h := scaledDimensions(bounds.Dx(), bounds.Dy(), opts.MaxW, opts.MaxH)
+		img = nearestNeighborResize(img, w, h)
+	}
+
+	format := opts.Format
+	if format == "" {
+		if srcFormat == "jpeg" {
+			format = "jpeg"
+		} else {
+			format = "png"
+		}
+	}
 
 	var buf bytes.Buffer
 	switch format {
 	case "jpeg":
-		if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 85}); err != nil {
-			return nil, "", fmt.Errorf("encode resized jpeg: %w", err)
+		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 85}); err != nil {
+			return nil, "", fmt.Errorf("encode transformed jpeg: %w", err)
 		}
+		return buf.Bytes(), "image/jpeg", nil
+	case "png":
+		if err := png.Encode(&buf, img); err != nil {
+			return nil, "", fmt.Errorf("encode transformed png: %w", err)
+		}
+		return buf.Bytes(), "image/png", nil
 	default:
-		if err := png.Encode(&buf, dst); err != nil {
-			return nil, "", fmt.Errorf("encode resized png: %w", err)
+		return nil, "", fmt.Errorf("%w: format must be \"jpeg\" or \"png\", got %q", ErrInvalidTransform, format)
+	}
+}
+
+// cropImage returns the sub-rectangle (x, y, x+w, y+h) of src, relative to
+// its own bounds. Returns ErrInvalidTransform if the rectangle is empty or
+// falls outside src's bounds.
+func cropImage(src image.Image, x, y, w, h int) (image.Image, error) {
+	b := src.Bounds()
+	if w <= 0 || h <= 0 || x < 0 || y < 0 || x+w > b.Dx() || y+h > b.Dy() {
+		return nil, fmt.Errorf("%w: crop rect (%d,%d,%d,%d) out of bounds for %dx%d image", ErrInvalidTransform, x, y, w, h, b.Dx(), b.Dy())
+	}
+	rect := image.Rect(b.Min.X+x, b.Min.Y+y, b.Min.X+x+w, b.Min.Y+y+h)
+	// Use SubImage where the concrete type supports it (zero-copy view);
+	// fall back to a manual pixel copy for image.Image implementations that
+	// don't (e.g. some decoders' internal types).
+	type subImager interface {
+		SubImage(r image.Rectangle) image.Image
+	}
+	if si, ok := src.(subImager); ok {
+		return si.SubImage(rect), nil
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	for yy := 0; yy < h; yy++ {
+		for xx := 0; xx < w; xx++ {
+			dst.Set(xx, yy, src.At(rect.Min.X+xx, rect.Min.Y+yy))
 		}
 	}
-	return buf.Bytes(), item.MimeType, nil
+	return dst, nil
+}
+
+// rotateImage rotates src clockwise by degrees, which must be 90, 180, or
+// 270 (checked by the caller) — the increments the stdlib image package
+// makes cheap and lossless via pixel remapping; arbitrary angles would need
+// interpolation and introduce quality loss, which the pipeline doesn't need
+// for V1 (PRD §11.4's "rotate" is satisfied by fixed increments).
+func rotateImage(src image.Image, degrees int) image.Image {
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+	switch degrees {
+	case 90:
+		dst := image.NewRGBA(image.Rect(0, 0, h, w))
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
+				dst.Set(h-1-y, x, src.At(b.Min.X+x, b.Min.Y+y))
+			}
+		}
+		return dst
+	case 180:
+		dst := image.NewRGBA(image.Rect(0, 0, w, h))
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
+				dst.Set(w-1-x, h-1-y, src.At(b.Min.X+x, b.Min.Y+y))
+			}
+		}
+		return dst
+	case 270:
+		dst := image.NewRGBA(image.Rect(0, 0, h, w))
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
+				dst.Set(y, w-1-x, src.At(b.Min.X+x, b.Min.Y+y))
+			}
+		}
+		return dst
+	default:
+		return src
+	}
 }
 
 // scaledDimensions computes output dimensions that fit within maxW x maxH
@@ -236,9 +400,14 @@ func nearestNeighborResize(src image.Image, w, h int) *image.RGBA {
 }
 
 func recordToItem(r record) *Item {
+	tags := r.Tags
+	if tags == nil {
+		tags = []string{}
+	}
 	return &Item{
 		ID: r.ID, Filename: r.Filename, MimeType: r.MimeType, SizeBytes: r.SizeBytes,
 		Width: r.Width, Height: r.Height, AltText: r.AltText,
+		Tags: tags, Source: r.Source, Attribution: r.Attribution,
 		CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
 	}
 }

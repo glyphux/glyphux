@@ -61,6 +61,9 @@ func TestSessionCreateLookupRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Lookup: %v", err)
 	}
+	if !got.Active {
+		t.Error("Lookup should report an active account as active — regression check for a dropped active column")
+	}
 	if got.ID != u.ID || got.Role != "admin" {
 		t.Errorf("Lookup returned %+v, want id %d admin", got, u.ID)
 	}

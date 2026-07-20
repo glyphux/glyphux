@@ -2,7 +2,6 @@ package content
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -100,7 +99,7 @@ func (s *Store) getByID(ctx context.Context, typeName, id string) (record, error
 	err := s.db.QueryRow(ctx,
 		`SELECT id, type, data, status, version, created_at, updated_at FROM content_items WHERE type = ? AND id = ?`,
 		typeName, id).Scan(&r.ID, &r.Type, &r.Data, &r.Status, &r.Version, &created, &updated)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, db.ErrNoRows) {
 		return record{}, ErrNotFound
 	}
 	if err != nil {
@@ -119,6 +118,16 @@ func (s *Store) exists(ctx context.Context, typeName, id string) (bool, error) {
 		return false, fmt.Errorf("check content item: %w", err)
 	}
 	return n > 0, nil
+}
+
+func (s *Store) countByType(ctx context.Context, typeName string) (int, error) {
+	var n int
+	err := s.db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM content_items WHERE type = ?`, typeName).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count content items: %w", err)
+	}
+	return n, nil
 }
 
 func (s *Store) listByType(ctx context.Context, typeName string) ([]record, error) {
@@ -210,7 +219,7 @@ func (s *Store) getVersion(ctx context.Context, itemID string, version int) (ver
 	err := s.db.QueryRow(ctx,
 		`SELECT version, type, data, status, created_at FROM content_item_versions WHERE item_id = ? AND version = ?`,
 		itemID, version).Scan(&vr.Version, &vr.Type, &vr.Data, &vr.Status, &created)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, db.ErrNoRows) {
 		return versionRecord{}, ErrNotFound
 	}
 	if err != nil {
@@ -230,7 +239,7 @@ func (s *Store) delete(ctx context.Context, typeName, id string) error {
 	return affectedOrNotFound(res)
 }
 
-func affectedOrNotFound(res sql.Result) error {
+func affectedOrNotFound(res db.Result) error {
 	n, err := res.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("rows affected: %w", err)
