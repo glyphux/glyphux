@@ -24,13 +24,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
-function formatBytes(n: number): string {
+export function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-const IMAGE_MIME = new Set(["image/png", "image/jpeg", "image/gif"]);
+export const IMAGE_MIME = new Set(["image/png", "image/jpeg", "image/gif"]);
 const PAGE_SIZE = 20;
 
 /** Splits a comma-separated tags input into a trimmed, non-empty list —
@@ -45,7 +45,7 @@ function parseTags(input: string): string[] {
 /** Matches an item against a search query across filename, alt text, and
  * tags — client-side, since the library's list endpoint returns every item
  * unpaginated (internal/media.API.List) at a scale this is fine for. */
-function matchesSearch(item: MediaItem, query: string): boolean {
+export function matchesSearch(item: MediaItem, query: string): boolean {
   if (!query) return true;
   const q = query.toLowerCase();
   return (
