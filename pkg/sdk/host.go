@@ -281,6 +281,22 @@ type HostAPI interface {
 	// in this slice actually intercepts outbound traffic yet.
 	AllowsNetworkHost(host string) bool
 
+	// HasAPIScope reports whether this plugin's manifest declared capability
+	// with scope on its API axis — a generic decision primitive in the same
+	// spirit as AllowsNetworkHost, added by slice 3.6 (capabilities/ai) for
+	// capabilities whose domain API is exposed as free functions operating
+	// on a caller's own HostAPI (commerce/membership's established pattern:
+	// e.g. commerce.StartCheckout(ctx, host, gateway, req)) rather than as a
+	// dedicated HostAPI method like Content()/Users()/Media(). Those
+	// dedicated methods each already gate on the caller's declared scope
+	// internally (hasScope, unexported); HasAPIScope exposes that same
+	// check publicly so a capability package OUTSIDE pkg/sdk — one with no
+	// corresponding HostAPI method of its own, like capabilities/ai's
+	// Generate/Embed/Classify — can enforce "did the calling plugin declare
+	// api: [ai: [generate]]" against the specific host it was given,
+	// exactly as Content()/On()/Emit() already enforce their own scopes.
+	HasAPIScope(capability, scope string) bool
+
 	// RegisterContentType and RegisterBlock are the "Composition / content
 	// domain" registration calls (PRD §8.3) — structural declarations, not
 	// item-level CRUD (that's ContentAPI). Gated by the "content" api
@@ -512,6 +528,12 @@ func (h *hostAPI) AllowsNetworkHost(host string) bool {
 // hasScope reports whether the manifest declared capability with scope.
 func (h *hostAPI) hasScope(capability, scope string) bool {
 	return h.apiScope[capability][scope]
+}
+
+// HasAPIScope is the exported form of hasScope — see the HostAPI interface
+// doc comment for why this is public (slice 3.6, capabilities/ai).
+func (h *hostAPI) HasAPIScope(capability, scope string) bool {
+	return h.hasScope(capability, scope)
 }
 
 // RegisterAdminPage records def, or denies the call if the manifest did not
