@@ -1,7 +1,9 @@
 import { AuthResource } from "./auth.js";
+import { BlocksResource } from "./blocks.js";
 import { ContentResource } from "./content.js";
 import { ContentTypesResource } from "./content-types.js";
 import { HttpClient } from "./http.js";
+import { LayoutsResource } from "./layouts.js";
 import { MediaResource } from "./media.js";
 import { UsersResource } from "./users.js";
 
@@ -22,6 +24,8 @@ export class GlyphuxClient {
   readonly contentTypes: ContentTypesResource;
   readonly media: MediaResource;
   readonly users: UsersResource;
+  readonly blocks: BlocksResource;
+  readonly layouts: LayoutsResource;
 
   constructor(options: GlyphuxClientOptions) {
     this.http = new HttpClient(options.baseUrl, options.token);
@@ -30,6 +34,8 @@ export class GlyphuxClient {
     this.contentTypes = new ContentTypesResource(this.http);
     this.media = new MediaResource(this.http);
     this.users = new UsersResource(this.http);
+    this.blocks = new BlocksResource(this.http);
+    this.layouts = new LayoutsResource(this.http);
   }
 
   /** The bearer token currently in use, if any (set by auth.login() or the

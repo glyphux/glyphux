@@ -112,3 +112,37 @@ export interface MediaTransform {
   height?: number;
   format?: "jpeg" | "png";
 }
+
+/** A registered Layer-2 block type's prop schema and, for a container-shaped
+ * block, its named slots (pkg/blocks.Definition, PRD §14 slice 4.4a). A leaf
+ * block (e.g. "heading") simply has no `slots`. */
+export interface BlockDefinition {
+  name: string;
+  display_name: string;
+  props?: Record<string, ContentTypeField>;
+  slots?: string[];
+}
+
+/** One placed instance of a registered block type within a Layout
+ * (pkg/contract.Block). `slots`, for container-shaped blocks, holds nested
+ * blocks per named slot; a leaf block has no `slots`. */
+export interface LayoutBlock {
+  type: string;
+  props?: Record<string, unknown>;
+  slots?: Record<string, LayoutBlock[]>;
+}
+
+/** A named placement area within a layout/template — e.g. "header", "main",
+ * "sidebar", "footer" (pkg/contract.Region). */
+export interface LayoutRegion {
+  blocks: LayoutBlock[];
+}
+
+/** The Layer-2 root document: the arrangement of blocks across a
+ * route/template's named regions (pkg/contract.Layout, PRD §14 slice 4.4a).
+ * Always send back the full document — PUT is a whole-document replace, not
+ * a per-region patch. */
+export interface Layout {
+  contract_version: string;
+  regions: Record<string, LayoutRegion>;
+}
