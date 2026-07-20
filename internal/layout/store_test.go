@@ -41,6 +41,42 @@ func validLayout() *contract.Layout {
 	}
 }
 
+// ValidateDraft is the shared validation sequence both Store.Save and
+// internal/api's live-preview endpoint (Ticket P4.5) call — these tests
+// pin its exact behavior (structural first, then registry-existence)
+// independently of Store.Save's own tests below, which already exercise it
+// indirectly through Save.
+
+func TestValidateDraftAcceptsAValidLayout(t *testing.T) {
+	_, reg := testStore(t)
+	if err := layout.ValidateDraft(validLayout(), reg); err != nil {
+		t.Fatalf("ValidateDraft(valid) = %v, want nil", err)
+	}
+}
+
+func TestValidateDraftRejectsStructurallyInvalidLayout(t *testing.T) {
+	_, reg := testStore(t)
+	bad := &contract.Layout{ContractVersion: "wrong-version"}
+	var verrs contract.ValidationErrors
+	if err := layout.ValidateDraft(bad, reg); !errors.As(err, &verrs) {
+		t.Fatalf("ValidateDraft(structurally invalid) = %v, want contract.ValidationErrors", err)
+	}
+}
+
+func TestValidateDraftRejectsUnregisteredBlockType(t *testing.T) {
+	_, reg := testStore(t)
+	l := &contract.Layout{
+		ContractVersion: contract.LayoutCompositionV1,
+		Regions: map[string]contract.Region{
+			"main": {Blocks: []contract.Block{{Type: "does-not-exist"}}},
+		},
+	}
+	var verrs contract.ValidationErrors
+	if err := layout.ValidateDraft(l, reg); !errors.As(err, &verrs) {
+		t.Fatalf("ValidateDraft(unregistered block type) = %v, want contract.ValidationErrors", err)
+	}
+}
+
 func TestLoadReturnsErrNotFoundBeforeAnySave(t *testing.T) {
 	s, _ := testStore(t)
 	_, err := s.Load(context.Background(), "home")

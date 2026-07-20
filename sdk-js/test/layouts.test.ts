@@ -97,4 +97,71 @@ describe("layouts", () => {
     const loaded = await anon.layouts.get(route);
     expect(loaded.regions.main.blocks[0].props?.text).toBe("Public");
   });
+
+  describe("preview()", () => {
+    it("renders an unsaved draft through the real starter theme", async () => {
+      const client = await adminClient();
+      const preview = await client.layouts.preview(headingLayout("Draft heading"));
+      expect(preview.html).toContain("<h1>Draft heading</h1>");
+      expect(preview.contentType).toBe("text/html; charset=utf-8");
+    });
+
+    it("does not persist the previewed draft", async () => {
+      const client = await adminClient();
+      const route = `never-saved-${Date.now()}`;
+
+      let caught: unknown;
+      try {
+        await client.layouts.get(route);
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(GlyphuxApiError);
+      expect((caught as GlyphuxApiError).status).toBe(404);
+
+      await client.layouts.preview(headingLayout("Not persisted"));
+
+      let caughtAfter: unknown;
+      try {
+        await client.layouts.get(route);
+      } catch (err) {
+        caughtAfter = err;
+      }
+      expect(caughtAfter).toBeInstanceOf(GlyphuxApiError);
+      expect((caughtAfter as GlyphuxApiError).status).toBe(404);
+    });
+
+    it("with an unregistered block type throws a typed 422 error", async () => {
+      const client = await adminClient();
+
+      let caught: unknown;
+      try {
+        await client.layouts.preview({
+          contract_version: "layout-composition/v1",
+          regions: { main: { blocks: [{ type: "does-not-exist" }] } },
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeInstanceOf(GlyphuxApiError);
+      expect((caught as GlyphuxApiError).status).toBe(422);
+      expect((caught as GlyphuxApiError).issues?.length).toBeGreaterThan(0);
+    });
+
+    it("without authentication throws a typed 401 error", async () => {
+      const env = testEnv();
+      const client = new GlyphuxClient({ baseUrl: env.baseUrl });
+
+      let caught: unknown;
+      try {
+        await client.layouts.preview(headingLayout("x"));
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeInstanceOf(GlyphuxApiError);
+      expect((caught as GlyphuxApiError).status).toBe(401);
+    });
+  });
 });
