@@ -246,6 +246,50 @@ model, node tree, and serialization to/from `contract.Layout`.
 (4.8 AI authoring in the builder is deferred — it depends on the deferred
 3.6 `ai` capability.)
 
+## Ticket P3.6 — `ai` capability (originally deferred; now taken up)
+
+**PRD anchor:** §14 in full ("AI Integration") — "AI is never a kernel
+concern and never a privileged surface." §14.1's four-surface table:
+Surface 1 ("AI for the products users build") is the `ai` capability in
+the §7 sense, first-party, can land alongside notifications (Phase 3).
+§14.2 ("Provider-Agnostic by Adapter"): Claude/OpenAI/Ollama/local models
+are swappable adapters behind a stable internal contract, "the same
+discipline as database, storage, and payment adapters" — no provider's
+specifics leak above the adapter boundary.
+
+**Scope decision confirmed with the user (this round):** originally
+deferred alongside 3.7 `stock-media`; now taken up on its own, ahead of
+Ticket P4.8 (AI authoring in the builder, Surface 2), which depends on it
+and is dispatched as a separate follow-up ticket once this one merges —
+matching the Ticket DS → builder pacing precedent, not bundled into one
+push.
+
+**Scope:**
+- An `ai` capability (`capabilities/ai`) implementing `sdk.Plugin` like
+  every other first-party capability (`forms`/`notifications`/`seo`/
+  `commerce`/`membership`) — depends on `content` and `events` per §14.1,
+  exposes scoped domain APIs: `generate` (text completion), `embed`
+  (embeddings), `classify` (classification) — a plugin wanting AI declares
+  `api: [ai: [generate]]` (etc.) and receives a scoped, rate-limited
+  surface, never a raw API key or raw network to the provider (allowlisted
+  through the capability, mirroring commerce/membership's
+  `host.AllowsNetworkHost` gate before any outbound call).
+- A provider-adapter contract (the "stable internal contract" §14.2 calls
+  for) that all provider adapters implement — swappable, no
+  provider-specific shape leaking above it.
+- **Adapters to build, confirmed with the user:** a real Claude adapter, a
+  real OpenAI (ChatGPT) adapter, a real Google Gemini adapter, and a
+  generic OpenAI-API-compatible adapter (covers self-hosted/local models —
+  Ollama and others — that speak the OpenAI chat-completions wire shape).
+  All four proven against **local, httptest-based fake-provider test
+  servers** replicating each real API's request/response shape — no live
+  API keys used or required, the same no-live-credentials discipline
+  established for commerce's payment gateway (Ticket P3.3).
+- Rate-limiting/scoping is this capability's job, not each adapter's — the
+  implementing agent should design this against the domain-API boundary
+  the way `commerce`/`membership` scope their own operations, rather than
+  each adapter reimplementing it.
+
 ## Cross-cutting requirements (every ticket)
 
 - TDD per the `/tdd` skill: seams confirmed, behavior-first tests, real
