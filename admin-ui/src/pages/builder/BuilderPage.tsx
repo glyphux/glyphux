@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
 import { ErrorState } from "@/components/layout/ErrorState";
 import { resolver } from "./nodes";
+import { LivePreview } from "./LivePreview";
 import { Palette } from "./Palette";
 import { PropsEditor } from "./PropsEditor";
 import { TreeView } from "./TreeView";
@@ -88,7 +89,7 @@ export function BuilderPage() {
 
       {!canManage && (
         <p className="text-muted-foreground text-small">
-          You can view this layout but don't have permission to save changes.
+          You can view this layout but don't have permission to save changes or render a live preview.
         </p>
       )}
 
@@ -102,6 +103,14 @@ export function BuilderPage() {
               <TreeView />
             </div>
           </div>
+          {/* Live preview requires layouts:manage — POST /api/v0/layouts/preview
+              is gated identically to save() (see LayoutsResource.preview's
+              own doc comment), so a non-manage viewer would just get a 403
+              on every debounced request. Skipping the request entirely and
+              explaining why (above) matches this repo's "no silently-broken
+              affordance" convention rather than showing a perpetual error
+              state. */}
+          {canManage && <LivePreview />}
           {canManage && <SaveBar route={route} />}
         </BlockRegistryProvider>
       </Editor>
