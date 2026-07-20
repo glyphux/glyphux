@@ -11,7 +11,8 @@ export type Capability =
   | "content:publish"
   | "media:write"
   | "users:manage"
-  | "content_types:manage";
+  | "content_types:manage"
+  | "layouts:manage";
 
 const ROLE_CAPABILITIES: Record<string, Set<Capability>> = {
   admin: new Set([
@@ -22,6 +23,7 @@ const ROLE_CAPABILITIES: Record<string, Set<Capability>> = {
     "media:write",
     "users:manage",
     "content_types:manage",
+    "layouts:manage",
   ]),
   editor: new Set(["content:read", "content:read_drafts", "content:write", "media:write"]),
   viewer: new Set(["content:read"]),

@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import { FileText, Image, LayoutDashboard, LogOut, Menu, Palette, Shapes, Users, X } from "lucide-react";
+import { FileText, Image, LayoutDashboard, LayoutTemplate, LogOut, Menu, Palette, Shapes, Users, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useContentTypes } from "@/lib/use-content-types";
 import { allows } from "@/lib/permissions";
@@ -64,6 +64,9 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
       )}
 
       <div className="mt-4 flex flex-col gap-1">
+        <NavItem to="/builder" onClick={onNavigate}>
+          <LayoutTemplate className="size-4" /> Builder
+        </NavItem>
         <NavItem to="/media" onClick={onNavigate}>
           <Image className="size-4" /> Media
         </NavItem>

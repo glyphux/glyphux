@@ -13,6 +13,7 @@ import { ContentFormPage } from "@/pages/content/ContentFormPage";
 import { MediaLibraryPage } from "@/pages/media/MediaLibraryPage";
 import { UsersPage } from "@/pages/users/UsersPage";
 import { DesignSystemPage } from "@/pages/design-system/DesignSystemPage";
+import { BuilderPage } from "@/pages/builder/BuilderPage";
 
 function App() {
   return (
@@ -33,6 +34,8 @@ function App() {
                   <Route path="content/:type" element={<ContentListPage />} />
                   <Route path="content/:type/new" element={<ContentFormPage />} />
                   <Route path="content/:type/:id" element={<ContentFormPage />} />
+                  <Route path="builder" element={<BuilderPage />} />
+                  <Route path="builder/*" element={<BuilderPage />} />
                   <Route path="media" element={<MediaLibraryPage />} />
                   <Route path="users" element={<UsersPage />} />
                   <Route path="design-system" element={<DesignSystemPage />} />
