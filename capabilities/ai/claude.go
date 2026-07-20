@@ -1,11 +1,8 @@
 package ai
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"sort"
@@ -74,13 +71,6 @@ type claudeResponse struct {
 	Content    []claudeContentBlock `json:"content"`
 }
 
-type claudeErrorEnvelope struct {
-	Error struct {
-		Type    string `json:"type"`
-		Message string `json:"message"`
-	} `json:"error"`
-}
-
 // Generate performs a real Anthropic Messages API request.
 func (a *ClaudeAdapter) Generate(ctx context.Context, req GenerateRequest) (*GenerateResponse, error) {
 	maxTokens := req.MaxTokens
@@ -127,42 +117,16 @@ func (a *ClaudeAdapter) Classify(ctx context.Context, req ClassifyRequest) (*Cla
 	return &ClassifyResponse{Label: matchLabel(genResp.Text, req.Labels), Model: genResp.Model}, nil
 }
 
-// doJSON POSTs body as JSON to path against a.baseURL, decoding a 2xx
-// response into out or returning a formatted error built from the real
-// Anthropic error envelope shape on failure.
+// doJSON POSTs body as JSON to path against a.baseURL with this provider's
+// real auth headers (x-api-key, anthropic-version), delegating the actual
+// marshal/POST/status-check/error-envelope-decode cycle to the shared
+// httpJSON transport (transport.go) every adapter in this package uses.
 func (a *ClaudeAdapter) doJSON(ctx context.Context, path string, body any, out any) error {
-	data, err := json.Marshal(body)
-	if err != nil {
-		return fmt.Errorf("ai: claude adapter: encode request: %w", err)
+	headers := map[string]string{
+		"x-api-key":         a.apiKey,
+		"anthropic-version": claudeAPIVersion,
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL+path, bytes.NewReader(data))
-	if err != nil {
-		return fmt.Errorf("ai: claude adapter: build request: %w", err)
-	}
-	httpReq.Header.Set("content-type", "application/json")
-	httpReq.Header.Set("x-api-key", a.apiKey)
-	httpReq.Header.Set("anthropic-version", claudeAPIVersion)
-
-	resp, err := a.client.Do(httpReq)
-	if err != nil {
-		return fmt.Errorf("ai: claude adapter: request: %w", err)
-	}
-	defer resp.Body.Close()
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("ai: claude adapter: read response: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		var envelope claudeErrorEnvelope
-		if err := json.Unmarshal(respBody, &envelope); err == nil && envelope.Error.Message != "" {
-			return fmt.Errorf("ai: claude adapter: %s: %s", envelope.Error.Type, envelope.Error.Message)
-		}
-		return fmt.Errorf("ai: claude adapter: unexpected status %d: %s", resp.StatusCode, string(respBody))
-	}
-	if err := json.Unmarshal(respBody, out); err != nil {
-		return fmt.Errorf("ai: claude adapter: decode response: %w", err)
-	}
-	return nil
+	return httpJSON(ctx, a.client, a.baseURL+path, headers, body, out, "ai: claude adapter")
 }
 
 // classificationGenerateRequest builds the shared constrained-output

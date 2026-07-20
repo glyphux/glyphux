@@ -7,16 +7,18 @@
 // exactly like capabilities/commerce and capabilities/membership's own
 // gateway calls).
 //
-// This package follows capabilities/commerce's precedent closely: a
-// Plugin wraps the one configured Adapter and implements sdk.Plugin
-// (Manifest/Register); the actual domain API (Service.Generate/Embed/
-// Classify) is exposed as methods a CALLING plugin invokes directly,
-// passing ITS OWN sdk.HostAPI (built from ITS OWN manifest declaring
-// api: [ai: [generate]] etc.) — mirroring commerce.StartCheckout(ctx, host,
-// gateway, req) and membership.ProcessRenewal(ctx, host, gateway, id)'s
-// established shape of "free functions/methods over an explicit host
-// parameter," not a new pkg/sdk.HostAPI method. See service.go's own doc
-// comment for the full boundary this enforces.
+// This package follows capabilities/commerce's precedent for the sdk.Plugin
+// shell (Manifest/Register), but the actual domain API
+// (Service.Generate/Embed/Classify) is related to, but structurally
+// distinct from, commerce/membership's pure-free-function pattern (e.g.
+// commerce.StartCheckout(ctx, host, gateway, req)) — Service is a stateful
+// holder for Adapter+Limits configuration that a CALLING plugin invokes
+// methods on, still passing ITS OWN sdk.HostAPI (built from ITS OWN
+// manifest declaring api: [ai: [generate]] etc.) as an explicit per-call
+// parameter, which preserves the same "no bypass of the caller's own
+// manifest scope" property those free functions have. See service.go's own
+// doc comment for the full boundary this enforces and why Service is a
+// stateful type rather than a plain function.
 //
 // Runtime tier and other judgment calls (including the OpenAI-vs-OpenAI-
 // compatible adapter design decision) are documented in this slice's

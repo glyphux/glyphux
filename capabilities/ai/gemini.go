@@ -1,11 +1,8 @@
 package ai
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -85,14 +82,6 @@ type geminiEmbedResponse struct {
 	Embedding geminiEmbedding `json:"embedding"`
 }
 
-type geminiErrorEnvelope struct {
-	Error struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-		Status  string `json:"status"`
-	} `json:"error"`
-}
-
 // Generate performs a real Gemini generateContent request.
 func (a *GeminiAdapter) Generate(ctx context.Context, req GenerateRequest) (*GenerateResponse, error) {
 	body := geminiGenerateRequest{
@@ -141,38 +130,10 @@ func (a *GeminiAdapter) Classify(ctx context.Context, req ClassifyRequest) (*Cla
 
 // doJSON POSTs body as JSON to path against a.baseURL with the API key as a
 // query parameter (Gemini's real authentication shape — see this type's
-// doc comment), decoding a 2xx response into out or returning a formatted
-// error built from the real Gemini error envelope shape on failure.
+// doc comment), delegating the actual marshal/POST/status-check/
+// error-envelope-decode cycle to the shared httpJSON transport
+// (transport.go) every adapter in this package uses.
 func (a *GeminiAdapter) doJSON(ctx context.Context, path string, body any, out any) error {
-	data, err := json.Marshal(body)
-	if err != nil {
-		return fmt.Errorf("ai: gemini adapter: encode request: %w", err)
-	}
 	reqURL := a.baseURL + path + "?key=" + url.QueryEscape(a.apiKey)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader(data))
-	if err != nil {
-		return fmt.Errorf("ai: gemini adapter: build request: %w", err)
-	}
-	httpReq.Header.Set("content-type", "application/json")
-
-	resp, err := a.client.Do(httpReq)
-	if err != nil {
-		return fmt.Errorf("ai: gemini adapter: request: %w", err)
-	}
-	defer resp.Body.Close()
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("ai: gemini adapter: read response: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		var envelope geminiErrorEnvelope
-		if err := json.Unmarshal(respBody, &envelope); err == nil && envelope.Error.Message != "" {
-			return fmt.Errorf("ai: gemini adapter: %s: %s", envelope.Error.Status, envelope.Error.Message)
-		}
-		return fmt.Errorf("ai: gemini adapter: unexpected status %d: %s", resp.StatusCode, string(respBody))
-	}
-	if err := json.Unmarshal(respBody, out); err != nil {
-		return fmt.Errorf("ai: gemini adapter: decode response: %w", err)
-	}
-	return nil
+	return httpJSON(ctx, a.client, reqURL, nil, body, out, "ai: gemini adapter")
 }

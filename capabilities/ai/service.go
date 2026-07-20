@@ -33,14 +33,21 @@ func requireAPIScope(host sdk.HostAPI, capability, scope string) error {
 // Service is the scoped, rate-limited AI surface a calling plugin gets
 // (PRD §14.1: "a plugin wanting AI declares api: [ai: [generate]] ... and
 // receives a scoped, rate-limited surface"). It is deliberately a value the
-// caller holds and calls methods on, not a HostAPI method — mirroring
-// capabilities/commerce and capabilities/membership's own established
-// pattern of free functions/methods that take the CALLING plugin's own
-// sdk.HostAPI as an explicit parameter (e.g.
+// caller holds and calls methods on, not a HostAPI method — a design
+// related to, but structurally distinct from, capabilities/commerce and
+// capabilities/membership's pure-free-function pattern (e.g.
 // commerce.StartCheckout(ctx, host, gateway, req),
-// membership.ProcessRenewal(ctx, host, gateway, subscriptionID)) rather
-// than growing pkg/sdk's own HostAPI interface with a provider-specific
-// method surface. Every method:
+// membership.ProcessRenewal(ctx, host, gateway, subscriptionID), neither of
+// which has a persistent object holding gateway/config across calls).
+// Service is a stateful holder for Adapter+Limits configuration that
+// callers invoke methods on, rather than a plain function — rate-limit
+// configuration benefits from living in one place a caller can adjust
+// once (Plugin.Service.Limits) rather than threading it through every
+// call site. Every Service method still takes the CALLING plugin's own
+// sdk.HostAPI as an explicit per-call parameter, never growing pkg/sdk's
+// own HostAPI interface with a provider-specific method surface — which is
+// what preserves the same "no bypass of the caller's own manifest scope"
+// property those free functions have. Every method:
 //  1. Checks the caller's host declared the corresponding "ai" api scope
 //     (HasAPIScope) — never a bypass of the manifest's own consent.
 //  2. Checks host.AllowsNetworkHost(Adapter.AllowlistHost()) — never a raw
@@ -97,65 +104,66 @@ type ClassifiedEvent struct {
 	Label string
 }
 
+// callGated is the one shared seam Generate/Embed/Classify each funnel
+// through — the four-step gate sequence (scope check, network-host check,
+// rate limit, adapter call) plus best-effort event emission would
+// otherwise be repeated three times over, differing only by operation
+// name/limit/event name/error-wrap string. Mirrors
+// capabilities/notifications.dispatch's existing use of a generic helper
+// in this codebase for the same reason: one seam, however many operations
+// grow to share its shape. call is a method value off Adapter (e.g.
+// s.Adapter.Generate); emit is called with the successful response only
+// (never on error), and is expected to itself call emitIfDeclared.
+func callGated[Req, Resp any](
+	ctx context.Context,
+	host sdk.HostAPI,
+	adapterHost string,
+	operation string,
+	limit RateLimit,
+	req Req,
+	call func(context.Context, Req) (*Resp, error),
+	emit func(*Resp),
+) (*Resp, error) {
+	if err := requireAPIScope(host, "ai", operation); err != nil {
+		return nil, err
+	}
+	if !host.AllowsNetworkHost(adapterHost) {
+		return nil, fmt.Errorf("%w: %q", ErrProviderHostNotAllowed, adapterHost)
+	}
+	if err := checkRateLimit(ctx, host, operation, limit); err != nil {
+		return nil, err
+	}
+	resp, err := call(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("ai: %s: %w", operation, err)
+	}
+	emit(resp)
+	return resp, nil
+}
+
 // Generate performs a text-completion request, gated on ai:generate,
 // network allowlisting, and this Service's Limits.Generate budget — see
 // Service's own doc comment for the full boundary.
 func (s *Service) Generate(ctx context.Context, host sdk.HostAPI, req GenerateRequest) (*GenerateResponse, error) {
-	if err := requireAPIScope(host, "ai", "generate"); err != nil {
-		return nil, err
-	}
-	if !host.AllowsNetworkHost(s.Adapter.AllowlistHost()) {
-		return nil, fmt.Errorf("%w: %q", ErrProviderHostNotAllowed, s.Adapter.AllowlistHost())
-	}
-	if err := checkRateLimit(ctx, host, "generate", s.Limits.Generate); err != nil {
-		return nil, err
-	}
-	resp, err := s.Adapter.Generate(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("ai: generate: %w", err)
-	}
-	emitIfDeclared(ctx, host, "ai.generated", GeneratedEvent{Model: resp.Model, FinishReason: resp.FinishReason})
-	return resp, nil
+	return callGated(ctx, host, s.Adapter.AllowlistHost(), "generate", s.Limits.Generate, req, s.Adapter.Generate, func(resp *GenerateResponse) {
+		emitIfDeclared(ctx, host, "ai.generated", GeneratedEvent{Model: resp.Model, FinishReason: resp.FinishReason})
+	})
 }
 
 // Embed computes an embedding vector, gated on ai:embed, network
 // allowlisting, and this Service's Limits.Embed budget.
 func (s *Service) Embed(ctx context.Context, host sdk.HostAPI, req EmbedRequest) (*EmbedResponse, error) {
-	if err := requireAPIScope(host, "ai", "embed"); err != nil {
-		return nil, err
-	}
-	if !host.AllowsNetworkHost(s.Adapter.AllowlistHost()) {
-		return nil, fmt.Errorf("%w: %q", ErrProviderHostNotAllowed, s.Adapter.AllowlistHost())
-	}
-	if err := checkRateLimit(ctx, host, "embed", s.Limits.Embed); err != nil {
-		return nil, err
-	}
-	resp, err := s.Adapter.Embed(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("ai: embed: %w", err)
-	}
-	emitIfDeclared(ctx, host, "ai.embedded", EmbeddedEvent{Model: resp.Model, Dims: len(resp.Vector)})
-	return resp, nil
+	return callGated(ctx, host, s.Adapter.AllowlistHost(), "embed", s.Limits.Embed, req, s.Adapter.Embed, func(resp *EmbedResponse) {
+		emitIfDeclared(ctx, host, "ai.embedded", EmbeddedEvent{Model: resp.Model, Dims: len(resp.Vector)})
+	})
 }
 
 // Classify picks one of req.Labels, gated on ai:classify, network
 // allowlisting, and this Service's Limits.Classify budget.
 func (s *Service) Classify(ctx context.Context, host sdk.HostAPI, req ClassifyRequest) (*ClassifyResponse, error) {
-	if err := requireAPIScope(host, "ai", "classify"); err != nil {
-		return nil, err
-	}
-	if !host.AllowsNetworkHost(s.Adapter.AllowlistHost()) {
-		return nil, fmt.Errorf("%w: %q", ErrProviderHostNotAllowed, s.Adapter.AllowlistHost())
-	}
-	if err := checkRateLimit(ctx, host, "classify", s.Limits.Classify); err != nil {
-		return nil, err
-	}
-	resp, err := s.Adapter.Classify(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("ai: classify: %w", err)
-	}
-	emitIfDeclared(ctx, host, "ai.classified", ClassifiedEvent{Model: resp.Model, Label: resp.Label})
-	return resp, nil
+	return callGated(ctx, host, s.Adapter.AllowlistHost(), "classify", s.Limits.Classify, req, s.Adapter.Classify, func(resp *ClassifyResponse) {
+		emitIfDeclared(ctx, host, "ai.classified", ClassifiedEvent{Model: resp.Model, Label: resp.Label})
+	})
 }
 
 // SummarizeContentItem is the one concrete, tested use of this capability's
