@@ -18,6 +18,7 @@ import (
 	"github.com/glyphux/glyphux/blocks/firstparty"
 	"github.com/glyphux/glyphux/internal/api"
 	"github.com/glyphux/glyphux/internal/bootstrap"
+	"github.com/glyphux/glyphux/internal/bundle"
 	"github.com/glyphux/glyphux/internal/composition"
 	"github.com/glyphux/glyphux/internal/config"
 	"github.com/glyphux/glyphux/internal/content"
@@ -26,6 +27,7 @@ import (
 	"github.com/glyphux/glyphux/internal/identity"
 	"github.com/glyphux/glyphux/internal/layout"
 	"github.com/glyphux/glyphux/internal/media"
+	"github.com/glyphux/glyphux/internal/preset"
 	"github.com/glyphux/glyphux/internal/server"
 	"github.com/glyphux/glyphux/internal/setup"
 	"github.com/glyphux/glyphux/pkg/blocks"
@@ -58,6 +60,8 @@ func run() error {
 	migrations = append(migrations, content.Migrations...)
 	migrations = append(migrations, media.Migrations...)
 	migrations = append(migrations, layout.Migrations...)
+	migrations = append(migrations, preset.Migrations...)
+	migrations = append(migrations, bundle.Migrations...)
 
 	boot, err := bootstrap.Boot(ctx, bootstrap.Options{
 		DataDir:           cfg.DataDir,
@@ -122,10 +126,13 @@ func buildFullHandler(cfg config.Config, log *slog.Logger) bootstrap.BuildFullHa
 			return nil, fmt.Errorf("register first-party blocks: %w", err)
 		}
 		layoutStore := layout.NewStore(database)
+		presetStore := preset.NewStore(database)
+		bundleStore := bundle.NewStore(database)
 
 		apiOpts := []api.Option{
 			api.TrustProxyHeaders(cfg.TrustProxyHeaders),
 			api.WithLayouts(layoutStore, blockRegistry),
+			api.WithPresets(presetStore, bundleStore),
 		}
 		if oauthMgr := githubOAuthManager(cfg); oauthMgr != nil {
 			apiOpts = append(apiOpts, api.WithOAuth(oauthMgr, publicURL(cfg)))

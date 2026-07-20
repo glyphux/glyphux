@@ -10,7 +10,7 @@ func TestAdminHoldsEveryCapability(t *testing.T) {
 	for _, c := range []permission.Capability{
 		permission.ContentRead, permission.ContentReadDrafts, permission.ContentWrite,
 		permission.ContentPublish, permission.MediaWrite, permission.UsersManage,
-		permission.ContentTypesManage, permission.LayoutsManage,
+		permission.ContentTypesManage, permission.LayoutsManage, permission.PresetsManage,
 	} {
 		if !permission.Allows(permission.RoleAdmin, c) {
 			t.Errorf("admin should hold %s", c)
@@ -33,6 +33,15 @@ func TestOnlyAdminHoldsLayoutsManage(t *testing.T) {
 	}
 	if permission.Allows(permission.RoleViewer, permission.LayoutsManage) {
 		t.Error("viewer should not hold layouts:manage")
+	}
+}
+
+func TestOnlyAdminHoldsPresetsManage(t *testing.T) {
+	if permission.Allows(permission.RoleEditor, permission.PresetsManage) {
+		t.Error("editor should not hold presets:manage")
+	}
+	if permission.Allows(permission.RoleViewer, permission.PresetsManage) {
+		t.Error("viewer should not hold presets:manage")
 	}
 }
 

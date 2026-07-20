@@ -68,6 +68,20 @@ func New(registry *blocks.Registry) *Theme {
 // Name identifies this theme as "starter".
 func (t *Theme) Name() string { return "starter" }
 
+// declaredRegions is starter's own compatibility-contract declaration (PRD
+// §9.2, §13.3) of the regions it is designed around, matching the four
+// example region names its own package doc discusses. Render itself stays
+// generically permissive about any region name present in a given Layout
+// (see pageTemplate's doc comment) for forward-compatibility with a Layout
+// authored against a not-yet-declared region — Regions() is what a
+// Composition Preset/Bundle's Manifest.Slots is checked against at import
+// time, a stricter, explainable-up-front declaration than "whatever happens
+// to render."
+var declaredRegions = []string{"header", "main", "sidebar", "footer"}
+
+// Regions returns starter's declared region names — see declaredRegions.
+func (t *Theme) Regions() []string { return declaredRegions }
+
 // pageTemplate is the outer HTML document every route renders into: one
 // <section> per Layer-2 region (in stable, sorted-by-name order — Layout.
 // Regions is a Go map, which has no iteration order of its own, and

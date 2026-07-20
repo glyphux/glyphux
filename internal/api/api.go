@@ -11,12 +11,14 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/glyphux/glyphux/internal/bundle"
 	"github.com/glyphux/glyphux/internal/composition"
 	"github.com/glyphux/glyphux/internal/content"
 	"github.com/glyphux/glyphux/internal/identity"
 	"github.com/glyphux/glyphux/internal/layout"
 	"github.com/glyphux/glyphux/internal/media"
 	"github.com/glyphux/glyphux/internal/permission"
+	"github.com/glyphux/glyphux/internal/preset"
 	"github.com/glyphux/glyphux/pkg/blocks"
 )
 
@@ -32,6 +34,8 @@ type Server struct {
 	oauthRedirectBase string
 	layouts           *layout.Store
 	blocks            *blocks.Registry
+	presets           *preset.Store
+	bundles           *bundle.Store
 	log               *slog.Logger
 	loginLimiter      *loginLimiter
 	trustProxyHeaders bool
@@ -83,6 +87,30 @@ func WithLayouts(store *layout.Store, registry *blocks.Registry) Option {
 	}
 }
 
+// WithPresets enables the Composition Preset/Bundle transport (PRD §13.2/
+// §13.3, Ticket P4.6): GET/POST /api/v0/presets, GET /api/v0/presets/{id},
+// GET /api/v0/presets/{id}/check, POST /api/v0/presets/{id}/import, and the
+// equivalent /api/v0/bundles routes. presetStore and bundleStore are the
+// daemon's real, shared internal/preset.Store and internal/bundle.Store.
+//
+// Requires WithLayouts to have also been configured — a preset/bundle
+// import merges into a Layout, so this option is meaningless without a live
+// *layout.Store and *blocks.Registry already wired in; New itself performs
+// no such check (mirroring every other Option's "just an assignment, no
+// cross-option validation" convention), but omitting WithLayouts alongside
+// this one leaves every preset/bundle handler's own s.layouts/s.blocks nil
+// guard 404ing instead of working.
+//
+// Omitting this option (the zero value) leaves the new routes 404ing,
+// mirroring WithLayouts/WithOAuth's identical "opt-in, 404 unless
+// configured" precedent.
+func WithPresets(presetStore *preset.Store, bundleStore *bundle.Store) Option {
+	return func(s *Server) {
+		s.presets = presetStore
+		s.bundles = bundleStore
+	}
+}
+
 // New builds the API transport over the given domain APIs.
 func New(comps *composition.Store, contentAPI *content.API, mediaAPI *media.API, identities *identity.Service, sessions *identity.Sessions, log *slog.Logger, opts ...Option) *Server {
 	s := &Server{
@@ -121,6 +149,23 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v0/blocks", s.handleBlocksList)
 	mux.HandleFunc("GET /api/v0/layouts/{route...}", s.handleLayoutGet)
 	mux.HandleFunc("PUT /api/v0/layouts/{route...}", s.requireCSRF(s.requireCapability(permission.LayoutsManage, s.handleLayoutPut)))
+
+	// Composition Presets & Bundles (slice 4.6, PRD §13.2/§13.3): reads and
+	// compatibility checks are public, same reasoning as blocks/layouts
+	// above; saving and importing (which mutates Layouts, and for bundles,
+	// creates sample content) require presets:manage and CSRF. 404s if
+	// WithPresets wasn't configured.
+	mux.HandleFunc("GET /api/v0/presets", s.handlePresetsList)
+	mux.HandleFunc("POST /api/v0/presets", s.requireCSRF(s.requireCapability(permission.PresetsManage, s.handlePresetCreate)))
+	mux.HandleFunc("GET /api/v0/presets/{id}", s.handlePresetGet)
+	mux.HandleFunc("GET /api/v0/presets/{id}/check", s.handlePresetCheck)
+	mux.HandleFunc("POST /api/v0/presets/{id}/import", s.requireCSRF(s.requireCapability(permission.PresetsManage, s.handlePresetImport)))
+
+	mux.HandleFunc("GET /api/v0/bundles", s.handleBundlesList)
+	mux.HandleFunc("POST /api/v0/bundles", s.requireCSRF(s.requireCapability(permission.PresetsManage, s.handleBundleCreate)))
+	mux.HandleFunc("GET /api/v0/bundles/{id}", s.handleBundleGet)
+	mux.HandleFunc("GET /api/v0/bundles/{id}/check", s.handleBundleCheck)
+	mux.HandleFunc("POST /api/v0/bundles/{id}/import", s.requireCSRF(s.requireCapability(permission.PresetsManage, s.handleBundleImport)))
 
 	// Authentication (slice 1.7). Login has no session cookie yet on a
 	// fresh visit, so requireCSRF is a no-op there; it still protects an

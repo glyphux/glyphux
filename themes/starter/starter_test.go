@@ -63,6 +63,19 @@ func TestNameIsStarter(t *testing.T) {
 	}
 }
 
+func TestRegionsDeclaresTheFourCanonicalRegions(t *testing.T) {
+	got := starter.New(testRegistry(t)).Regions()
+	want := []string{"header", "main", "sidebar", "footer"}
+	if len(got) != len(want) {
+		t.Fatalf("Regions() = %v, want %v", got, want)
+	}
+	for i, name := range want {
+		if got[i] != name {
+			t.Fatalf("Regions() = %v, want %v", got, want)
+		}
+	}
+}
+
 func TestRenderErrorsWithoutLayout(t *testing.T) {
 	th := starter.New(testRegistry(t))
 	view := theme.NewCompositionView(nil, nil)
