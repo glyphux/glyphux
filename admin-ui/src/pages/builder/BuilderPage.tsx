@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
 import { ErrorState } from "@/components/layout/ErrorState";
 import { resolver } from "./nodes";
+import { AIComposePanel } from "./AIComposePanel";
 import { LivePreview } from "./LivePreview";
 import { Palette } from "./Palette";
 import { PropsEditor } from "./PropsEditor";
@@ -122,6 +123,19 @@ export function BuilderPage() {
               <SavePresetBar />
             </div>
           )}
+          {/* AI compose (Ticket P4.8) requires the same layouts:manage +
+              presets:manage gate POST /api/v0/ai/compose enforces server-side
+              (internal/api/ai.go's own doc comment) — a non-manage viewer
+              would just get a 403, so this is hidden entirely rather than
+              shown broken, mirroring LivePreview's identical reasoning
+              above. onAccepted reloads this route's Layout from the server
+              (load, already defined above) — accepting persists directly via
+              PresetsResource.save()/import(), so the in-editor draft must be
+              refreshed from storage to reflect it; going through the
+              existing loading-spinner gate remounts the Editor/Frame tree
+              with the freshly reloaded data (Frame only reads its `data` prop
+              on mount, per LivePreview.tsx's own note). */}
+          {canManage && <AIComposePanel route={route} onAccepted={load} />}
         </BlockRegistryProvider>
       </Editor>
     </div>

@@ -240,3 +240,16 @@ export interface BundleImportResult {
   created_content?: ContentRef[];
   content_errors?: string[];
 }
+
+/** The result of POST /api/v0/ai/compose (internal/api's aiComposeResponse,
+ * Ticket P4.8, PRD §14.1 Surface 2): CompatResult's fields appear at the top
+ * level (never wrapped) — the identical shape a preset check/import already
+ * returns, so an incompatible AI proposal ("used a block you don't have")
+ * renders with the exact same diagnostic UI as an incompatible preset
+ * import, not a bespoke AI error. `fragment`/`preview` are only present when
+ * `compatible` is true — check `.compatible` first, exactly like
+ * BundleImportResult above. */
+export interface AIComposeResult extends CompatResult {
+  fragment?: CompositionPreset;
+  preview?: { html: string; content_type: string };
+}

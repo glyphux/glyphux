@@ -1,3 +1,4 @@
+import { AiResource } from "./ai.js";
 import { AuthResource } from "./auth.js";
 import { BlocksResource } from "./blocks.js";
 import { BundlesResource } from "./bundles.js";
@@ -30,6 +31,7 @@ export class GlyphuxClient {
   readonly layouts: LayoutsResource;
   readonly presets: PresetsResource;
   readonly bundles: BundlesResource;
+  readonly ai: AiResource;
 
   constructor(options: GlyphuxClientOptions) {
     this.http = new HttpClient(options.baseUrl, options.token);
@@ -42,6 +44,7 @@ export class GlyphuxClient {
     this.layouts = new LayoutsResource(this.http);
     this.presets = new PresetsResource(this.http);
     this.bundles = new BundlesResource(this.http);
+    this.ai = new AiResource(this.http);
   }
 
   /** The bearer token currently in use, if any (set by auth.login() or the
