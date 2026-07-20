@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/glyphux/glyphux/capabilities/ai"
 	"github.com/glyphux/glyphux/internal/bundle"
 	"github.com/glyphux/glyphux/internal/composition"
 	"github.com/glyphux/glyphux/internal/content"
@@ -36,6 +37,7 @@ type Server struct {
 	blocks            *blocks.Registry
 	presets           *preset.Store
 	bundles           *bundle.Store
+	ai                *ai.Service
 	log               *slog.Logger
 	loginLimiter      *loginLimiter
 	trustProxyHeaders bool
@@ -111,6 +113,38 @@ func WithPresets(presetStore *preset.Store, bundleStore *bundle.Store) Option {
 	}
 }
 
+// WithAI enables Ticket P4.8's "AI authoring in the builder" endpoint (POST
+// /api/v0/ai/compose, PRD §14.1 Surface 2): service is the daemon's real,
+// shared *capabilities/ai.Service (the same Service a first-party or
+// third-party plugin would call via its own HostAPI, PRD §14 Ticket P3.6),
+// configured with whatever real provider Adapter the operator wired up.
+//
+// This Server itself becomes the "calling plugin" for the purpose of
+// exercising that Service — see ai.go's aiCallerHost for the manifest this
+// builds and why (no prior internal/api precedent for this existed before
+// this ticket; see this ticket's tracking doc for that investigation).
+//
+// Requires WithLayouts and WithPresets to have also been configured — the
+// compose endpoint validates a proposed fragment through
+// internal/preset's exact save-time validation (contract.CompositionPreset.
+// Validate + pkg/compat.CheckPreset) and previews it through
+// internal/layout's exact draft-preview validation (layout.ValidateDraft),
+// so it is meaningless without a live *blocks.Registry and *layout.Store
+// already wired in. New performs no such check (mirroring WithPresets'
+// identical "just an assignment, no cross-option validation" precedent);
+// omitting WithLayouts/WithPresets alongside this one leaves the compose
+// handler's own s.blocks/s.layouts nil guard 404ing instead of working.
+//
+// Omitting this option (the zero value) leaves POST /api/v0/ai/compose
+// 404ing, mirroring WithOAuth/WithLayouts/WithPresets' identical "opt-in,
+// 404 unless configured" precedent — cmd/glyphuxd does not wire this in yet
+// because no operator-facing AI provider credential configuration exists in
+// internal/config today (see this ticket's tracking doc); tests exercise
+// this option directly with an in-process fake Adapter.
+func WithAI(service *ai.Service) Option {
+	return func(s *Server) { s.ai = service }
+}
+
 // New builds the API transport over the given domain APIs.
 func New(comps *composition.Store, contentAPI *content.API, mediaAPI *media.API, identities *identity.Service, sessions *identity.Sessions, log *slog.Logger, opts ...Option) *Server {
 	s := &Server{
@@ -171,6 +205,17 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v0/bundles/{id}", s.handleBundleGet)
 	mux.HandleFunc("GET /api/v0/bundles/{id}/check", s.handleBundleCheck)
 	mux.HandleFunc("POST /api/v0/bundles/{id}/import", s.requireCSRF(s.requireCapability(permission.PresetsManage, s.handleBundleImport)))
+
+	// AI authoring in the builder (Ticket P4.8, PRD §14.1 Surface 2): emits
+	// a Layer-2 composition fragment from a prompt, validated through the
+	// exact preset-import validation path (never a parallel AI-specific
+	// one) and rendered through slice 4.5's live-preview machinery. Gated
+	// like presets/layouts writes (layouts:manage AND presets:manage,
+	// checked inside the handler — see handleAICompose's own doc comment)
+	// plus CSRF; 404s if WithAI wasn't configured. Never persists anything
+	// itself — accepting a proposed fragment reuses POST /api/v0/presets
+	// then POST /api/v0/presets/{id}/import unchanged.
+	mux.HandleFunc("POST /api/v0/ai/compose", s.requireCSRF(s.requireCapability(permission.LayoutsManage, s.requireCapability(permission.PresetsManage, s.handleAICompose))))
 
 	// Authentication (slice 1.7). Login has no session cookie yet on a
 	// fresh visit, so requireCSRF is a no-op there; it still protects an
