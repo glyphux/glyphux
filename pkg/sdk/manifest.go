@@ -94,6 +94,18 @@ var knownAPIScopes = map[string]map[string]bool{
 	// expected to be revisited when slice 3.4 defines a real MembershipAPI.
 	"payments":   {"charge": true, "refund": true},
 	"membership": {"manage": true},
+	// ai backs a real HostAPI method surface as of slice 3.6
+	// (capabilities/ai): a caller plugin declares one or more of these three
+	// scopes to receive a scoped Generate/Embed/Classify surface —
+	// HostAPI.HasAPIScope("ai", scope) is what capabilities/ai's own
+	// domain-API functions check before performing the corresponding
+	// operation (PRD §14.1: "a plugin wanting AI declares
+	// api: [ai: [generate]] ... and receives a scoped, rate-limited
+	// surface"). Named after the three PRD-named operations verbatim rather
+	// than a broader read/write pair, because each is a materially
+	// different capability a caller may want independently (e.g.
+	// embeddings for search without generative text access).
+	"ai": {"generate": true, "embed": true, "classify": true},
 }
 
 // Requires declares the kernel/contract versions a plugin needs (PRD §7.3).
