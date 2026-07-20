@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -270,8 +271,23 @@ func (s *Server) handleAICompose(w http.ResponseWriter, r *http.Request) {
 
 	target := &contract.Layout{ContractVersion: contract.LayoutCompositionV1, Regions: map[string]contract.Region{}}
 	if req.Route != "" {
-		if existing, err := s.layouts.Load(r.Context(), req.Route); err == nil {
+		existing, err := s.layouts.Load(r.Context(), req.Route)
+		switch {
+		case err == nil:
 			target = existing
+		case errors.Is(err, layout.ErrNotFound):
+			// No layout saved for this route yet — start from the empty
+			// target already constructed above, exactly like
+			// internal/preset.Store.Import's identical branch.
+		default:
+			// A real backend failure (e.g. a dropped DB connection) is NOT
+			// the same as "nothing saved yet" — silently falling through to
+			// an empty layout here would produce a misleading preview
+			// instead of surfacing the actual failure, so this mirrors
+			// Store.Import's own "any other error" branch verbatim.
+			s.log.Error("load target layout for ai compose preview", "route", req.Route, "error", err)
+			s.writeError(w, http.StatusInternalServerError, "internal error")
+			return
 		}
 	}
 	if target.Regions == nil {

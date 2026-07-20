@@ -56,8 +56,14 @@ func (f *fakeAIAdapter) Classify(ctx context.Context, req capai.ClassifyRequest)
 // testServerWithAI boots a server with the Layer-2 block/layout transport,
 // the preset/bundle transport, AND the AI compose transport (WithLayouts +
 // WithPresets + WithAI) wired in, backed by adapter — the equivalent of
-// testServerWithPresets for this ticket's one new route.
-func testServerWithAI(t *testing.T, adapter capai.Adapter) (http.Handler, authCreds) {
+// testServerWithPresets for this ticket's one new route. Also returns the
+// underlying *db.DB so a test needing to simulate a real backend failure
+// (e.g. TestAIComposeLayoutLoadErrorReturns500) can close it mid-test,
+// mirroring internal/api/readiness_test.go's identical "d.Close() to
+// simulate a dropped/unreachable database connection" pattern — closing it
+// again via this function's own t.Cleanup at test end is harmless (every
+// other caller ignores this return value entirely).
+func testServerWithAI(t *testing.T, adapter capai.Adapter) (http.Handler, authCreds, *db.DB) {
 	t.Helper()
 	d, err := db.OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -101,7 +107,7 @@ func testServerWithAI(t *testing.T, adapter capai.Adapter) (http.Handler, authCr
 	rec := do(t, mux, http.MethodPost, "/api/v0/auth/login", map[string]any{
 		"email": "admin@example.com", "password": "correct horse battery",
 	})
-	return mux, sessionCookie(t, rec)
+	return mux, sessionCookie(t, rec), d
 }
 
 const validFragmentJSON = `{
@@ -164,7 +170,7 @@ func TestAIComposeIs404WhenNotConfigured(t *testing.T) {
 }
 
 func TestAIComposeRequiresAdmin(t *testing.T) {
-	h, _ := testServerWithAI(t, &fakeAIAdapter{text: validFragmentJSON})
+	h, _, _ := testServerWithAI(t, &fakeAIAdapter{text: validFragmentJSON})
 	rec := do(t, h, http.MethodPost, "/api/v0/ai/compose", composeBody())
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("anonymous POST ai/compose = %d, want 401", rec.Code)
@@ -177,7 +183,7 @@ func TestAIComposeRequiresAdmin(t *testing.T) {
 // (compatible: true) plus a rendered HTML preview — never persisting
 // anything (GET /api/v0/layouts/home below still 404s).
 func TestAIComposeValidFragmentIsValidatedAndPreviewed(t *testing.T) {
-	h, cookie := testServerWithAI(t, &fakeAIAdapter{text: validFragmentJSON})
+	h, cookie, _ := testServerWithAI(t, &fakeAIAdapter{text: validFragmentJSON})
 	rec := doWithCookieBody(t, h, http.MethodPost, "/api/v0/ai/compose", cookie, composeBody())
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST ai/compose = %d, body %s", rec.Code, rec.Body.String())
@@ -208,7 +214,7 @@ func TestAIComposeValidFragmentIsValidatedAndPreviewed(t *testing.T) {
 // diagnostic shape an incompatible preset import already produces today —
 // not a generic/opaque AI error.
 func TestAIComposeUnknownBlockReturnsRealCompatDiagnostics(t *testing.T) {
-	h, cookie := testServerWithAI(t, &fakeAIAdapter{text: invalidBlockFragmentJSON})
+	h, cookie, _ := testServerWithAI(t, &fakeAIAdapter{text: invalidBlockFragmentJSON})
 	rec := doWithCookieBody(t, h, http.MethodPost, "/api/v0/ai/compose", cookie, composeBody())
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST ai/compose = %d, body %s", rec.Code, rec.Body.String())
@@ -232,7 +238,7 @@ func TestAIComposeUnknownBlockReturnsRealCompatDiagnostics(t *testing.T) {
 // same 422 contract.ValidationErrors shape handlePresetCreate already
 // returns for a structurally invalid preset, not a 200 or an opaque 500.
 func TestAIComposeMalformedJSONReturnsValidationError(t *testing.T) {
-	h, cookie := testServerWithAI(t, &fakeAIAdapter{text: "not json at all"})
+	h, cookie, _ := testServerWithAI(t, &fakeAIAdapter{text: "not json at all"})
 	rec := doWithCookieBody(t, h, http.MethodPost, "/api/v0/ai/compose", cookie, composeBody())
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("POST ai/compose with malformed model output = %d, want 422, body %s", rec.Code, rec.Body.String())
@@ -244,9 +250,35 @@ func TestAIComposeMalformedJSONReturnsValidationError(t *testing.T) {
 }
 
 func TestAIComposeRequiresPromptAndModel(t *testing.T) {
-	h, cookie := testServerWithAI(t, &fakeAIAdapter{text: validFragmentJSON})
+	h, cookie, _ := testServerWithAI(t, &fakeAIAdapter{text: validFragmentJSON})
 	rec := doWithCookieBody(t, h, http.MethodPost, "/api/v0/ai/compose", cookie, map[string]any{"route": "home"})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("POST ai/compose without prompt/model = %d, want 400, body %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestAIComposeLayoutLoadErrorReturns500 proves handleAICompose distinguishes
+// a real backend failure loading the target route's existing Layout from
+// the true "no layout saved yet for this route" case
+// (layout.ErrNotFound) — mirroring internal/preset.Store.Import's identical
+// distinction. Dropping the `layouts` table out from under the running
+// server (rather than closing the whole *db.DB, per
+// internal/api/readiness_test.go's coarser "simulate a dropped/unreachable
+// database connection" pattern — closing the whole DB here would also break
+// this endpoint's own session-cookie lookup, producing a 401 that would
+// prove nothing about this specific code path) forces
+// layout.Store.Load to fail with a real, non-ErrNotFound error (the
+// underlying `layouts` table no longer exists), which must surface as a
+// real 500, not silently fall through to an empty-layout preview as if
+// nothing had ever been saved for the route.
+func TestAIComposeLayoutLoadErrorReturns500(t *testing.T) {
+	h, cookie, d := testServerWithAI(t, &fakeAIAdapter{text: validFragmentJSON})
+	if _, err := d.Exec(context.Background(), `DROP TABLE layouts`); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := doWithCookieBody(t, h, http.MethodPost, "/api/v0/ai/compose", cookie, composeBody())
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("POST ai/compose with a broken layouts table = %d, want 500, body %s", rec.Code, rec.Body.String())
 	}
 }
