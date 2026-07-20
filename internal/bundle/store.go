@@ -171,6 +171,15 @@ func (s *Store) Save(ctx context.Context, principal *permission.Principal, regis
 		return nil, result.AsValidationErrors()
 	}
 
+	return s.insert(ctx, b)
+}
+
+// insert persists b under a newly generated ID and returns the saved
+// Record. Shared by Save (after its own compat-gated validation, above) and
+// InstallFromPackage (marketplace.go — after its own, deliberately
+// different, validation) — see internal/preset.Store.insert's identical
+// doc comment for the full reasoning.
+func (s *Store) insert(ctx context.Context, b *contract.CompositionBundle) (*Record, error) {
 	id := newID()
 	doc, err := json.Marshal(b)
 	if err != nil {
