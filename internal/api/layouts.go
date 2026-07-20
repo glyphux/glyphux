@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/glyphux/glyphux/internal/layout"
+	"github.com/glyphux/glyphux/internal/permission"
 	"github.com/glyphux/glyphux/pkg/blocks"
 	"github.com/glyphux/glyphux/pkg/contract"
 	"github.com/glyphux/glyphux/pkg/theme"
@@ -88,11 +89,15 @@ func (s *Server) handleLayoutPut(w http.ResponseWriter, r *http.Request) {
 //
 // This handler never calls s.layouts.Save (or anything else that writes to
 // storage) — Save is what persists a Layout; this endpoint only renders one.
-// It is validated exactly like a real save (structural
-// contract.Layout.Validate, then registry-existence blocks.ValidateLayout)
-// before rendering, so a preview's pass/fail on validation matches what a
-// subsequent real Save would do, and the same writeLayoutError mapping
-// (422 with issues) is reused for both.
+// It is validated exactly like a real save via the shared
+// layout.ValidateDraft (structural contract.Layout.Validate, then
+// registry-existence blocks.ValidateLayout, in the identical order
+// Store.Save itself calls that same function in) before rendering, so a
+// preview's pass/fail on validation can never drift from what a subsequent
+// real Save would do — if Store.Save's validation sequence ever grows a
+// third check, this handler picks it up automatically rather than needing a
+// matching edit. The same writeLayoutError mapping (422 with issues) is
+// reused for both.
 //
 // No Layer-1 content item is passed to the CompositionView: a preview
 // request previews a route's structural draft in isolation, not any one
@@ -102,7 +107,11 @@ func (s *Server) handleLayoutPut(w http.ResponseWriter, r *http.Request) {
 // render. Requires layouts:manage (the same capability that gates saving a
 // layout — this endpoint accepts and renders arbitrary caller-supplied
 // block trees, which is exactly the surface only the builder's authors
-// should be able to exercise) and CSRF protection, matching every other
+// should be able to exercise), checked here at the transport boundary AND
+// again below at the domain-layer boundary (permission.AllowsPrincipal),
+// mirroring Store.Save's own defense-in-depth check (PRD §10.5) — nothing
+// about this handler being read-only/non-persisting exempts it from that
+// same second layer. Also requires CSRF protection, matching every other
 // state-changing-shaped POST in this package even though this one performs
 // no persistence.
 func (s *Server) handleLayoutPreview(w http.ResponseWriter, r *http.Request) {
@@ -110,15 +119,15 @@ func (s *Server) handleLayoutPreview(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusNotFound, "not found")
 		return
 	}
+	if !permission.AllowsPrincipal(s.principal(r), permission.LayoutsManage) {
+		s.writeLayoutError(w, permission.ErrDenied)
+		return
+	}
 	var l contract.Layout
 	if !s.decodeJSON(w, r, &l) {
 		return
 	}
-	if err := l.Validate(); err != nil {
-		s.writeLayoutError(w, err)
-		return
-	}
-	if err := blocks.ValidateLayout(&l, s.blocks); err != nil {
+	if err := layout.ValidateDraft(&l, s.blocks); err != nil {
 		s.writeLayoutError(w, err)
 		return
 	}

@@ -33,11 +33,14 @@ one) is a distinct, larger ticket this slice does not attempt.
 No `CONTEXT.md` exists yet (see `docs/agents/domain.md`). Modified:
 `internal/api` (`handleLayoutPreview`, one new route — the first place in
 the whole repo that renders through a `pkg/theme.Theme` over HTTP),
-`sdk-js` (`LayoutsResource.preview`, `LayoutPreview` type), `admin-ui`
-(`pages/builder/LivePreview.tsx`, wired into `BuilderPage.tsx`). No new
-package, no new migration, no changes to `pkg/theme`, `themes/starter`,
-`internal/layout`, or `pkg/contract` — this ticket is pure transport +
-UI on top of infrastructure slices 4.3/4.4a already built and proved.
+`internal/layout` (`ValidateDraft`, extracted post-review so `Store.Save`
+and `handleLayoutPreview` share one validation sequence instead of each
+keeping its own copy), `sdk-js` (`LayoutsResource.preview`, `LayoutPreview`
+type), `admin-ui` (`pages/builder/LivePreview.tsx`, wired into
+`BuilderPage.tsx`). No new package, no new migration, no changes to
+`pkg/theme`, `themes/starter`, or `pkg/contract` — this ticket is pure
+transport + UI on top of infrastructure slices 4.3/4.4a already built and
+proved.
 
 ## Status
 
@@ -52,6 +55,17 @@ over real HTTP (the existing `global-setup.ts` harness), not a mock.
 (matching every other admin-ui component test's convention — real fetch
 would mean spinning up a browser+backend for a unit test, which this
 repo's admin-ui suite doesn't do anywhere).
+
+Post-review: an independent `/code-review` audit against this slice's PR
+#13 came back Spec-clean and flagged two Standards findings, both fixed
+(see Current Decisions for the reasoning on each): (1) `BuilderPage.tsx`'s
+doc comment still claimed live preview was "out of scope (P4.5)," directly
+contradicting the code it now sits above; (2) `handleLayoutPreview`
+duplicated `Store.Save`'s two-line validation sequence standalone instead
+of sharing it, and skipped `Store.Save`'s own domain-layer
+`permission.AllowsPrincipal` defense-in-depth re-check. Both fixed, with 3
+new `internal/layout` tests pinning `ValidateDraft`'s behavior directly;
+every test suite (Go race, admin-ui, sdk-js) re-run green after the fix.
 
 - `go build ./... && go vet ./... && go test -race ./...` green repo-wide.
 - `cd sdk-js && npm test` green — 53 tests, 7 files (49 pre-existing + 4 new
@@ -119,17 +133,40 @@ repo's admin-ui suite doesn't do anywhere).
   out of this ticket's scope, flagged below). The only visible cost is an
   empty `<title>` in the previewed document; every block's own rendering is
   unaffected.
-- **Preview performs full validation before rendering — structural
-  `contract.Layout.Validate()` then registry-existence
-  `blocks.ValidateLayout()` — identical to what `PUT` does inside
-  `layout.Store.Save`, but called directly rather than through the store**
-  (there is nothing to persist, so there is no `Store.Save` call at all;
-  only the two pure validation functions it also calls are reused).
+- **Preview performs full validation before rendering via a new shared
+  `layout.ValidateDraft(l, registry)` — structural `contract.Layout.
+  Validate()` then registry-existence `blocks.ValidateLayout()`, in that
+  order — the same function `Store.Save` itself now calls, not a second,
+  independently-copied pair of lines.** (Post-review fix: an earlier draft
+  of this slice had `handleLayoutPreview` duplicate `Store.Save`'s two
+  validation lines standalone. An independent `/code-review` audit flagged
+  this as a real drift risk — if `Store.Save`'s validation sequence ever
+  grew a third check, nothing would force preview to pick it up, silently
+  breaking preview's own promise of "validated exactly like a real save."
+  Fixed by extracting `ValidateDraft` into `internal/layout/store.go`,
+  called by both `Store.Save` and `handleLayoutPreview` — there is now
+  exactly one definition of "is this Layout draft valid," proven by
+  `TestValidateDraftAcceptsAValidLayout`/`RejectsStructurallyInvalidLayout`/
+  `RejectsUnregisteredBlockType` in `internal/layout/store_test.go`.)
   `writeLayoutError` — the same error-to-HTTP mapping `handleLayoutGet`/
   `handleLayoutPut` already use — is reused unchanged, so a preview's
   422-with-issues response for an invalid draft is byte-for-byte the same
   shape a real save's failure would be, letting `sdk-js`/`admin-ui` code
   handle both failure modes identically (no new error shape introduced).
+- **`handleLayoutPreview` re-checks `permission.AllowsPrincipal(...,
+  permission.LayoutsManage)` itself, at the domain-layer boundary, in
+  addition to the transport-level `requireCapability` wrapper the route is
+  already registered behind.** (Post-review fix: an earlier draft relied on
+  `requireCapability` alone. `Store.Save` — and every other domain-API
+  write path in this repo, e.g. `internal/content.API`'s `Create`/`Update`/
+  `Publish` — re-checks permission internally as defense-in-depth per PRD
+  §10.5, specifically so a caller that reaches the domain layer some other
+  way than through this one HTTP route still can't act without the right
+  capability. `handleLayoutPreview` had no domain-layer equivalent for a
+  handler to call into — since preview has no backing store method, the
+  same `permission.AllowsPrincipal` check that `Store.Save` performs was
+  added directly inside `handleLayoutPreview`, mirroring that convention
+  rather than trusting the transport wrapper alone.)
 - **Never calls `layout.Store.Save` or any other write path.** This is the
   ticket's own hard constraint ("must NOT persist the draft — that's what
   Save already does") and is asserted directly by
@@ -240,9 +277,18 @@ repo's admin-ui suite doesn't do anywhere).
 
 ## Files/Modules Changed
 
-- `internal/api/layouts.go` — `handleLayoutPreview` (new): validates
-  (structural + registry), renders via `starter.New(s.blocks).Render`, no
-  persistence; reuses `writeLayoutError` for validation failures.
+- `internal/layout/store.go` — `ValidateDraft(l, registry)` (new, exported):
+  extracted structural + registry-existence validation, called by both
+  `Store.Save` and `internal/api.handleLayoutPreview` (post-review fix —
+  see Current Decisions).
+- `internal/layout/store_test.go` — 3 new tests for `ValidateDraft` directly
+  (valid layout, structurally invalid, unregistered block type).
+- `internal/api/layouts.go` — `handleLayoutPreview` (new): re-checks
+  `permission.AllowsPrincipal(..., LayoutsManage)` at the domain-layer
+  boundary (post-review fix, mirrors `Store.Save`'s own defense-in-depth
+  check), validates via the shared `layout.ValidateDraft`, renders via
+  `starter.New(s.blocks).Render`, no persistence; reuses `writeLayoutError`
+  for both permission and validation failures.
 - `internal/api/api.go` — one new route: `POST /api/v0/layouts/preview`
   (`requireCSRF` + `requireCapability(permission.LayoutsManage, ...)`).
 - `internal/api/layouts_test.go` — 7 new tests: real-starter-theme
@@ -266,7 +312,12 @@ repo's admin-ui suite doesn't do anywhere).
   preview request, `sandbox=""` present.
 - `admin-ui/src/pages/builder/BuilderPage.tsx` — renders `<LivePreview />`
   alongside `SaveBar`, both gated on `canManage`; extends the existing
-  no-permission note to mention preview too.
+  no-permission note to mention preview too. Its own top-of-page doc
+  comment (post-review fix) no longer says live preview is "out of scope
+  (P4.5)" — an earlier draft left that sentence from slice 4.4b unchanged
+  even though this slice's whole job is adding exactly that, which an
+  independent `/code-review` audit flagged as actively contradicting the
+  code beneath it; now describes `TreeView` + `LivePreview` side by side.
 - `admin-ui/src/pages/builder/BuilderPage.test.tsx` — mock `client.layouts`
   gains `preview: vi.fn()`, defaulted to a resolved value in `beforeEach` so
   the pre-existing 5 tests (which now also render `LivePreview`, since the

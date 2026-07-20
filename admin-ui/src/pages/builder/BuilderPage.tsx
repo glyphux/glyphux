@@ -21,13 +21,18 @@ import { emptyLayout, layoutToNodeTree, nodeTreeToLayout } from "./serialize";
 
 const DEFAULT_ROUTE = "home";
 
-/** The visual builder page (Ticket P4.4b): loads the block registry and an
- * existing Layout document for a route (or starts empty), and lets the
- * user arrange blocks into regions/slots, edit their props, and save back
- * through sdk-js's public LayoutsResource — no privileged access, exactly
- * like every other admin-ui page. Live theme-accurate preview is
- * explicitly out of scope (P4.5); TreeView gives a plain structural
- * read-out of the current draft instead. */
+/** The visual builder page (Ticket P4.4b, extended by P4.5): loads the
+ * block registry and an existing Layout document for a route (or starts
+ * empty), and lets the user arrange blocks into regions/slots, edit their
+ * props, and save back through sdk-js's public LayoutsResource — no
+ * privileged access, exactly like every other admin-ui page. Two views of
+ * the current draft are shown side by side for a layouts:manage-holding
+ * user: TreeView, a plain structural read-out (what's placed where, no
+ * network round trip), and LivePreview, a real theme-accurate render of
+ * the same draft (rendered server-side through the actual themes/starter
+ * theme via LayoutsResource.preview, debounced) — see LivePreview.tsx's own
+ * doc comment for why the latter is not a client-side reimplementation of
+ * block-to-HTML rendering. */
 export function BuilderPage() {
   const params = useParams<{ "*": string }>();
   const route = params["*"] && params["*"].length > 0 ? params["*"] : DEFAULT_ROUTE;

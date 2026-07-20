@@ -103,10 +103,29 @@ func (s *Store) Load(ctx context.Context, route string) (*contract.Layout, error
 	return &l, nil
 }
 
-// Save validates l — route format, l.Validate()'s structural check, and
-// blocks.ValidateLayout's registry-existence check, in that order — and
-// persists it for route only if every check passes; an invalid Layout never
-// reaches storage. principal must hold permission.LayoutsManage.
+// ValidateDraft checks l structurally (l.Validate()) and then against
+// registry's registered block types (blocks.ValidateLayout), in that order
+// — the exact validation sequence a Layout must pass before it is trusted
+// for anything, whether that's Save persisting it or a caller (e.g.
+// internal/api's live-preview endpoint, Ticket P4.5) rendering it without
+// persisting it at all. Extracted into one shared function specifically so
+// every caller validating a Layout draft picks up the identical sequence:
+// if this ever gains a third check, Save and every other caller gain it too
+// without each needing its own matching edit.
+func ValidateDraft(l *contract.Layout, registry *blocks.Registry) error {
+	if err := l.Validate(); err != nil {
+		return err
+	}
+	if err := blocks.ValidateLayout(l, registry); err != nil {
+		return err
+	}
+	return nil
+}
+
+// Save validates l — route format, then ValidateDraft's structural +
+// registry-existence checks, in that order — and persists it for route only
+// if every check passes; an invalid Layout never reaches storage. principal
+// must hold permission.LayoutsManage.
 //
 // registry is passed in per call (rather than captured at NewStore time)
 // because it is the live, shared, running daemon's block registry — the
@@ -122,10 +141,7 @@ func (s *Store) Save(ctx context.Context, principal *permission.Principal, regis
 			Message: "must be one or more lowercase, non-empty, \"/\"-delimited segments (a-z, 0-9, _, -)",
 		}}
 	}
-	if err := l.Validate(); err != nil {
-		return err
-	}
-	if err := blocks.ValidateLayout(l, registry); err != nil {
+	if err := ValidateDraft(l, registry); err != nil {
 		return err
 	}
 	doc, err := json.Marshal(l)
