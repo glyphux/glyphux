@@ -18,6 +18,7 @@ vi.mock("@/lib/client", () => ({
     auth: { login: vi.fn(), logout: vi.fn(), me: vi.fn() },
     blocks: { list: vi.fn() },
     layouts: { get: vi.fn(), save: vi.fn(), preview: vi.fn() },
+    presets: { save: vi.fn() },
   },
   setToken: vi.fn(),
 }));
@@ -47,6 +48,7 @@ describe("BuilderPage", () => {
     vi.mocked(client.blocks.list).mockReset();
     vi.mocked(client.layouts.get).mockReset();
     vi.mocked(client.layouts.save).mockReset();
+    vi.mocked(client.presets.save).mockReset();
     vi.mocked(client.layouts.preview).mockReset();
     vi.mocked(client.layouts.preview).mockResolvedValue({ html: "<p>preview</p>", contentType: "text/html; charset=utf-8" });
   });
@@ -97,6 +99,48 @@ describe("BuilderPage", () => {
 
     expect(client.layouts.save).toHaveBeenCalledWith("home", layout);
     expect(await screen.findByText("Layout saved")).toBeInTheDocument();
+  });
+
+  it("saves the current draft as a Composition Preset via PresetsResource.save", async () => {
+    const layout: Layout = {
+      contract_version: "layout-composition/v1",
+      regions: { main: { blocks: [{ type: "heading", props: { text: "Welcome" } }] } },
+    };
+    vi.mocked(client.blocks.list).mockResolvedValue(registry);
+    vi.mocked(client.layouts.get).mockResolvedValue(layout);
+    vi.mocked(client.presets.save).mockResolvedValue({
+      id: "abc123",
+      created_at: "",
+      updated_at: "",
+      contract_version: "composition-preset/v1",
+      name: "hero-section",
+      layout,
+      manifest: { requires_contract: "layout-composition/v1", blocks: ["heading"], slots: ["main"] },
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findAllByText("main");
+    await user.type(screen.getByLabelText("Preset name"), "hero-section");
+    await user.click(screen.getByRole("button", { name: /save as preset/i }));
+
+    expect(client.presets.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "hero-section",
+        layout,
+        manifest: expect.objectContaining({ blocks: ["heading"], slots: ["main"] }),
+      }),
+    );
+    expect(await screen.findByText('Preset "hero-section" saved')).toBeInTheDocument();
+  });
+
+  it("disables the save-as-preset button until a name is entered", async () => {
+    vi.mocked(client.blocks.list).mockResolvedValue(registry);
+    vi.mocked(client.layouts.get).mockRejectedValue(new GlyphuxApiError("not found", 404));
+    renderPage();
+
+    await screen.findByText("Heading");
+    expect(screen.getByRole("button", { name: /save as preset/i })).toBeDisabled();
   });
 
   it("loads the route named in the URL, not just the default", async () => {

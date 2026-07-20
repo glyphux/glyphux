@@ -39,6 +39,21 @@ const (
 	// else. Held only by admin, for the same "structural, site-wide change"
 	// reason ContentTypesManage is admin-only.
 	LayoutsManage Capability = "layouts:manage"
+	// PresetsManage gates saving/importing Composition Presets and
+	// Composition Bundles (pkg/contract.CompositionPreset/CompositionBundle,
+	// PRD §13.2/§13.6 ticket P4.6) — both artifacts are, like a Layout,
+	// Layer-2-adjacent structural documents rather than Layer-1 content
+	// items, so they get their own capability rather than reusing
+	// ContentWrite. Bundled into one capability (not split into
+	// PresetsManage/BundlesManage) because the two artifacts share the same
+	// "arrange composition at site scale" concern and, in this v1 role
+	// matrix, always the same admin-only holder — splitting them would add
+	// a second capability name with an identical grant set and no call site
+	// that ever checks one without the other. Held only by admin, matching
+	// LayoutsManage's "structural, site-wide change" precedent — importing
+	// a preset/bundle can rewrite an arbitrary route's Layout, the same
+	// blast radius layouts:manage already gates.
+	PresetsManage Capability = "presets:manage"
 )
 
 // Roles known to v1's fixed capability matrix.
@@ -53,7 +68,7 @@ var roleCapabilities = map[string]map[Capability]bool{
 	RoleAdmin: {
 		ContentRead: true, ContentReadDrafts: true, ContentWrite: true,
 		ContentPublish: true, MediaWrite: true, UsersManage: true,
-		ContentTypesManage: true, LayoutsManage: true,
+		ContentTypesManage: true, LayoutsManage: true, PresetsManage: true,
 	},
 	RoleEditor: {
 		ContentRead: true, ContentReadDrafts: true, ContentWrite: true, MediaWrite: true,

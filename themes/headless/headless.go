@@ -31,6 +31,13 @@ func New() *Theme { return &Theme{} }
 // Name identifies this theme as "headless".
 func (t *Theme) Name() string { return "headless" }
 
+// Regions returns nil: headless is a pure JSON passthrough of whatever
+// Layer-2 Layout it's handed (see this file's own package doc) and declares
+// no opinion about region names at all — every region name is accepted,
+// which is exactly what a nil return means to pkg/compat's compatibility
+// contract (PRD §13.3).
+func (t *Theme) Regions() []string { return nil }
+
 // document is headless's wire shape: a plain, JSON-tagged projection of a
 // CompositionView. It is a distinct type from CompositionView itself
 // (rather than reusing CompositionView as-is) because CompositionView's

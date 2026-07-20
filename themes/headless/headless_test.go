@@ -19,6 +19,12 @@ import (
 
 var adminPrincipal = &permission.Principal{Role: permission.RoleAdmin}
 
+func TestRegionsDeclaresNoRestriction(t *testing.T) {
+	if got := headless.New().Regions(); got != nil {
+		t.Fatalf("Regions() = %v, want nil (headless declares no region restriction)", got)
+	}
+}
+
 // testContentAPI wires a real content.API over a fresh SQLite DB, exactly
 // like capabilities/forms's tests do — this ticket's real dependency, not
 // a mock.

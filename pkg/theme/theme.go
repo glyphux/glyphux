@@ -48,6 +48,24 @@ type Theme interface {
 	// Render produces output for view. contentType is the MIME type of
 	// output (e.g. "application/json", "text/html; charset=utf-8").
 	Render(ctx context.Context, view CompositionView) (output []byte, contentType string, err error)
+
+	// Regions returns the region names (Layer-2 contract.Layout.Regions'
+	// top-level keys — e.g. "header", "main", "sidebar", "footer") this
+	// theme declares it exposes for composition to target (PRD §9.2,
+	// §13.3: "a theme declares which slots/regions it exposes"). This is
+	// the theme-side half of the compatibility contract (pkg/compat):
+	// import-time validation checks a Composition Preset/Bundle's
+	// Manifest.Slots against a destination theme's Regions() to detect
+	// "this preset targets a region the theme doesn't have" before
+	// rendering, rather than silently dropping blocks placed into an
+	// unrecognized region.
+	//
+	// A theme that imposes no declared restriction — it accepts composition
+	// into any region name, rendering whatever it's handed (this package's
+	// two built-in themes are both like this; see each Regions' own doc) —
+	// returns nil, which pkg/compat treats as "no theme-side restriction to
+	// check," not as "zero regions allowed."
+	Regions() []string
 }
 
 // CompositionView is a read-only, typed view of the resolved composition

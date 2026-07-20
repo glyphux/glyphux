@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Editor, Frame, useEditor } from "@craftjs/core";
-import { GlyphuxApiError, type BlockDefinition, type Layout } from "@glyphux/sdk";
+import { GlyphuxApiError, type BlockDefinition, type CompositionPreset, type Layout, type LayoutBlock } from "@glyphux/sdk";
 import { client } from "@/lib/client";
 import { useAuth } from "@/lib/auth-context";
 import { allows } from "@/lib/permissions";
@@ -116,7 +116,12 @@ export function BuilderPage() {
               affordance" convention rather than showing a perpetual error
               state. */}
           {canManage && <LivePreview />}
-          {canManage && <SaveBar route={route} />}
+          {canManage && (
+            <div className="flex flex-col gap-3">
+              <SaveBar route={route} />
+              <SavePresetBar />
+            </div>
+          )}
         </BlockRegistryProvider>
       </Editor>
     </div>
@@ -178,5 +183,94 @@ function SaveBar({ route }: { route: string }) {
         {saving ? "Saving…" : `Save "${route}"`}
       </Button>
     </div>
+  );
+}
+
+/** Builds a CompositionPreset's Manifest from draft's own composition tree:
+ * every distinct block type actually used (manifest.blocks) and every
+ * top-level region name actually used (manifest.slots) — the same
+ * "declare what the tree references" the compatibility contract checks
+ * (pkg/compat, PRD §13.3) at save/import time server-side. Kept a plain
+ * function (not a hook) since it's pure and only ever called at save time. */
+function manifestFor(draft: Layout): CompositionPreset["manifest"] {
+  const blocks = new Set<string>();
+  const slots = new Set<string>();
+
+  const walk = (nodes: LayoutBlock[]) => {
+    for (const b of nodes) {
+      blocks.add(b.type);
+      for (const nested of Object.values(b.slots ?? {})) walk(nested);
+    }
+  };
+  for (const [name, region] of Object.entries(draft.regions)) {
+    slots.add(name);
+    walk(region.blocks);
+  }
+
+  return {
+    requires_contract: draft.contract_version,
+    blocks: Array.from(blocks),
+    slots: Array.from(slots),
+  };
+}
+
+/** "Save as preset" (Ticket P4.6): a minimal, real integration point for
+ * Composition Presets in the visual builder — save the current draft as a
+ * reusable, importable fragment via sdk-js's PresetsResource, prompting
+ * only for the preset's own name (an inline form, mirroring RouteSwitcher's
+ * identical small-form pattern, rather than a native window.prompt, which
+ * doesn't play well with this codebase's React-Testing-Library seam).
+ * Importing a saved preset back into a route, and a dedicated presets
+ * management page (browse/delete/import-into-any-route), are left for a
+ * follow-up — see this ticket's tracking doc for the scope call. */
+function SavePresetBar() {
+  const { query } = useEditor();
+  const { toast } = useToast();
+  const [name, setName] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async (e: FormEvent) => {
+    e.preventDefault();
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setSaving(true);
+    try {
+      const draft = nodeTreeToLayout(query.getSerializedNodes());
+      const preset: CompositionPreset = {
+        contract_version: "composition-preset/v1",
+        name: trimmed,
+        layout: draft,
+        manifest: manifestFor(draft),
+      };
+      await client.presets.save(preset);
+      toast({ title: `Preset "${trimmed}" saved`, variant: "success" });
+      setName("");
+    } catch (err) {
+      toast({
+        title: "Couldn't save this preset",
+        description: err instanceof GlyphuxApiError ? err.message : "Something went wrong.",
+        variant: "destructive",
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form onSubmit={(e) => void handleSave(e)} className="flex items-end justify-end gap-2">
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="preset-name">Preset name</Label>
+        <Input
+          id="preset-name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="e.g. hero-section"
+          className="w-56"
+        />
+      </div>
+      <Button type="submit" variant="outline" disabled={saving || !name.trim()}>
+        {saving ? "Saving…" : "Save as preset"}
+      </Button>
+    </form>
   );
 }
