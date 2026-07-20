@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/glyphux/glyphux/blocks/firstparty"
@@ -197,5 +198,114 @@ func TestLayoutGetIsPublic(t *testing.T) {
 	rec := do(t, h, http.MethodGet, "/api/v0/layouts/home", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("anonymous GET layout = %d, want 200, body %s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- Ticket P4.5: POST /api/v0/layouts/preview ---
+//
+// Renders an UNSAVED draft Layout through the real themes/starter theme and
+// returns the resulting HTML — "editor renders the same composition the API
+// serves" for a draft that may never have been PUT at all. Never persists
+// anything (see TestLayoutPreviewDoesNotPersistTheDraft).
+
+func TestLayoutPreviewRendersDraftThroughRealStarterTheme(t *testing.T) {
+	h, cookie := testServerWithLayouts(t)
+	rec := doWithCookieBody(t, h, http.MethodPost, "/api/v0/layouts/preview", cookie, validLayoutBody())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST preview = %d, body %s", rec.Code, rec.Body.String())
+	}
+	body := decode(t, rec)
+	html, _ := body["html"].(string)
+	if !strings.Contains(html, "<h1>Hello</h1>") {
+		t.Errorf("html = %q, want it to contain the rendered heading block", html)
+	}
+	if body["content_type"] != "text/html; charset=utf-8" {
+		t.Errorf("content_type = %v, want starter's HTML content type", body["content_type"])
+	}
+}
+
+func TestLayoutPreviewEscapesUntrustedProps(t *testing.T) {
+	h, cookie := testServerWithLayouts(t)
+	body := map[string]any{
+		"contract_version": "layout-composition/v1",
+		"regions": map[string]any{
+			"main": map[string]any{
+				"blocks": []any{
+					map[string]any{"type": "paragraph", "props": map[string]any{"text": "<script>alert(1)</script>"}},
+				},
+			},
+		},
+	}
+	rec := doWithCookieBody(t, h, http.MethodPost, "/api/v0/layouts/preview", cookie, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST preview = %d, body %s", rec.Code, rec.Body.String())
+	}
+	respBody := decode(t, rec)
+	html, _ := respBody["html"].(string)
+	if strings.Contains(html, "<script>") {
+		t.Errorf("html = %q, want the untrusted prop escaped, not rendered as live markup", html)
+	}
+}
+
+func TestLayoutPreviewDoesNotPersistTheDraft(t *testing.T) {
+	h, cookie := testServerWithLayouts(t)
+	rec := doWithCookieBody(t, h, http.MethodPost, "/api/v0/layouts/preview", cookie, validLayoutBody())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST preview = %d, body %s", rec.Code, rec.Body.String())
+	}
+
+	rec = do(t, h, http.MethodGet, "/api/v0/layouts/home", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET home after preview-only = %d, want 404 (preview must not persist)", rec.Code)
+	}
+}
+
+func TestLayoutPreviewRejectsUnregisteredBlockType(t *testing.T) {
+	h, cookie := testServerWithLayouts(t)
+	body := map[string]any{
+		"contract_version": "layout-composition/v1",
+		"regions": map[string]any{
+			"main": map[string]any{
+				"blocks": []any{map[string]any{"type": "does-not-exist"}},
+			},
+		},
+	}
+	rec := doWithCookieBody(t, h, http.MethodPost, "/api/v0/layouts/preview", cookie, body)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("POST preview unregistered block type = %d, want 422, body %s", rec.Code, rec.Body.String())
+	}
+	respBody := decode(t, rec)
+	if respBody["error"] != "validation failed" {
+		t.Errorf("error = %v, want validation failed", respBody["error"])
+	}
+}
+
+func TestLayoutPreviewRejectsStructurallyInvalidLayout(t *testing.T) {
+	h, cookie := testServerWithLayouts(t)
+	body := map[string]any{"contract_version": "wrong-version"}
+	rec := doWithCookieBody(t, h, http.MethodPost, "/api/v0/layouts/preview", cookie, body)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("POST preview invalid contract version = %d, want 422, body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestLayoutPreviewRequiresAdmin(t *testing.T) {
+	h, _ := testServerWithLayouts(t)
+	rec := do(t, h, http.MethodPost, "/api/v0/layouts/preview", validLayoutBody())
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous POST preview = %d, want 401", rec.Code)
+	}
+}
+
+func TestLayoutPreviewIs404WhenNotConfigured(t *testing.T) {
+	// Must be an authenticated admin request (authedServer, no WithLayouts)
+	// rather than an anonymous one against testServer: an anonymous caller
+	// is rejected by requireCapability (401) before handleLayoutPreview's
+	// own nil-store check ever runs, which would prove nothing about the
+	// "WithLayouts omitted" 404 path this test targets.
+	h, cookie := authedServer(t)
+	rec := doWithCookieBody(t, h, http.MethodPost, "/api/v0/layouts/preview", cookie, validLayoutBody())
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("POST preview without WithLayouts = %d, want 404, body %s", rec.Code, rec.Body.String())
 	}
 }

@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
 import { ErrorState } from "@/components/layout/ErrorState";
 import { resolver } from "./nodes";
+import { LivePreview } from "./LivePreview";
 import { Palette } from "./Palette";
 import { PropsEditor } from "./PropsEditor";
 import { TreeView } from "./TreeView";
@@ -20,13 +21,18 @@ import { emptyLayout, layoutToNodeTree, nodeTreeToLayout } from "./serialize";
 
 const DEFAULT_ROUTE = "home";
 
-/** The visual builder page (Ticket P4.4b): loads the block registry and an
- * existing Layout document for a route (or starts empty), and lets the
- * user arrange blocks into regions/slots, edit their props, and save back
- * through sdk-js's public LayoutsResource — no privileged access, exactly
- * like every other admin-ui page. Live theme-accurate preview is
- * explicitly out of scope (P4.5); TreeView gives a plain structural
- * read-out of the current draft instead. */
+/** The visual builder page (Ticket P4.4b, extended by P4.5): loads the
+ * block registry and an existing Layout document for a route (or starts
+ * empty), and lets the user arrange blocks into regions/slots, edit their
+ * props, and save back through sdk-js's public LayoutsResource — no
+ * privileged access, exactly like every other admin-ui page. Two views of
+ * the current draft are shown side by side for a layouts:manage-holding
+ * user: TreeView, a plain structural read-out (what's placed where, no
+ * network round trip), and LivePreview, a real theme-accurate render of
+ * the same draft (rendered server-side through the actual themes/starter
+ * theme via LayoutsResource.preview, debounced) — see LivePreview.tsx's own
+ * doc comment for why the latter is not a client-side reimplementation of
+ * block-to-HTML rendering. */
 export function BuilderPage() {
   const params = useParams<{ "*": string }>();
   const route = params["*"] && params["*"].length > 0 ? params["*"] : DEFAULT_ROUTE;
@@ -88,7 +94,7 @@ export function BuilderPage() {
 
       {!canManage && (
         <p className="text-muted-foreground text-small">
-          You can view this layout but don't have permission to save changes.
+          You can view this layout but don't have permission to save changes or render a live preview.
         </p>
       )}
 
@@ -102,6 +108,14 @@ export function BuilderPage() {
               <TreeView />
             </div>
           </div>
+          {/* Live preview requires layouts:manage — POST /api/v0/layouts/preview
+              is gated identically to save() (see LayoutsResource.preview's
+              own doc comment), so a non-manage viewer would just get a 403
+              on every debounced request. Skipping the request entirely and
+              explaining why (above) matches this repo's "no silently-broken
+              affordance" convention rather than showing a perpetual error
+              state. */}
+          {canManage && <LivePreview />}
           {canManage && (
             <div className="flex flex-col gap-3">
               <SaveBar route={route} />

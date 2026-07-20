@@ -17,7 +17,7 @@ vi.mock("@/lib/client", () => ({
     token: "tok_admin",
     auth: { login: vi.fn(), logout: vi.fn(), me: vi.fn() },
     blocks: { list: vi.fn() },
-    layouts: { get: vi.fn(), save: vi.fn() },
+    layouts: { get: vi.fn(), save: vi.fn(), preview: vi.fn() },
     presets: { save: vi.fn() },
   },
   setToken: vi.fn(),
@@ -49,6 +49,8 @@ describe("BuilderPage", () => {
     vi.mocked(client.layouts.get).mockReset();
     vi.mocked(client.layouts.save).mockReset();
     vi.mocked(client.presets.save).mockReset();
+    vi.mocked(client.layouts.preview).mockReset();
+    vi.mocked(client.layouts.preview).mockResolvedValue({ html: "<p>preview</p>", contentType: "text/html; charset=utf-8" });
   });
 
   it("starts from an empty layout when none has been saved for the route yet (404)", async () => {

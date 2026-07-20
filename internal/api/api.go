@@ -149,6 +149,11 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v0/blocks", s.handleBlocksList)
 	mux.HandleFunc("GET /api/v0/layouts/{route...}", s.handleLayoutGet)
 	mux.HandleFunc("PUT /api/v0/layouts/{route...}", s.requireCSRF(s.requireCapability(permission.LayoutsManage, s.handleLayoutPut)))
+	// Ticket P4.5 (live preview): renders an unsaved draft Layout through the
+	// real themes/starter theme, no persistence. Gated the same as a real
+	// save (layouts:manage + CSRF) since it accepts and renders arbitrary
+	// caller-supplied block trees — see handleLayoutPreview's doc comment.
+	mux.HandleFunc("POST /api/v0/layouts/preview", s.requireCSRF(s.requireCapability(permission.LayoutsManage, s.handleLayoutPreview)))
 
 	// Composition Presets & Bundles (slice 4.6, PRD §13.2/§13.3): reads and
 	// compatibility checks are public, same reasoning as blocks/layouts

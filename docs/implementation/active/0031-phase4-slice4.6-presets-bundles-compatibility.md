@@ -210,6 +210,71 @@ item creation via a real `content-types` PUT and `content` list), not just
   bundle-import flow, is a good candidate for whatever ticket does the
   admin-ui half of P4.7 (marketplace distribution) or a dedicated follow-up.
 
+## Post-review fixes
+
+An independent `/code-review` audit against PR #14 came back clean on the
+Spec axis; two Standards findings (verbatim duplicated logic, a different
+class from the store-CRUD-shape duplication a prior slice's review
+explicitly declined to touch) were fixed before merge:
+
+- **`incompatibleError` was byte-for-byte identical in `internal/preset/
+  store.go` and `internal/bundle/store.go`.** Extracted as
+  `compat.Result.AsValidationErrors()` (`pkg/compat/compat.go`) — both
+  stores' `Save` now call `result.AsValidationErrors()` directly; the two
+  local `incompatibleError` functions are gone. `Result` already lives in
+  the one package both stores import, so this is a method on the type the
+  logic is actually about, not a new shared-utils package.
+- **`CheckBundle` reimplemented `CheckPreset`'s block/slot-collection logic
+  inline for each bundled preset instead of delegating to it.** Rewritten to
+  call `CheckPreset` per included preset and merge each resulting `Result`
+  into the running aggregate via a new `mergeResults(a, b Result) Result`
+  helper (union of `MissingBlocks`/`MissingSlots`, first non-empty
+  `UnsupportedContract` wins) — following `pkg/contract/bundle.go`'s own
+  `Validate()` precedent of delegating to `p.Validate()` per included
+  preset rather than duplicating its checks. Page-level collection
+  (`bundle.Pages`) is unchanged and stays inline in `CheckBundle`, since a
+  page is a plain `Layout` with no `Manifest` of its own — there is no
+  `CheckPreset`-equivalent to delegate to for that half.
+  `pkg/compat/compat_test.go`'s existing `TestCheckBundleAggregatesAcrossPagesAndPresets`/
+  `TestCheckBundleAllDependenciesPresentIsCompatible` cover the refactor
+  without needing new tests (behavior preserved, tests still pass
+  unmodified).
+
+Both fixes are pure refactors — no behavior change, confirmed by every
+existing test in `pkg/compat`, `internal/preset`, and `internal/bundle`
+passing unmodified.
+
+### Merging `dev`
+
+PR #12 (P4.9 media picker) and PR #13 (P4.5 live preview) both merged into
+`dev` after this PR was opened, both touching `admin-ui/src/pages/builder/
+BuilderPage.tsx` and rebuilding the embedded admin-ui dist. Merged `dev` into
+this branch; resolved:
+
+- `BuilderPage.tsx`/`BuilderPage.test.tsx`: additive conflicts (P4.5's
+  `LivePreview` component alongside this ticket's `SavePresetBar`; both
+  test files' client mocks needed both `layouts.preview` and `presets.save`
+  entries) — combined by hand, both features now coexist in the page (live
+  preview render above the Save/Save-as-preset row).
+- `internal/adminui/dist/index.html` (+ its hashed asset files): resolved
+  per the reviewer's own prior precedent (used to resolve the identical
+  conflict on PR #13) — deleted `internal/adminui/dist/*` entirely and ran
+  `cd sdk-js && npm run build && cd ../admin-ui && npm run build` fresh from
+  the merged source (sdk-js's own dist needed rebuilding too, since
+  admin-ui's `file:../sdk-js` dependency was stale against the merged
+  `sdk-js/src/layouts.ts`'s new `preview()` method — surfaced as a
+  `tsc` error on the first `admin-ui` build attempt, fixed by rebuilding
+  `sdk-js` first).
+- `internal/api/api.go`, `sdk-js/src/index.ts`: auto-merged cleanly (both
+  PRs' additions to shared files were non-overlapping with this one's).
+
+Re-ran the full verification suite post-merge: `go build ./... && go vet
+./... && go test -race ./...` green (every package, including the newly-
+merged `internal/layout` preview-endpoint tests and this ticket's own),
+`cd admin-ui && npm run build && npm test` green (112 tests — up from 97
+pre-merge, +15 from P4.5/P4.9), `cd sdk-js && npm test` green (65 tests —
+up from 61, +4 from P4.5's `layouts.preview` tests).
+
 ## Migration Version
 
 `preset.Migrations` = 17, `bundle.Migrations` = 18 — re-verified live by
@@ -249,7 +314,10 @@ no other Phase-4 ticket's migration had landed in `dev` as of this writing.
   `Manifest`, `Validate()`.
 - `pkg/contract/bundle.go` (new) — `CompositionBundleV1`, `CompositionBundle`,
   `SampleContentItem`, `Validate()`, `asValidationErrors` helper.
-- `pkg/compat/compat.go` (new) — `Result`, `CheckPreset`, `CheckBundle`.
+- `pkg/compat/compat.go` (new) — `Result`, `Result.AsValidationErrors()`,
+  `CheckPreset`, `CheckBundle`, `mergeResults` (post-review: `CheckBundle`
+  delegates to `CheckPreset` per included preset rather than reimplementing
+  collection inline).
 - `pkg/compat/compat_test.go` (new) — 9 tests covering all-present, missing
   block (declared and tree-only), missing slot, no-restriction theme,
   unsupported contract version, and bundle-level aggregation.

@@ -168,7 +168,7 @@ func (s *Store) Save(ctx context.Context, principal *permission.Principal, regis
 	}
 	result := compat.CheckBundle(b, registry, nil)
 	if !result.Compatible {
-		return nil, incompatibleError(result)
+		return nil, result.AsValidationErrors()
 	}
 
 	id := newID()
@@ -258,25 +258,6 @@ func (s *Store) Import(ctx context.Context, principal *permission.Principal, reg
 	}
 
 	return out, nil
-}
-
-// incompatibleError mirrors internal/preset's identical helper — see that
-// file's doc comment.
-func incompatibleError(result compat.Result) error {
-	var errs contract.ValidationErrors
-	for _, b := range result.MissingBlocks {
-		errs = append(errs, contract.ValidationError{Path: "manifest.blocks", Message: fmt.Sprintf("block type %q is not registered", b)})
-	}
-	for _, s := range result.MissingSlots {
-		errs = append(errs, contract.ValidationError{Path: "manifest.slots", Message: fmt.Sprintf("region %q is not declared by the destination theme", s)})
-	}
-	if result.UnsupportedContract != "" {
-		errs = append(errs, contract.ValidationError{Path: "manifest.requires_contract", Message: fmt.Sprintf("unsupported contract version %q", result.UnsupportedContract)})
-	}
-	if len(errs) == 0 {
-		errs = append(errs, contract.ValidationError{Path: "", Message: "incompatible"})
-	}
-	return errs
 }
 
 func newID() string {

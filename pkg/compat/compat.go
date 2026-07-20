@@ -21,6 +21,7 @@
 package compat
 
 import (
+	"fmt"
 	"sort"
 
 	"github.com/glyphux/glyphux/pkg/blocks"
@@ -50,6 +51,38 @@ type Result struct {
 	// missing blocks/slots because no amount of "install this block plugin"
 	// fixes a contract-version mismatch.
 	UnsupportedContract string `json:"unsupported_contract,omitempty"`
+}
+
+// AsValidationErrors converts an incompatible Result into
+// contract.ValidationErrors — the same error shape a structural
+// Validate() failure already produces, so a caller that persists an
+// artifact only when it's compatible (internal/preset.Store.Save,
+// internal/bundle.Store.Save) needs only one error shape to map into a 422
+// with an issue list, rather than a second bespoke one. Returns nil when
+// r.Compatible.
+func (r Result) AsValidationErrors() error {
+	if r.Compatible {
+		return nil
+	}
+	var errs contract.ValidationErrors
+	for _, b := range r.MissingBlocks {
+		errs = append(errs, contract.ValidationError{Path: "manifest.blocks", Message: fmt.Sprintf("block type %q is not registered", b)})
+	}
+	for _, s := range r.MissingSlots {
+		errs = append(errs, contract.ValidationError{Path: "manifest.slots", Message: fmt.Sprintf("region %q is not declared by the destination theme", s)})
+	}
+	if r.UnsupportedContract != "" {
+		errs = append(errs, contract.ValidationError{Path: "manifest.requires_contract", Message: fmt.Sprintf("unsupported contract version %q", r.UnsupportedContract)})
+	}
+	if len(errs) == 0 {
+		// Compatible is false but nothing was collected above — shouldn't
+		// happen given how Result is constructed (check always populates
+		// at least one field when Compatible is false), but fall back to a
+		// non-empty error rather than silently returning nil, which a
+		// caller might mistake for "no error."
+		errs = append(errs, contract.ValidationError{Path: "", Message: "incompatible"})
+	}
+	return errs
 }
 
 // supportedLayoutContract is the set of Layer-2 Layout contract versions
@@ -87,35 +120,67 @@ func CheckPreset(preset *contract.CompositionPreset, registry *blocks.Registry, 
 	return check(preset.Manifest.RequiresContract, blockSet, slotSet, registry, themeRegions)
 }
 
-// CheckBundle validates bundle's Manifest, every page Layout, and every
-// included preset's own composition against registry and themeRegions,
-// aggregating the union of every missing block/slot found across all of
-// them into one Result — a bundle is incompatible if any one of its pieces
-// is.
+// CheckBundle validates bundle's own Manifest and every page Layout, then
+// merges in CheckPreset's own Result for every included preset — rather
+// than re-deriving a preset's block/slot collection inline a second time,
+// per pkg/contract/bundle.go's own Validate() precedent of delegating to
+// p.Validate() for each included preset rather than duplicating its checks.
+// The result is the union of every missing block/slot found across all of
+// them (see mergeResults) — a bundle is incompatible if any one of its
+// pieces is.
 func CheckBundle(bundle *contract.CompositionBundle, registry *blocks.Registry, themeRegions []string) Result {
 	blockSet := stringSet(bundle.Manifest.Blocks)
 	slotSet := stringSet(bundle.Manifest.Slots)
 
+	// Pages are plain Layouts with no Manifest of their own (a page is
+	// just where a bundle places composition, not a separately-declared
+	// artifact) — collecting their used blocks/regions is bundle-specific
+	// work with no CheckPreset equivalent to delegate to.
 	for _, l := range bundle.Pages {
 		addUsedBlockTypes(blockSet, l)
 		for region := range l.Regions {
 			slotSet[region] = true
 		}
 	}
-	for _, p := range bundle.Presets {
-		for b := range stringSet(p.Manifest.Blocks) {
-			blockSet[b] = true
-		}
-		addUsedBlockTypes(blockSet, p.Layout)
-		for s := range stringSet(p.Manifest.Slots) {
-			slotSet[s] = true
-		}
-		for region := range p.Layout.Regions {
-			slotSet[region] = true
-		}
+	result := check(bundle.Manifest.RequiresContract, blockSet, slotSet, registry, themeRegions)
+
+	for i := range bundle.Presets {
+		result = mergeResults(result, CheckPreset(&bundle.Presets[i], registry, themeRegions))
+	}
+	return result
+}
+
+// mergeResults combines two Results into one: the union of their
+// MissingBlocks and MissingSlots (deduplicated, sorted), and whichever
+// UnsupportedContract was non-empty (a's own artifact-level declaration
+// takes priority if both happen to report one — Result has only one string
+// field to report it in, and a bundle's own declared contract version is
+// the more actionable one to surface first).
+func mergeResults(a, b Result) Result {
+	blocks := stringSet(a.MissingBlocks)
+	for _, name := range b.MissingBlocks {
+		blocks[name] = true
+	}
+	slots := stringSet(a.MissingSlots)
+	for _, name := range b.MissingSlots {
+		slots[name] = true
 	}
 
-	return check(bundle.Manifest.RequiresContract, blockSet, slotSet, registry, themeRegions)
+	merged := Result{UnsupportedContract: a.UnsupportedContract}
+	if merged.UnsupportedContract == "" {
+		merged.UnsupportedContract = b.UnsupportedContract
+	}
+	for name := range blocks {
+		merged.MissingBlocks = append(merged.MissingBlocks, name)
+	}
+	sort.Strings(merged.MissingBlocks)
+	for name := range slots {
+		merged.MissingSlots = append(merged.MissingSlots, name)
+	}
+	sort.Strings(merged.MissingSlots)
+
+	merged.Compatible = len(merged.MissingBlocks) == 0 && len(merged.MissingSlots) == 0 && merged.UnsupportedContract == ""
+	return merged
 }
 
 // check is the shared core both CheckPreset and CheckBundle reduce to once
