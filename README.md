@@ -12,7 +12,22 @@ Full product definition: [docs/glyphux-prd.md](docs/glyphux-prd.md).
 The spine, end to end: daemon boot → composition contract v0 → SQLite +
 migrations → one contract-driven domain API → first-run web wizard.
 
-## Quick start
+## Install a release
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/glyphux/glyphux/main/scripts/release/install.sh | sh
+glyphuxd
+```
+
+Installs the latest release's `glyphuxd`/`glyphux` binaries to
+`~/.local/bin` (override with `INSTALL_DIR`; pin a version with
+`GLYPHUX_VERSION=vX.Y.Z`). Release archives for linux/darwin (amd64/arm64)
+and windows/amd64 are published on the
+[Releases page](https://github.com/glyphux/glyphux/releases), each with a
+`SHA256SUMS` file the install script verifies against before extracting.
+See `scripts/release/build.sh` for how a release is produced.
+
+## Quick start (build from source)
 
 ```sh
 go build -o glyphuxd ./cmd/glyphuxd
