@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -32,12 +33,36 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user, err := s.identities.Authenticate(r.Context(), body.Email, body.Password)
+	if errors.Is(err, identity.ErrAccountDeactivated) {
+		// Distinguishable from "invalid credentials" deliberately: the
+		// caller already proved they hold the correct password, so telling
+		// them the account is deactivated leaks nothing an attacker
+		// couldn't already infer by knowing the password themselves.
+		s.writeError(w, http.StatusForbidden, "account deactivated")
+		return
+	}
 	if err != nil {
 		// Unknown user and wrong password are indistinguishable.
 		s.loginLimiter.recordFailure(key)
 		s.writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
+
+	if user.MFAEnabled {
+		// Password verified, but a second factor is required before a
+		// session is issued: the login flow's step 2 is POST
+		// /api/v0/auth/mfa/verify with this challenge token and a TOTP (or
+		// recovery) code.
+		challenge, err := s.identities.BeginMFAChallenge(r.Context(), user.ID)
+		if err != nil {
+			s.log.Error("begin MFA challenge", "error", err)
+			s.writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		s.writeJSON(w, http.StatusOK, mfaChallengeResponse{MFARequired: true, MFAToken: challenge})
+		return
+	}
+
 	sess, err := s.sessions.Create(r.Context(), user.ID)
 	if err != nil {
 		s.log.Error("create session", "error", err)
@@ -45,7 +70,30 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, s.newSessionCookie(sess.Token, r))
-	s.writeJSON(w, http.StatusOK, user)
+	csrfToken, err := newCSRFToken()
+	if err != nil {
+		s.log.Error("generate CSRF token", "error", err)
+		s.writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	http.SetCookie(w, s.newCSRFCookie(csrfToken, r))
+	// Browser clients authenticate via the cookie just set; programmatic
+	// clients (SDKs, scripts) have no cookie jar, so the same token is also
+	// returned in the body for Authorization: Bearer use.
+	s.writeJSON(w, http.StatusOK, loginResponse{User: user, Token: sess.Token})
+}
+
+type loginResponse struct {
+	*identity.User
+	Token string `json:"token"`
+}
+
+// mfaChallengeResponse is what handleLogin returns instead of loginResponse
+// when the account has MFA enabled — no session yet, just a challenge token
+// for POST /api/v0/auth/mfa/verify.
+type mfaChallengeResponse struct {
+	MFARequired bool   `json:"mfaRequired"`
+	MFAToken    string `json:"mfaToken"`
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -55,10 +103,13 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(sessionCookieName); err == nil {
 		_ = s.sessions.Revoke(r.Context(), c.Value)
 	}
-	// Clear the cookie regardless.
+	// Clear both cookies regardless.
 	clear := s.newSessionCookie("", r)
 	clear.MaxAge = -1
 	http.SetCookie(w, clear)
+	clearCSRF := s.newCSRFCookie("", r)
+	clearCSRF.MaxAge = -1
+	http.SetCookie(w, clearCSRF)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -120,19 +171,34 @@ func userFrom(ctx context.Context) (*identity.User, bool) {
 	return u, ok
 }
 
+// principal resolves r's caller as the narrow permission.Principal domain
+// APIs check capability grants against, or nil for an unauthenticated
+// request. Passed through to every domain-API call so the domain layer can
+// enforce its own capability check (PRD §10.5) as defense-in-depth alongside
+// this package's own requireCapability/canReadDrafts fast-fail checks.
+func (s *Server) principal(r *http.Request) *permission.Principal {
+	user, ok := s.currentUser(r)
+	if !ok {
+		return nil
+	}
+	return &permission.Principal{Role: user.Role}
+}
+
 func (s *Server) newSessionCookie(token string, r *http.Request) *http.Cookie {
 	return &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   isHTTPS(r),
+		Secure:   s.isHTTPS(r),
 		SameSite: http.SameSiteLaxMode,
 	}
 }
 
-func isHTTPS(r *http.Request) bool {
-	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+// isHTTPS mirrors setup.Wizard's identical trust decision: an unvouched
+// X-Forwarded-Proto header is only honored when trustProxyHeaders is set.
+func (s *Server) isHTTPS(r *http.Request) bool {
+	return r.TLS != nil || (s.trustProxyHeaders && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"))
 }
 
 func bearerToken(r *http.Request) (string, bool) {

@@ -1,0 +1,29 @@
+# gqlgen configuration for the Glyphux GraphQL transport (slice 1.12).
+#
+# Generated code (exec + models) is checked into git so `go build ./...`
+# works without anyone running codegen first — this repo has no other
+# codegen step today (see AGENTS.md / docs/implementation/active/0004).
+# Regenerate with:
+#   cd internal/graphql && go run github.com/99designs/gqlgen generate
+
+schema:
+  - schema/*.graphql
+
+exec:
+  filename: generated/generated.go
+  package: generated
+
+model:
+  filename: generated/models_gen.go
+  package: generated
+
+resolver:
+  layout: follow-schema
+  dir: .
+  package: graphql
+
+# Domain types (content.Item, media.Item, identity.User, contract.ContentType)
+# are hand-mapped to GraphQL types in resolvers rather than autobinding
+# gqlgen models onto them directly — their Go shapes (e.g. map[string]any
+# content data, contract.ContentType's map[string]Field) don't line up
+# one-to-one with a natural GraphQL shape.

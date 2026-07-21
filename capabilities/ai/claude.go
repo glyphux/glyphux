@@ -1,0 +1,175 @@
+package ai
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/url"
+	"sort"
+	"strings"
+)
+
+// claudeAPIVersion is the Anthropic Messages API version header every real
+// request must carry (https://docs.anthropic.com/en/api/messages) — a
+// fixed, documented API version, not a provider-agnostic value, which is
+// exactly why it lives in this file and nowhere above the Adapter
+// boundary.
+const claudeAPIVersion = "2023-06-01"
+
+// ClaudeAdapter is an Adapter backed by the real Anthropic Messages API
+// wire shape (POST {baseURL}/v1/messages, headers x-api-key +
+// anthropic-version, body {model, max_tokens, messages: [...]}) — proven in
+// claude_test.go against a local httptest fake server replicating that
+// shape closely enough to exercise this adapter's real request-building,
+// response-parsing, and error-handling code, never live Anthropic
+// credentials.
+type ClaudeAdapter struct {
+	apiKey  string
+	baseURL string
+	host    string
+	client  *http.Client
+}
+
+// NewClaudeAdapter returns a ClaudeAdapter whose Generate calls hit
+// baseURL (e.g. "https://api.anthropic.com" in production; a local fake
+// server's URL in tests) using apiKey.
+func NewClaudeAdapter(apiKey, baseURL string) (*ClaudeAdapter, error) {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("ai: invalid claude base URL %q: %w", baseURL, err)
+	}
+	if u.Hostname() == "" {
+		return nil, fmt.Errorf("ai: claude base URL %q has no host", baseURL)
+	}
+	return &ClaudeAdapter{apiKey: apiKey, baseURL: strings.TrimRight(baseURL, "/"), host: u.Hostname(), client: http.DefaultClient}, nil
+}
+
+// AllowlistHost returns the hostname this adapter's calls target.
+func (a *ClaudeAdapter) AllowlistHost() string { return a.host }
+
+type claudeMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type claudeRequest struct {
+	Model     string          `json:"model"`
+	MaxTokens int             `json:"max_tokens"`
+	System    string          `json:"system,omitempty"`
+	Messages  []claudeMessage `json:"messages"`
+}
+
+type claudeContentBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+type claudeResponse struct {
+	ID         string               `json:"id"`
+	Model      string               `json:"model"`
+	StopReason string               `json:"stop_reason"`
+	Content    []claudeContentBlock `json:"content"`
+}
+
+// Generate performs a real Anthropic Messages API request.
+func (a *ClaudeAdapter) Generate(ctx context.Context, req GenerateRequest) (*GenerateResponse, error) {
+	maxTokens := req.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = 1024
+	}
+	body := claudeRequest{
+		Model:     req.Model,
+		MaxTokens: maxTokens,
+		System:    req.System,
+		Messages:  []claudeMessage{{Role: "user", Content: req.Prompt}},
+	}
+	var resp claudeResponse
+	if err := a.doJSON(ctx, "/v1/messages", body, &resp); err != nil {
+		return nil, err
+	}
+	var text strings.Builder
+	for _, block := range resp.Content {
+		if block.Type == "text" {
+			text.WriteString(block.Text)
+		}
+	}
+	return &GenerateResponse{Text: text.String(), Model: resp.Model, FinishReason: resp.StopReason}, nil
+}
+
+// Embed always returns ErrNotSupported: the real Anthropic API has no
+// embeddings endpoint (Anthropic does not offer a first-party embedding
+// model as of this writing) — a caller configured against Claude for
+// embeddings gets a clear, typed "not this provider" rather than a silently
+// fabricated vector.
+func (a *ClaudeAdapter) Embed(ctx context.Context, req EmbedRequest) (*EmbedResponse, error) {
+	return nil, fmt.Errorf("ai: claude adapter: %w", ErrNotSupported)
+}
+
+// Classify has no dedicated Anthropic endpoint (see Adapter's doc comment),
+// so this builds a constrained-output prompt asking the model to respond
+// with exactly one of req.Labels, then calls Generate and parses the label
+// back out.
+func (a *ClaudeAdapter) Classify(ctx context.Context, req ClassifyRequest) (*ClassifyResponse, error) {
+	genResp, err := a.Generate(ctx, classificationGenerateRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return &ClassifyResponse{Label: matchLabel(genResp.Text, req.Labels), Model: genResp.Model}, nil
+}
+
+// doJSON POSTs body as JSON to path against a.baseURL with this provider's
+// real auth headers (x-api-key, anthropic-version), delegating the actual
+// marshal/POST/status-check/error-envelope-decode cycle to the shared
+// httpJSON transport (transport.go) every adapter in this package uses.
+func (a *ClaudeAdapter) doJSON(ctx context.Context, path string, body any, out any) error {
+	headers := map[string]string{
+		"x-api-key":         a.apiKey,
+		"anthropic-version": claudeAPIVersion,
+	}
+	return httpJSON(ctx, a.client, a.baseURL+path, headers, body, out, "ai: claude adapter")
+}
+
+// classificationGenerateRequest builds the shared constrained-output
+// prompt every adapter without a native classify endpoint uses (see
+// Adapter's doc comment) — kept as one shared helper (not duplicated per
+// adapter) since the prompt shape itself is provider-agnostic; only the
+// transport that carries it differs per adapter.
+func classificationGenerateRequest(req ClassifyRequest) GenerateRequest {
+	return GenerateRequest{
+		Model:  req.Model,
+		System: "You are a strict text classifier. Respond with exactly one label from the provided list and nothing else.",
+		Prompt: fmt.Sprintf("Labels: %s\n\nText: %s\n\nWhich single label best applies? Respond with only the label text.",
+			strings.Join(req.Labels, ", "), req.Input),
+		MaxTokens: 32,
+	}
+}
+
+// matchLabel finds which of labels the generated text names, matching
+// case-insensitively and tolerating surrounding whitespace/punctuation a
+// model might add (e.g. a trailing period) — a documented, simple best
+// effort, not full NLP. It checks for an exact (trimmed, case-insensitive)
+// match first; failing that, falls back to a substring search ordered by
+// LONGEST label first, so a label that is itself a substring of another
+// (e.g. "spam" inside "not-spam") never shadows the more specific one. If
+// no label matches at all, the trimmed raw text is returned as-is so a
+// caller can still see what the model said rather than getting a silently
+// empty label.
+func matchLabel(text string, labels []string) string {
+	trimmed := strings.TrimSpace(text)
+	lower := strings.ToLower(trimmed)
+
+	for _, label := range labels {
+		if strings.ToLower(label) == lower {
+			return label
+		}
+	}
+
+	byLength := append([]string(nil), labels...)
+	sort.Slice(byLength, func(i, j int) bool { return len(byLength[i]) > len(byLength[j]) })
+	for _, label := range byLength {
+		if strings.Contains(lower, strings.ToLower(label)) {
+			return label
+		}
+	}
+	return trimmed
+}

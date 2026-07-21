@@ -9,8 +9,10 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/glyphux/glyphux/internal/adminui"
 	"github.com/glyphux/glyphux/internal/api"
 	"github.com/glyphux/glyphux/internal/setup"
 )
@@ -29,12 +31,76 @@ type Server struct {
 // through JSON decoding or validation (slice 1.9).
 const maxRequestBodyBytes = 1 << 20 // 1 MiB
 
+// Production HTTP timeout defaults. Without these a slow or hanging client
+// can hold a connection open indefinitely, exhausting file descriptors —
+// ReadHeaderTimeout alone (the only one previously set) only bounds the
+// header phase, not a slow body or a slow handler.
+const (
+	DefaultReadTimeout       = 30 * time.Second
+	DefaultWriteTimeout      = 30 * time.Second
+	DefaultIdleTimeout       = 120 * time.Second
+	DefaultReadHeaderTimeout = 5 * time.Second
+)
+
+// Timeouts reports the HTTP timeouts a Server was configured with.
+type Timeouts struct {
+	Read       time.Duration
+	Write      time.Duration
+	Idle       time.Duration
+	ReadHeader time.Duration
+}
+
+// Option configures optional Handler behavior beyond the required API
+// transport and wizard.
+type Option func(*handlerConfig)
+
+type handlerConfig struct {
+	graphqlHandler http.Handler
+	allowedOrigins []string
+}
+
+// WithGraphQL mounts h at POST /graphql (slice 1.12). Omit to serve without
+// a GraphQL transport at all.
+func WithGraphQL(h http.Handler) Option {
+	return func(c *handlerConfig) { c.graphqlHandler = h }
+}
+
+// WithCORS opts the daemon into CORS for exactly the origins listed in
+// allowedOrigins (slice 1.9). Omit (or pass an empty/nil list) to preserve
+// the default posture: no Access-Control-Allow-Origin ever, on any
+// response — see cors's doc comment for why that is the correct default and
+// wrong forever-default at once.
+func WithCORS(allowedOrigins []string) Option {
+	return func(c *handlerConfig) { c.allowedOrigins = allowedOrigins }
+}
+
 // Handler assembles the daemon's full route table: API transport, wizard,
-// and the root redirect.
-func Handler(apiServer *api.Server, wizard *setup.Wizard) http.Handler {
+// and the root redirect. It used to take a variadic graphqlHandler
+// parameter directly; that grew into the Option pattern above once CORS
+// needed its own optional configuration too (slice 1.9) — every existing
+// caller that passed no options still compiles unchanged, and the one
+// caller that passed a GraphQL handler (cmd/glyphuxd) was updated to
+// WithGraphQL.
+func Handler(apiServer *api.Server, wizard *setup.Wizard, opts ...Option) http.Handler {
+	cfg := &handlerConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
 	mux := http.NewServeMux()
 	apiServer.Routes(mux)
 	wizard.Routes(mux)
+	if cfg.graphqlHandler != nil {
+		mux.Handle("POST /graphql", cfg.graphqlHandler)
+	}
+
+	// The admin shell (PRD §5.6 Surface 2) is mounted on this same
+	// long-lived mux, so — same reasoning as the root redirect below — it
+	// must be gated on first-run setup having completed. Without the gate
+	// it would be reachable (serving a broken, data-less UI) before /setup
+	// ever runs, since bootstrap only swaps which *database* this mux is
+	// wired to, never which routes exist.
+	mux.Handle("GET /admin/", requireSetupComplete(wizard, http.StripPrefix("/admin", adminui.Handler())))
 
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		if !wizard.Complete() {
@@ -43,7 +109,95 @@ func Handler(apiServer *api.Server, wizard *setup.Wizard) http.Handler {
 		}
 		http.Redirect(w, r, "/api/v0/content/ping", http.StatusTemporaryRedirect)
 	})
-	return limitBody(securityHeaders(mux))
+	return limitBody(securityHeaders(cors(cfg.allowedOrigins, generalRateLimit(mux))))
+}
+
+// requireSetupComplete gates next behind first-run setup having completed,
+// mirroring the root route's own redirect-to-/setup behavior (§6.2).
+func requireSetupComplete(wizard *setup.Wizard, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !wizard.Complete() {
+			http.Redirect(w, r, "/setup", http.StatusTemporaryRedirect)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// RequestsPerWindow and requestWindow bound how many requests any single
+// remote address may make across the whole API surface within the window —
+// general throttling (slice 1.9), resolving the tracking doc's open
+// question in favor of including it. This is deliberately distinct from
+// internal/api/ratelimit.go's loginLimiter, which only ever counts *failed*
+// logins for brute-force defense; this limiter counts every request
+// regardless of outcome, which is a materially different bookkeeping rule
+// (every request always counts here, vs. only failures there), so it is a
+// separate small type rather than a forced generalization of the other.
+const (
+	RequestsPerWindow = 300
+	requestWindow     = time.Minute
+)
+
+// generalRateLimitExempt holds paths a orchestrator polls on a health-check
+// cadence that must never be mistaken for abuse.
+var generalRateLimitExempt = map[string]bool{
+	"/healthz": true,
+	"/readyz":  true,
+}
+
+// requestLimiter tracks request timestamps per remote address for
+// generalRateLimit.
+type requestLimiter struct {
+	mu       sync.Mutex
+	requests map[string][]time.Time
+	now      func() time.Time
+}
+
+func newRequestLimiter() *requestLimiter {
+	return &requestLimiter{requests: make(map[string][]time.Time), now: time.Now}
+}
+
+// allow records the current request from key and reports whether it may
+// proceed, given RequestsPerWindow within requestWindow.
+func (l *requestLimiter) allow(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	cutoff := l.now().Add(-requestWindow)
+	kept := l.requests[key][:0]
+	for _, t := range l.requests[key] {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	kept = append(kept, l.now())
+	l.requests[key] = kept
+	return len(kept) <= RequestsPerWindow
+}
+
+// generalRateLimit throttles every remote address to RequestsPerWindow
+// requests per requestWindow across the whole daemon surface, excluding
+// generalRateLimitExempt paths. It is intentionally coarse (per-process,
+// in-memory, not per-token) — a first line of defense against a single
+// client overwhelming the daemon, not a precise quota system.
+func generalRateLimit(next http.Handler) http.Handler {
+	limiter := newRequestLimiter()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if generalRateLimitExempt[r.URL.Path] {
+			next.ServeHTTP(w, r)
+			return
+		}
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			host = r.RemoteAddr
+		}
+		if !limiter.allow(host) {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":"too many requests"}`))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // limitBody caps every request body at maxRequestBodyBytes. A handler that
@@ -59,10 +213,11 @@ func limitBody(next http.Handler) http.Handler {
 	})
 }
 
-// securityHeaders sets baseline hardening headers on every response. There is
-// no Access-Control-Allow-Origin here or anywhere else in the daemon, so
-// browsers deny cross-origin reads by default — CORS is opt-in only, and
-// nothing currently opts in (slice 1.9).
+// securityHeaders sets baseline hardening headers on every response. It sets
+// no Access-Control-Allow-Origin itself — that is cors's job, immediately
+// below — so a daemon with no allowed origins configured keeps today's "no
+// CORS ever" posture: browsers deny cross-origin reads by default (slice
+// 1.9).
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
@@ -73,17 +228,80 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-// New assembles the full route table.
-func New(addr string, apiServer *api.Server, wizard *setup.Wizard, log *slog.Logger) *Server {
+// corsAllowedMethods and corsAllowedHeaders are what a cross-origin
+// developer's frontend (PRD's own positioning: external developers building
+// separate frontends that call the API cross-origin) needs to actually use
+// the API's full mutating surface and its dual bearer/CSRF auth headers.
+const (
+	corsAllowedMethods = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+	corsAllowedHeaders = "Content-Type, Authorization, X-CSRF-Token"
+)
+
+// cors opts the daemon into CORS for exactly the origins in allowedOrigins,
+// and only those — an explicit allow-list, never a wildcard (Principle 8:
+// kernel security surface is explicit, not permissive-by-default). An empty
+// or nil list (the default — nothing sets GLYPHUX_ALLOWED_ORIGINS or the
+// config file equivalent) preserves today's "no CORS ever" posture: no
+// Access-Control-Allow-Origin header is set for any request, matching the
+// admin SPA's own same-origin posture (it is embedded via go:embed and never
+// needs CORS for itself). Once an operator opts a real external frontend in,
+// its origin is echoed back with credentials allowed, since the API's
+// cookie-authenticated flows (and CSRF's double-submit cookie) require it.
+func cors(allowedOrigins []string, next http.Handler) http.Handler {
+	if len(allowedOrigins) == 0 {
+		return next
+	}
+	allowed := make(map[string]bool, len(allowedOrigins))
+	for _, o := range allowedOrigins {
+		allowed[o] = true
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin == "" || !allowed[origin] {
+			next.ServeHTTP(w, r)
+			return
+		}
+		h := w.Header()
+		h.Set("Access-Control-Allow-Origin", origin)
+		h.Set("Vary", "Origin")
+		h.Set("Access-Control-Allow-Credentials", "true")
+		if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
+			h.Set("Access-Control-Allow-Methods", corsAllowedMethods)
+			h.Set("Access-Control-Allow-Headers", corsAllowedHeaders)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// New builds a Server that serves handler on addr. Callers assemble the
+// route table themselves — via Handler(apiServer, wizard) for the ordinary
+// case, or a bootstrap.Gateway when setup may still switch which database
+// the daemon serves from (§6.2) — New itself is agnostic to which.
+func New(addr string, handler http.Handler, log *slog.Logger) *Server {
 	return &Server{
 		http: &http.Server{
 			Addr:              addr,
-			Handler:           requestLog(log, Handler(apiServer, wizard)),
-			ReadHeaderTimeout: 5 * time.Second,
+			Handler:           requestLog(log, handler),
+			ReadHeaderTimeout: DefaultReadHeaderTimeout,
+			ReadTimeout:       DefaultReadTimeout,
+			WriteTimeout:      DefaultWriteTimeout,
+			IdleTimeout:       DefaultIdleTimeout,
 		},
 		log:           log,
 		addr:          addr,
 		listenerReady: make(chan string, 1),
+	}
+}
+
+// Timeouts reports the HTTP timeouts this Server was configured with.
+func (s *Server) Timeouts() Timeouts {
+	return Timeouts{
+		Read:       s.http.ReadTimeout,
+		Write:      s.http.WriteTimeout,
+		Idle:       s.http.IdleTimeout,
+		ReadHeader: s.http.ReadHeaderTimeout,
 	}
 }
 

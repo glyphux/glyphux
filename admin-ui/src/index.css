@@ -1,0 +1,251 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/* Class-driven dark mode (".dark" on <html>) rather than relying solely on
+   prefers-color-scheme, so the in-app theme toggle (PRD §5.7 "admin theming
+   via tokens: at minimum light/dark") can override the OS preference. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ==========================================================================
+   Design tokens — the single source of truth for color, type, spacing,
+   radius, elevation, and motion (PRD §5.7). Every admin component consumes
+   these; no ad-hoc magic-number values (arbitrary Tailwind `[13px]` values,
+   one-off hex colors, etc.) belong in component code. Raw scale lives in
+   `--gx-*`; semantic tokens below alias the scale to a role (background,
+   border, etc.) so swapping the brand accent or the whole palette is a
+   token-layer change, not a component-hunt.
+   ========================================================================== */
+:root {
+  /* --- Brand accent (brandable per PRD §5.7 "brandable accent/logo") ---
+     Change these three stops to re-skin the whole admin's accent color;
+     every component that uses `primary`/`ring`/focus states derives from
+     this, nothing hardcodes a blue. */
+  --gx-accent-50: oklch(0.97 0.02 264);
+  --gx-accent-500: oklch(0.55 0.22 264);
+  --gx-accent-600: oklch(0.48 0.22 264);
+  --gx-accent-700: oklch(0.4 0.2 264);
+
+  /* --- Neutral scale --- */
+  --gx-neutral-0: oklch(1 0 0);
+  --gx-neutral-50: oklch(0.985 0.002 264);
+  --gx-neutral-100: oklch(0.967 0.003 264);
+  --gx-neutral-200: oklch(0.92 0.004 264);
+  --gx-neutral-300: oklch(0.85 0.006 264);
+  --gx-neutral-400: oklch(0.65 0.01 264);
+  /* 0.53, not 0.55 — 0.55 measured 4.41:1 against --gx-neutral-100 (the
+     muted background text-small/caption text sits on), just under WCAG AA's
+     4.5:1 for normal-size text. Verified with the real, rerunnable check in
+     admin-ui/scripts/check-contrast.mjs (`npm run check:contrast`; also
+     asserted by scripts/check-contrast.test.mjs as part of `npm test`) —
+     see docs/implementation/active/0020-design-system.md for the full
+     audit. 0.53 clears it at ~4.8:1 with a barely perceptible shift. */
+  --gx-neutral-500: oklch(0.53 0.012 264);
+  --gx-neutral-600: oklch(0.44 0.014 264);
+  --gx-neutral-700: oklch(0.33 0.014 264);
+  --gx-neutral-800: oklch(0.24 0.012 264);
+  --gx-neutral-900: oklch(0.17 0.01 264);
+  --gx-neutral-950: oklch(0.12 0.008 264);
+
+  /* --- Status scale --- */
+  --gx-danger-500: oklch(0.58 0.22 25);
+  --gx-danger-600: oklch(0.5 0.22 25);
+  --gx-success-500: oklch(0.6 0.17 150);
+  --gx-warning-500: oklch(0.75 0.16 85);
+
+  /* --- Semantic roles (light theme, default) --- */
+  --background: var(--gx-neutral-0);
+  --foreground: var(--gx-neutral-900);
+  --card: var(--gx-neutral-0);
+  --card-foreground: var(--gx-neutral-900);
+  --popover: var(--gx-neutral-0);
+  --popover-foreground: var(--gx-neutral-900);
+  --primary: var(--gx-accent-500);
+  --primary-foreground: var(--gx-neutral-0);
+  --secondary: var(--gx-neutral-100);
+  --secondary-foreground: var(--gx-neutral-900);
+  --muted: var(--gx-neutral-100);
+  --muted-foreground: var(--gx-neutral-500);
+  --accent: var(--gx-neutral-100);
+  --accent-foreground: var(--gx-neutral-900);
+  --destructive: var(--gx-danger-500);
+  --destructive-foreground: var(--gx-neutral-0);
+  --success: var(--gx-success-500);
+  --warning: var(--gx-warning-500);
+  --border: var(--gx-neutral-200);
+  --input: var(--gx-neutral-200);
+  --ring: var(--gx-accent-500);
+  --sidebar: var(--gx-neutral-50);
+  --sidebar-foreground: var(--gx-neutral-900);
+  --sidebar-border: var(--gx-neutral-200);
+
+  /* --- Radius scale --- */
+  --radius: 0.625rem;
+  --radius-sm: calc(var(--radius) - 0.25rem);
+  --radius-md: calc(var(--radius) - 0.125rem);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 0.25rem);
+
+  /* --- Elevation scale (light) --- */
+  --shadow-xs: 0 1px 2px 0 oklch(0.12 0.008 264 / 0.04);
+  --shadow-sm: 0 1px 3px 0 oklch(0.12 0.008 264 / 0.08), 0 1px 2px -1px oklch(0.12 0.008 264 / 0.08);
+  --shadow-md: 0 4px 8px -2px oklch(0.12 0.008 264 / 0.08), 0 2px 4px -2px oklch(0.12 0.008 264 / 0.06);
+  --shadow-lg: 0 12px 20px -6px oklch(0.12 0.008 264 / 0.12), 0 4px 6px -4px oklch(0.12 0.008 264 / 0.08);
+
+  /* --- Motion scale --- */
+  --duration-fast: 100ms;
+  --duration-base: 180ms;
+  --duration-slow: 280ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-decelerate: cubic-bezier(0, 0, 0, 1);
+  --ease-accelerate: cubic-bezier(0.3, 0, 1, 1);
+
+  /* --- Type scale --- */
+  --font-sans: ui-sans-serif, system-ui, "Segoe UI", Inter, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+
+.dark {
+  --background: var(--gx-neutral-950);
+  --foreground: var(--gx-neutral-100);
+  --card: var(--gx-neutral-900);
+  --card-foreground: var(--gx-neutral-100);
+  --popover: var(--gx-neutral-900);
+  --popover-foreground: var(--gx-neutral-100);
+  --primary: var(--gx-accent-500);
+  --primary-foreground: var(--gx-neutral-0);
+  --secondary: var(--gx-neutral-800);
+  --secondary-foreground: var(--gx-neutral-100);
+  --muted: var(--gx-neutral-800);
+  --muted-foreground: var(--gx-neutral-400);
+  --accent: var(--gx-neutral-800);
+  --accent-foreground: var(--gx-neutral-100);
+  --destructive: var(--gx-danger-500);
+  --destructive-foreground: var(--gx-neutral-0);
+  --success: var(--gx-success-500);
+  --warning: var(--gx-warning-500);
+  --border: var(--gx-neutral-800);
+  --input: var(--gx-neutral-800);
+  --ring: var(--gx-accent-500);
+  --sidebar: var(--gx-neutral-900);
+  --sidebar-foreground: var(--gx-neutral-100);
+  --sidebar-border: var(--gx-neutral-800);
+
+  /* Dark elevation leans on borders more than shadow spread — deep shadows
+     read poorly against a dark background. */
+  --shadow-xs: 0 1px 2px 0 oklch(0 0 0 / 0.3);
+  --shadow-sm: 0 1px 3px 0 oklch(0 0 0 / 0.4), 0 1px 2px -1px oklch(0 0 0 / 0.4);
+  --shadow-md: 0 4px 8px -2px oklch(0 0 0 / 0.45), 0 2px 4px -2px oklch(0 0 0 / 0.35);
+  --shadow-lg: 0 12px 20px -6px oklch(0 0 0 / 0.5), 0 4px 6px -4px oklch(0 0 0 / 0.4);
+}
+
+/* Maps the semantic tokens above onto Tailwind v4's @theme layer, so
+   `bg-background`, `text-foreground`, `border-border`, `shadow-md`, etc.
+   are generated utilities backed by the tokens — never a raw hex/oklch
+   value typed directly in a component. */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-xl: var(--radius-xl);
+
+  --shadow-xs: var(--shadow-xs);
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+
+  /* Display/heading/body/utility type roles (PRD §5.7 "deliberate
+     typography system... not framework defaults"). */
+  --text-display: 2.25rem;
+  --text-display--line-height: 2.5rem;
+  --text-display--font-weight: 600;
+  --text-h1: 1.5rem;
+  --text-h1--line-height: 2rem;
+  --text-h1--font-weight: 600;
+  --text-h2: 1.25rem;
+  --text-h2--line-height: 1.75rem;
+  --text-h2--font-weight: 600;
+  --text-body: 0.875rem;
+  --text-body--line-height: 1.375rem;
+  --text-small: 0.8125rem;
+  --text-small--line-height: 1.125rem;
+  --text-mono: 0.8125rem;
+  --text-mono--line-height: 1.25rem;
+
+  --animate-fade-in: fade-in var(--duration-base) var(--ease-standard);
+  --animate-slide-in: slide-in var(--duration-base) var(--ease-decelerate);
+
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes slide-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground font-sans text-body antialiased;
+  }
+  /* Visible keyboard focus everywhere (WCAG 2.1 AA, PRD §5.7 quality
+     floor) — never rely on the browser default outline being sufficient,
+     but never remove it without replacing it either. */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+  /* Respect reduced-motion (PRD §5.7 "motion... with reduced-motion
+     respected"). */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}

@@ -13,6 +13,12 @@ import (
 
 	"github.com/glyphux/glyphux/internal/db"
 	"github.com/glyphux/glyphux/internal/media"
+	"github.com/glyphux/glyphux/internal/permission"
+)
+
+var (
+	mediaAdminPrincipal  = &permission.Principal{Role: permission.RoleAdmin}
+	mediaViewerPrincipal = &permission.Principal{Role: permission.RoleViewer}
 )
 
 func testAPI(t *testing.T) *media.API {
@@ -50,7 +56,7 @@ func TestUploadStoresFileAndMetadata(t *testing.T) {
 	ctx := context.Background()
 	data := pngBytes(t, 40, 20)
 
-	item, err := api.Upload(ctx, "cover.png", "image/png", data)
+	item, err := api.Upload(ctx, mediaAdminPrincipal, "cover.png", "image/png", data)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -78,7 +84,7 @@ func TestUploadStoresFileAndMetadata(t *testing.T) {
 
 func TestUploadRejectsDisallowedMimeType(t *testing.T) {
 	api := testAPI(t)
-	_, err := api.Upload(context.Background(), "notes.txt", "text/plain", []byte("hello"))
+	_, err := api.Upload(context.Background(), mediaAdminPrincipal, "notes.txt", "text/plain", []byte("hello"))
 	if !errors.Is(err, media.ErrUnsupportedType) {
 		t.Errorf("got %v, want ErrUnsupportedType", err)
 	}
@@ -94,10 +100,10 @@ func TestGetMissingReturnsNotFound(t *testing.T) {
 func TestListReturnsAllUploads(t *testing.T) {
 	api := testAPI(t)
 	ctx := context.Background()
-	if _, err := api.Upload(ctx, "a.png", "image/png", pngBytes(t, 10, 10)); err != nil {
+	if _, err := api.Upload(ctx, mediaAdminPrincipal, "a.png", "image/png", pngBytes(t, 10, 10)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := api.Upload(ctx, "b.png", "image/png", pngBytes(t, 10, 10)); err != nil {
+	if _, err := api.Upload(ctx, mediaAdminPrincipal, "b.png", "image/png", pngBytes(t, 10, 10)); err != nil {
 		t.Fatal(err)
 	}
 	items, err := api.List(ctx)
@@ -112,7 +118,7 @@ func TestListReturnsAllUploads(t *testing.T) {
 func TestDeleteRemovesRecordAndFile(t *testing.T) {
 	api := testAPI(t)
 	ctx := context.Background()
-	item, err := api.Upload(ctx, "a.png", "image/png", pngBytes(t, 10, 10))
+	item, err := api.Upload(ctx, mediaAdminPrincipal, "a.png", "image/png", pngBytes(t, 10, 10))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +127,7 @@ func TestDeleteRemovesRecordAndFile(t *testing.T) {
 		t.Fatalf("uploaded file missing on disk: %v", err)
 	}
 
-	if err := api.Delete(ctx, item.ID); err != nil {
+	if err := api.Delete(ctx, mediaAdminPrincipal, item.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 	if _, err := api.Get(ctx, item.ID); !errors.Is(err, media.ErrNotFound) {
@@ -136,7 +142,7 @@ func TestOpenServesStoredBytes(t *testing.T) {
 	api := testAPI(t)
 	ctx := context.Background()
 	data := pngBytes(t, 12, 8)
-	item, err := api.Upload(ctx, "a.png", "image/png", data)
+	item, err := api.Upload(ctx, mediaAdminPrincipal, "a.png", "image/png", data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,17 +161,17 @@ func TestOpenServesStoredBytes(t *testing.T) {
 	}
 }
 
-func TestResizeScalesImagePreservingAspectRatio(t *testing.T) {
+func TestTransformResizeScalesImagePreservingAspectRatio(t *testing.T) {
 	api := testAPI(t)
 	ctx := context.Background()
-	item, err := api.Upload(ctx, "a.png", "image/png", pngBytes(t, 40, 20))
+	item, err := api.Upload(ctx, mediaAdminPrincipal, "a.png", "image/png", pngBytes(t, 40, 20))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	resized, contentType, err := api.Resize(ctx, item.ID, 20, 0)
+	resized, contentType, err := api.Transform(ctx, item.ID, media.TransformOptions{MaxW: 20})
 	if err != nil {
-		t.Fatalf("Resize: %v", err)
+		t.Fatalf("Transform: %v", err)
 	}
 	if contentType != "image/png" {
 		t.Errorf("contentType = %q, want image/png", contentType)
@@ -176,5 +182,330 @@ func TestResizeScalesImagePreservingAspectRatio(t *testing.T) {
 	}
 	if cfg.Width != 20 || cfg.Height != 10 {
 		t.Errorf("resized dimensions = %dx%d, want 20x10 (aspect preserved)", cfg.Width, cfg.Height)
+	}
+}
+
+// quadImage builds a 4x2 RGBA PNG with a distinct solid color in each half
+// (left red, right blue) so crop/rotate correctness can be verified by
+// sampling actual output pixels, not just output dimensions.
+func quadImage(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 4, 2))
+	for y := 0; y < 2; y++ {
+		for x := 0; x < 4; x++ {
+			if x < 2 {
+				img.Set(x, y, color.RGBA{R: 255, A: 255}) // left half: red
+			} else {
+				img.Set(x, y, color.RGBA{B: 255, A: 255}) // right half: blue
+			}
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func decodePNG(t *testing.T, data []byte) image.Image {
+	t.Helper()
+	img, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("decode png: %v", err)
+	}
+	return img
+}
+
+func TestTransformCropExtractsTheRequestedRect(t *testing.T) {
+	api := testAPI(t)
+	ctx := context.Background()
+	item, err := api.Upload(ctx, mediaAdminPrincipal, "quad.png", "image/png", quadImage(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Crop just the blue right half (x=2, w=2).
+	out, _, err := api.Transform(ctx, item.ID, media.TransformOptions{CropX: 2, CropY: 0, CropW: 2, CropH: 2})
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	img := decodePNG(t, out)
+	b := img.Bounds()
+	if b.Dx() != 2 || b.Dy() != 2 {
+		t.Fatalf("cropped dimensions = %dx%d, want 2x2", b.Dx(), b.Dy())
+	}
+	r, g, bl, _ := img.At(b.Min.X, b.Min.Y).RGBA()
+	if r != 0 || g != 0 || bl == 0 {
+		t.Errorf("cropped pixel = (%d,%d,%d), want blue (0,0,max)", r, g, bl)
+	}
+}
+
+func TestTransformCropRejectsOutOfBoundsRect(t *testing.T) {
+	api := testAPI(t)
+	ctx := context.Background()
+	item, err := api.Upload(ctx, mediaAdminPrincipal, "quad.png", "image/png", quadImage(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = api.Transform(ctx, item.ID, media.TransformOptions{CropX: 3, CropY: 0, CropW: 5, CropH: 2})
+	if !errors.Is(err, media.ErrInvalidTransform) {
+		t.Errorf("got %v, want ErrInvalidTransform", err)
+	}
+}
+
+func TestTransformRotate90MovesLeftPixelToTop(t *testing.T) {
+	api := testAPI(t)
+	ctx := context.Background()
+	item, err := api.Upload(ctx, mediaAdminPrincipal, "quad.png", "image/png", quadImage(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out, _, err := api.Transform(ctx, item.ID, media.TransformOptions{Rotate: 90})
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	img := decodePNG(t, out)
+	b := img.Bounds()
+	// Source was 4 wide x 2 tall; a 90-degree rotation swaps those.
+	if b.Dx() != 2 || b.Dy() != 4 {
+		t.Fatalf("rotated dimensions = %dx%d, want 2x4", b.Dx(), b.Dy())
+	}
+	// The source's left half (red) must now be at the top of the rotated
+	// image, and the right half (blue) at the bottom.
+	topRed, _, topBlue, _ := img.At(b.Min.X, b.Min.Y).RGBA()
+	if topRed == 0 || topBlue != 0 {
+		t.Errorf("top-left pixel after 90-deg rotate should be red (from source's left half); got r=%d b=%d", topRed, topBlue)
+	}
+	bottomRed, _, bottomBlue, _ := img.At(b.Min.X, b.Max.Y-1).RGBA()
+	if bottomBlue == 0 || bottomRed != 0 {
+		t.Errorf("bottom-left pixel after 90-deg rotate should be blue (from source's right half); got r=%d b=%d", bottomRed, bottomBlue)
+	}
+}
+
+func TestTransformRotateRejectsUnsupportedAngle(t *testing.T) {
+	api := testAPI(t)
+	ctx := context.Background()
+	item, err := api.Upload(ctx, mediaAdminPrincipal, "quad.png", "image/png", quadImage(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = api.Transform(ctx, item.ID, media.TransformOptions{Rotate: 45})
+	if !errors.Is(err, media.ErrInvalidTransform) {
+		t.Errorf("got %v, want ErrInvalidTransform", err)
+	}
+}
+
+func TestTransformFormatConvertsRegardlessOfSource(t *testing.T) {
+	api := testAPI(t)
+	ctx := context.Background()
+	item, err := api.Upload(ctx, mediaAdminPrincipal, "quad.png", "image/png", quadImage(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out, contentType, err := api.Transform(ctx, item.ID, media.TransformOptions{Format: "jpeg"})
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	if contentType != "image/jpeg" {
+		t.Errorf("contentType = %q, want image/jpeg", contentType)
+	}
+	cfg, format, err := image.DecodeConfig(bytes.NewReader(out))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if format != "jpeg" {
+		t.Errorf("decoded format = %q, want jpeg", format)
+	}
+	if cfg.Width != 4 || cfg.Height != 2 {
+		t.Errorf("dimensions = %dx%d, want 4x2 (format conversion alone doesn't resize)", cfg.Width, cfg.Height)
+	}
+}
+
+func TestTransformRejectsUnsupportedFormat(t *testing.T) {
+	api := testAPI(t)
+	ctx := context.Background()
+	item, err := api.Upload(ctx, mediaAdminPrincipal, "quad.png", "image/png", quadImage(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = api.Transform(ctx, item.ID, media.TransformOptions{Format: "webp"})
+	if !errors.Is(err, media.ErrInvalidTransform) {
+		t.Errorf("got %v, want ErrInvalidTransform", err)
+	}
+}
+
+// TestTransformComposesCropRotateResizeFormatInOnePipeline proves the four
+// stages run together, in order, on a single call — not just individually.
+func TestTransformComposesCropRotateResizeFormatInOnePipeline(t *testing.T) {
+	api := testAPI(t)
+	ctx := context.Background()
+	item, err := api.Upload(ctx, mediaAdminPrincipal, "quad.png", "image/png", quadImage(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Crop the blue right half (2x2) -> rotate 90 (now 2x2, still all blue)
+	// -> resize to max 10x10 (aspect 1:1, stays 10x10 since scaledDimensions
+	// scales up? no - scaledDimensions only ever fits within max, upscaling
+	// included since maxW/maxH act as a cap on the ratio) -> encode jpeg.
+	out, contentType, err := api.Transform(ctx, item.ID, media.TransformOptions{
+		CropX: 2, CropY: 0, CropW: 2, CropH: 2,
+		Rotate: 90,
+		MaxW:   10, MaxH: 10,
+		Format: "jpeg",
+	})
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	if contentType != "image/jpeg" {
+		t.Errorf("contentType = %q, want image/jpeg", contentType)
+	}
+	cfg, format, err := image.DecodeConfig(bytes.NewReader(out))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if format != "jpeg" {
+		t.Errorf("format = %q, want jpeg", format)
+	}
+	if cfg.Width != 10 || cfg.Height != 10 {
+		t.Errorf("dimensions = %dx%d, want 10x10", cfg.Width, cfg.Height)
+	}
+}
+
+func TestUploadDefaultsTagsToEmptyNotNilSlice(t *testing.T) {
+	api := testAPI(t)
+	ctx := context.Background()
+	item, err := api.Upload(ctx, mediaAdminPrincipal, "a.png", "image/png", pngBytes(t, 4, 4))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.Tags == nil {
+		t.Fatal("Tags is nil, want an empty (non-nil) slice so it serializes as [] not null")
+	}
+	if len(item.Tags) != 0 {
+		t.Errorf("Tags = %v, want empty", item.Tags)
+	}
+}
+
+func TestUpdateMetadataPersistsTagsAndSourceAttribution(t *testing.T) {
+	api := testAPI(t)
+	ctx := context.Background()
+	item, err := api.Upload(ctx, mediaAdminPrincipal, "a.png", "image/png", pngBytes(t, 4, 4))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := api.UpdateMetadata(ctx, mediaAdminPrincipal, item.ID, media.MetadataUpdate{
+		AltText:     "a red square",
+		Tags:        []string{"stock", "hero"},
+		Source:      "https://example.com/photo",
+		Attribution: "Photo by Jane Doe",
+	})
+	if err != nil {
+		t.Fatalf("UpdateMetadata: %v", err)
+	}
+	if updated.AltText != "a red square" {
+		t.Errorf("AltText = %q, want %q", updated.AltText, "a red square")
+	}
+	if len(updated.Tags) != 2 || updated.Tags[0] != "stock" || updated.Tags[1] != "hero" {
+		t.Errorf("Tags = %v, want [stock hero]", updated.Tags)
+	}
+	if updated.Source != "https://example.com/photo" {
+		t.Errorf("Source = %q, want %q", updated.Source, "https://example.com/photo")
+	}
+	if updated.Attribution != "Photo by Jane Doe" {
+		t.Errorf("Attribution = %q, want %q", updated.Attribution, "Photo by Jane Doe")
+	}
+
+	// Round-trips through a fresh Get too, not just the returned value.
+	fetched, err := api.Get(ctx, item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fetched.Tags) != 2 || fetched.Source != "https://example.com/photo" || fetched.Attribution != "Photo by Jane Doe" {
+		t.Errorf("Get after UpdateMetadata = %+v, want tags/source/attribution to have persisted", fetched)
+	}
+}
+
+func TestUpdateMetadataReturnsNotFoundForUnknownID(t *testing.T) {
+	api := testAPI(t)
+	_, err := api.UpdateMetadata(context.Background(), mediaAdminPrincipal, "nope", media.MetadataUpdate{})
+	if !errors.Is(err, media.ErrNotFound) {
+		t.Errorf("got %v, want ErrNotFound", err)
+	}
+}
+
+func TestUpdateMetadataRejectsUnderPrivilegedAndAnonymousPrincipal(t *testing.T) {
+	api := testAPI(t)
+	ctx := context.Background()
+	item, err := api.Upload(ctx, mediaAdminPrincipal, "a.png", "image/png", pngBytes(t, 4, 4))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	update := media.MetadataUpdate{AltText: "hijacked"}
+	if _, err := api.UpdateMetadata(ctx, mediaViewerPrincipal, item.ID, update); !errors.Is(err, permission.ErrDenied) {
+		t.Errorf("viewer UpdateMetadata: got %v, want permission.ErrDenied", err)
+	}
+	if _, err := api.UpdateMetadata(ctx, nil, item.ID, update); !errors.Is(err, permission.ErrDenied) {
+		t.Errorf("anonymous UpdateMetadata: got %v, want permission.ErrDenied", err)
+	}
+	got, err := api.Get(ctx, item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AltText == "hijacked" {
+		t.Error("denied UpdateMetadata call must not have taken effect")
+	}
+}
+
+// --- Domain-API boundary capability enforcement (PRD §10.5) ---
+//
+// These tests call the media domain API directly — bypassing internal/api's
+// HTTP transport and its requireCapability check entirely — to prove the
+// domain API rejects an under-privileged or anonymous caller on its own.
+
+func TestUploadRejectsUnderPrivilegedAndAnonymousPrincipal(t *testing.T) {
+	api := testAPI(t)
+	ctx := context.Background()
+	data := pngBytes(t, 4, 4)
+
+	if _, err := api.Upload(ctx, mediaViewerPrincipal, "a.png", "image/png", data); !errors.Is(err, permission.ErrDenied) {
+		t.Errorf("viewer Upload: got %v, want permission.ErrDenied", err)
+	}
+	if _, err := api.Upload(ctx, nil, "a.png", "image/png", data); !errors.Is(err, permission.ErrDenied) {
+		t.Errorf("anonymous Upload: got %v, want permission.ErrDenied", err)
+	}
+	items, err := api.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 0 {
+		t.Errorf("List = %d items, want 0 (denied uploads must not persist)", len(items))
+	}
+}
+
+func TestDeleteRejectsUnderPrivilegedAndAnonymousPrincipal(t *testing.T) {
+	api := testAPI(t)
+	ctx := context.Background()
+	item, err := api.Upload(ctx, mediaAdminPrincipal, "a.png", "image/png", pngBytes(t, 4, 4))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := api.Delete(ctx, mediaViewerPrincipal, item.ID); !errors.Is(err, permission.ErrDenied) {
+		t.Errorf("viewer Delete: got %v, want permission.ErrDenied", err)
+	}
+	if err := api.Delete(ctx, nil, item.ID); !errors.Is(err, permission.ErrDenied) {
+		t.Errorf("anonymous Delete: got %v, want permission.ErrDenied", err)
+	}
+	// Item must still exist: neither rejected Delete call took effect.
+	if _, err := api.Get(ctx, item.ID); err != nil {
+		t.Errorf("item should still exist after denied deletes: %v", err)
 	}
 }

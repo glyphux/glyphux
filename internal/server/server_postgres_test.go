@@ -61,7 +61,7 @@ func bootPostgres(t *testing.T) http.Handler {
 	compositions := composition.NewStore(database)
 	identities := identity.NewService(database)
 	sessions := identity.NewSessions(database)
-	wizard, err := setup.New(ctx, compositions, identities, log)
+	wizard, err := setup.New(ctx, compositions, identities, database, log, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,9 +83,10 @@ func TestFirstRunLifecycleOnPostgres(t *testing.T) {
 		"admin_password": {"strong password"},
 		"database":       {"postgres"},
 	}
-	// Wizard's Phase-0 guard still rejects a postgres selection in the form —
-	// this test is about the storage backend, not the wizard's DB picker, so
-	// submit as sqlite (the wizard only writes the composition document).
+	// This test is about the storage backend the daemon was booted against
+	// (Postgres, via bootPostgres), not the wizard's own DB picker (covered
+	// by internal/bootstrap) — submit as sqlite so the wizard writes to the
+	// database it was constructed with, which is already Postgres here.
 	form.Set("database", "sqlite")
 	req := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
