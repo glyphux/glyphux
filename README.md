@@ -7,10 +7,28 @@ single Go binary.
 
 Full product definition: [docs/glyphux-prd.md](docs/glyphux-prd.md).
 
-## Status: Phase 0 — Walking Skeleton
+## Status: v0.1.0 — Phases 1–4 complete
 
-The spine, end to end: daemon boot → composition contract v0 → SQLite +
-migrations → one contract-driven domain API → first-run web wizard.
+- **Phase 1 — Headless core**: composition contract, content/media/identity
+  domain APIs, drafts/versioning/localization, REST + GraphQL transports,
+  admin shell, security baseline (CSRF, MFA, OAuth, rate limiting).
+- **Phase 2 — Extension system**: `sdk.Plugin`/`HostAPI`, Tier-B (WASM/Wazero)
+  and Tier-C (RPC) sandboxed runtimes, capability dependency graph, event
+  bus, install-time consent engine, audit logging.
+- **Phase 3 — First-party capabilities**: `notifications`, `seo`, `commerce`,
+  `membership`, `marketplace` (signing + entitlement tokens), and `ai`
+  (provider-agnostic `generate`/`embed`/`classify` behind swappable
+  Claude/OpenAI/Gemini/OpenAI-compatible adapters).
+- **Phase 4 — Layout composition + visual builder**: block registry, theme
+  rendering contract, drag-and-drop builder UI, live preview, composition
+  presets/bundles with an import-time compatibility check, marketplace
+  distribution of presets/bundles, an in-builder media picker, and
+  AI-assisted authoring (prompt → validated Layer-2 composition fragment,
+  never raw markup).
+
+See `docs/glyphux-prd.md` for the full product definition, `docs/specs/`
+for phase/ticket specs, and `docs/implementation/completed/` for every
+shipped slice's design notes.
 
 ## Install a release
 
@@ -36,7 +54,14 @@ go build -o glyphuxd ./cmd/glyphuxd
 
 Open http://localhost:8080 — the first-run wizard creates your admin account
 and writes the initial composition, then locks itself permanently. After
-setup:
+setup, the admin/builder UI is served at `/` (React SPA, embedded via
+`go:embed` — no separate Node process required in production).
+
+The endpoint list below covers Phase 1's core content/media/identity
+surface. Phase 2–4 add a great deal more (layout/block transport, presets
+and bundles, the marketplace, first-party capabilities, AI compose) — see
+`docs/glyphux-prd.md` and `docs/specs/` for the full API surface; this list
+is deliberately not exhaustive.
 
 ```
 GET    /healthz                        liveness
@@ -131,7 +156,20 @@ glyphux composition validate composition.json
 cmd/glyphuxd/       the server daemon (primary entrypoint)
 cmd/glyphux/        developer CLI (secondary, optional)
 pkg/contract/       the public composition contract types + validator
-internal/           kernel: composition store, content, identity, db, setup wizard, http
+pkg/sdk/            the plugin contract: Manifest, HostAPI, Plugin
+pkg/blocks/         block definitions (names/prop schemas/slot names) — importable by plugin/theme authors
+pkg/theme/          the read-only theme rendering contract (CompositionView)
+pkg/compat/         import-time compatibility checking for presets/bundles
+pkg/runtime/wasm/   Tier-B sandboxed plugin runtime (Wazero)
+pkg/runtime/rpc/    Tier-C sandboxed plugin runtime (gRPC)
+internal/           kernel: composition store, content, identity, db, setup wizard, http, layout, preset, bundle
+capabilities/       first-party plugins built on pkg/sdk: notifications, seo, commerce, membership, marketplace, forms, ai
+themes/             first-party themes built on pkg/theme: headless, starter
+blocks/firstparty/  first-party block implementations
+admin-ui/           the admin/builder SPA (React + TS + Vite + Tailwind), embedded into glyphuxd via go:embed
+sdk-js/             the public, typed JS/TS client SDK admin-ui itself consumes (no privileged access)
+scripts/release/    cross-platform release build + install scripts
+docs/                PRD, specs, ADRs, and per-slice implementation notes
 ```
 
 ## License
