@@ -9,9 +9,6 @@ contract**. It ships as a single Go binary with an embedded database — no
 managed cloud dependency, no vendor lock-in, deploy it anywhere you can run
 a binary.
 
-Full product spec, including the architecture decisions behind the current
-design: [docs/glyphux-prd.md](docs/glyphux-prd.md).
-
 ## Features
 
 - **Headless content engine** — typed content models, drafts and
@@ -127,7 +124,7 @@ blocks/firstparty/  first-party block implementations
 admin-ui/           the admin/builder single-page app (React + TS), embedded into glyphuxd
 sdk-js/             the public, typed JS/TS client SDK
 scripts/release/    release build + install scripts
-docs/               product spec, architecture decisions, design notes
+docs/               ticket specs and per-slice design notes
 ```
 
 ## Contributing
@@ -137,9 +134,6 @@ Contributions are welcome. The workflow:
 1. Fork the repo and branch off `dev` (not `main`).
 2. Make your change with tests — `go build ./... && go vet ./... && go test -race ./...` (plus `npm run build && npm test` under `admin-ui/` or `sdk-js/` if you touched either) should be green.
 3. Open a pull request against `dev`. Every change goes through review before merging.
-
-See [docs/glyphux-prd.md](docs/glyphux-prd.md) for the product spec and the
-architecture decisions behind the current design.
 
 ## License
 
