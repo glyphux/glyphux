@@ -18,7 +18,8 @@ vi.mock("@/lib/client", () => ({
     auth: { login: vi.fn(), logout: vi.fn(), me: vi.fn() },
     blocks: { list: vi.fn() },
     layouts: { get: vi.fn(), save: vi.fn(), preview: vi.fn() },
-    presets: { save: vi.fn() },
+    presets: { save: vi.fn(), import: vi.fn() },
+    ai: { compose: vi.fn() },
   },
   setToken: vi.fn(),
 }));
