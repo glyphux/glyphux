@@ -33,6 +33,12 @@ import (
 	"github.com/glyphux/glyphux/pkg/blocks"
 )
 
+// version is overridden at release-build time via
+// -ldflags "-X main.version=$VERSION" (see scripts/release/build.sh); a
+// source checkout / `go build` with no ldflags reports "dev", distinguishing
+// a packaged release binary from an ad hoc developer build.
+var version = "dev"
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "glyphuxd:", err)
@@ -42,7 +48,13 @@ func main() {
 
 func run() error {
 	configPath := flag.String("config", "", "path to JSON config file (optional)")
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version)
+		return nil
+	}
 
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(log)
