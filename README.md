@@ -1,138 +1,145 @@
 # Glyphux
 
-A composable application platform: build websites, portals, and apps by
-composing content, layout, capabilities, and themes through a single typed,
-versioned **composition contract** — then self-host the result anywhere on a
-single Go binary.
+**Glyphux is a composable, self-hosted application platform** for building
+websites, portals, and content-driven apps — a headless content engine, a
+visual drag-and-drop builder, a sandboxed plugin/extension system, and a
+growing set of first-party capabilities (commerce, membership, SEO,
+notifications, AI), all built on one typed, versioned **composition
+contract**. It ships as a single Go binary with an embedded database — no
+managed cloud dependency, no vendor lock-in, deploy it anywhere you can run
+a binary.
 
-Full product definition: [docs/glyphux-prd.md](docs/glyphux-prd.md).
+Full product spec, including the architecture decisions behind the current
+design: [docs/glyphux-prd.md](docs/glyphux-prd.md).
 
-## Status: Phase 0 — Walking Skeleton
+## Features
 
-The spine, end to end: daemon boot → composition contract v0 → SQLite +
-migrations → one contract-driven domain API → first-run web wizard.
+- **Headless content engine** — typed content models, drafts and
+  versioning, localization, and a media pipeline (upload, transform,
+  library), all behind a stable REST + GraphQL API.
+- **Visual builder** — compose pages by dragging and dropping blocks into
+  layouts, with live preview, reusable presets, and starter bundles (a
+  full starter site: pages, sample content, and a theme, ready to
+  customize).
+- **Extensible by design** — a sandboxed plugin system (WASM and RPC
+  runtimes) with capability-scoped permissions and install-time consent, so
+  third-party extensions can be installed safely without trusting the
+  extension author with more than they explicitly declare.
+- **First-party capabilities, out of the box**:
+  - **Commerce** — products, orders, checkout, payment events.
+  - **Membership** — tiers, subscriptions, content gating, recurring
+    billing.
+  - **SEO** — content-derived meta tags, sitemaps, JSON-LD structured data.
+  - **Notifications** — event-driven, pluggable delivery.
+  - **AI** — text generation, embeddings, and classification behind a
+    provider-agnostic adapter (Claude, OpenAI, Google Gemini, or any
+    self-hosted OpenAI-compatible model like Ollama) — swap providers
+    without touching your integration.
+- **AI-assisted authoring** — describe the section you want in plain
+  language and the builder proposes a real, validated page fragment (never
+  opaque markup) that you preview and accept like any other import.
+- **Marketplace-ready distribution** — signed packages and offline
+  verifiable entitlement tokens, so licensed extensions/themes work even in
+  air-gapped or offline deployments.
+- **Built for production** — CSRF protection, MFA, OAuth login, role-based
+  permissions, per-endpoint rate limiting, and a real security boundary
+  between the platform and anything it extends with.
 
-## Install a release
+## Install
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/glyphux/glyphux/main/scripts/release/install.sh | sh
 glyphuxd
 ```
 
-Installs the latest release's `glyphuxd`/`glyphux` binaries to
-`~/.local/bin` (override with `INSTALL_DIR`; pin a version with
-`GLYPHUX_VERSION=vX.Y.Z`). Release archives for linux/darwin (amd64/arm64)
-and windows/amd64 are published on the
+Installs the latest release's `glyphuxd` (the server) and `glyphux` (an
+optional developer CLI) to `~/.local/bin` — override with `INSTALL_DIR`, or
+pin a version with `GLYPHUX_VERSION=vX.Y.Z`. Prebuilt archives for Linux,
+macOS (amd64/arm64), and Windows are on the
 [Releases page](https://github.com/glyphux/glyphux/releases), each with a
-`SHA256SUMS` file the install script verifies against before extracting.
-See `scripts/release/build.sh` for how a release is produced.
+`SHA256SUMS` file the install script verifies before extracting.
 
-## Quick start (build from source)
+Then run `glyphuxd` and open the address it prints (default
+`http://localhost:8080`) — a first-run setup wizard walks you through
+creating your admin account; after that it locks itself permanently.
+
+### Build from source
 
 ```sh
 go build -o glyphuxd ./cmd/glyphuxd
 ./glyphuxd
 ```
 
-Open http://localhost:8080 — the first-run wizard creates your admin account
-and writes the initial composition, then locks itself permanently. After
-setup:
+Requires Go 1.26+. The admin/builder UI ships pre-built and embedded in
+the binary (`internal/adminui/dist/`); to rebuild it from source you'll
+also need Node.js — see `scripts/release/build.sh`.
 
-```
-GET    /healthz                        liveness
-GET    /api/v0/composition             the resolved composition document
-GET    /api/v0/content/ping            contract-driven domain-API read
+## Configuration
 
-Authentication (Phase 1):
-POST   /api/v0/auth/login              email+password → sets session cookie → 200 / 401
-POST   /api/v0/auth/logout             revoke session (cookie or bearer)    → 204
-GET    /api/v0/auth/me                 current principal                    → 200 / 401
+Glyphux is configured via environment variables (or a JSON config file
+passed with `-config`):
 
-User management (Phase 1, admin-only via users:manage):
-POST   /api/v0/users                   create an account with a role → 201 / 401 / 403 / 422
-GET    /api/v0/users                   list every account            → 200 / 401 / 403
+| Variable | Default | Purpose |
+|---|---|---|
+| `GLYPHUX_ADDR` | `:8080` | listen address |
+| `GLYPHUX_DATA_DIR` | `data/` | where SQLite, uploaded media, etc. live |
+| `GLYPHUX_DB_DRIVER` | `sqlite` | `sqlite` (embedded) or `postgres` |
+| `GLYPHUX_DB_DSN` | — | connection string, required for `postgres` |
+| `GLYPHUX_DB_MAX_OPEN_CONNS` | `20` | Postgres pool sizing |
+| `GLYPHUX_DB_MAX_IDLE_CONNS` | `5` | Postgres pool sizing |
+| `GLYPHUX_DB_CONN_MAX_LIFETIME` | `30m` | Postgres pool sizing (Go duration) |
+| `GLYPHUX_OAUTH_GITHUB_CLIENT_ID`/`_SECRET` | — | enables GitHub OAuth login |
 
-Roles and capabilities (v1's fixed matrix — no dynamic role editing yet):
-  admin:  content:read, content:read_drafts, content:write, content:publish, media:write, users:manage
-  editor: content:read, content:read_drafts, content:write, media:write   (cannot publish or manage users)
-  viewer: content:read only (cannot see drafts, cannot write)
+On a remote (non-localhost) first boot, the setup wizard requires a token
+printed to the log at startup, so a stranger who reaches the port before
+you can't complete setup themselves.
 
-Content CRUD (Phase 1) — every write validated against the composition-declared type.
-Reads without content:read_drafts (anonymous, or an authenticated viewer) only
-see published items — drafts are invisible, not just unlisted. Mutations
-require content:write; publish/unpublish require content:publish:
-POST   /api/v0/content/{type}          create an item        → 201 / 401 / 403
-GET    /api/v0/content/{type}          list items of a type  → 200 (published-only unless content:read_drafts)
-GET    /api/v0/content/{type}/{id}     read one item         → 200 / 404 (404 for a draft you can't see)
-PUT    /api/v0/content/{type}/{id}     replace an item       → 200 / 401 / 403 / 404 / 422
-DELETE /api/v0/content/{type}/{id}     delete an item        → 204 / 401 / 403 / 404
+## API and SDKs
 
-Drafts, publish, versioning (Phase 1) — every write is recorded as an immutable
-version; items are created as drafts:
-POST /api/v0/content/{type}/{id}/publish            mark published        → 200 / 401 / 403 / 404
-POST /api/v0/content/{type}/{id}/unpublish           revert to draft       → 200 / 401 / 403 / 404
-GET  /api/v0/content/{type}/{id}/versions            full version history  → 200 / 404
-POST /api/v0/content/{type}/{id}/rollback/{version}  restore an old version → 200 / 401 / 403 / 404 / 422
-```
-
-Localization (Phase 1): a field declared `"localized": true` in the composition
-stores a JSON object of locale → value (e.g. `{"en": "Hello", "fr": "Bonjour"}`).
-Reads without `?locale=` return that raw locale map; add `?locale=xx` to a
-`GET .../content/{type}` or `GET .../content/{type}/{id}` request to resolve
-every localized field to a single value for that locale, falling back to any
-available locale if the requested one is missing.
-
-Media pipeline + library (Phase 1) — images only in v1 (png/jpeg/gif),
-stored on a local-FS adapter under `<data-dir>/media`; upload/delete require
-media:write, reads are public:
-POST   /api/v0/media                   upload (multipart "file" field) → 201 / 400 / 401 / 403 / 413 / 415
-GET    /api/v0/media                   list metadata                    → 200
-GET    /api/v0/media/{id}              one item's metadata              → 200 / 404
-GET    /api/v0/media/{id}/file         serve the stored bytes           → 200 / 404
-GET    /api/v0/media/{id}/file?w=&h=   resize (aspect-preserving)        → 200 / 404
-DELETE /api/v0/media/{id}              delete metadata + file           → 204 / 401 / 403 / 404
-Uploads are capped at 10 MiB and exempt from the generic 1 MiB request cap.
-
-Validation failures return `422` with the offending field issues; an undeclared
-content type or missing item returns `404`; malformed JSON returns `400`.
-Sessions are sent as an `Authorization: Bearer <token>` header or the
-`glyphux_session` HttpOnly cookie set at login.
-
-Security baseline (Phase 1): every response carries `X-Content-Type-Options`,
-`X-Frame-Options`, and `Referrer-Policy` headers; there is no CORS opt-in, so
-browsers deny cross-origin reads by default; request bodies are capped at 1
-MiB (`413` over the limit); and repeated failed logins from one address are
-throttled (`429` after 10 failures/minute).
-
-Configuration via environment: `GLYPHUX_ADDR` (default `:8080`),
-`GLYPHUX_DATA_DIR` (default `data/`). On a remote server, first-run requires
-the setup token printed to the log at boot.
-
-Database backend: SQLite (embedded, default) or Postgres, selected before
-boot — `GLYPHUX_DB_DRIVER=postgres` and `GLYPHUX_DB_DSN=postgres://...`. Pool
-sizing is auto-sized but tunable: `GLYPHUX_DB_MAX_OPEN_CONNS` (default 20),
-`GLYPHUX_DB_MAX_IDLE_CONNS` (default 5), `GLYPHUX_DB_CONN_MAX_LIFETIME`
-(default 30m, Go duration syntax e.g. `1h`). Every domain package writes
-portable `?`-placeholder SQL; the db package rewrites placeholders and swaps
-in dialect-specific migration SQL where the two engines diverge (e.g.
-`AUTOINCREMENT` vs. `GENERATED ALWAYS AS IDENTITY`) — nothing above the db
-package needs to know which engine is running.
-
-The optional developer CLI:
+Every domain (content, media, identity, layout, presets, the capabilities
+above) is exposed over REST and GraphQL, both built on the same typed
+composition contract — nothing is admin-UI-only. A typed JS/TS client SDK
+(`sdk-js/`, published as `@glyphux/sdk`) wraps the REST API and is the same
+SDK the admin UI itself uses — it holds no privileged access beyond what
+any third-party integration gets.
 
 ```sh
 go build -o glyphux ./cmd/glyphux
-glyphux composition validate composition.json
+glyphux composition validate composition.json   # optional dev CLI
 ```
 
-## Layout
+## Repository layout
 
 ```
 cmd/glyphuxd/       the server daemon (primary entrypoint)
-cmd/glyphux/        developer CLI (secondary, optional)
+cmd/glyphux/        optional developer CLI
 pkg/contract/       the public composition contract types + validator
-internal/           kernel: composition store, content, identity, db, setup wizard, http
+pkg/sdk/            the plugin contract: Manifest, HostAPI, Plugin
+pkg/blocks/         block definitions, importable by plugin/theme authors
+pkg/theme/          the read-only theme rendering contract
+pkg/compat/         import-time compatibility checking for presets/bundles
+pkg/runtime/wasm/   sandboxed WASM plugin runtime (Wazero)
+pkg/runtime/rpc/    sandboxed RPC plugin runtime (gRPC)
+internal/           core engine: content, identity, db, layout, presets, setup wizard, http
+capabilities/       first-party plugins: notifications, seo, commerce, membership, marketplace, forms, ai
+themes/             first-party themes: headless, starter
+blocks/firstparty/  first-party block implementations
+admin-ui/           the admin/builder single-page app (React + TS), embedded into glyphuxd
+sdk-js/             the public, typed JS/TS client SDK
+scripts/release/    release build + install scripts
+docs/               product spec, architecture decisions, design notes
 ```
+
+## Contributing
+
+Contributions are welcome. The workflow:
+
+1. Fork the repo and branch off `dev` (not `main`).
+2. Make your change with tests — `go build ./... && go vet ./... && go test -race ./...` (plus `npm run build && npm test` under `admin-ui/` or `sdk-js/` if you touched either) should be green.
+3. Open a pull request against `dev`. Every change goes through review before merging.
+
+See [docs/glyphux-prd.md](docs/glyphux-prd.md) for the product spec and the
+architecture decisions behind the current design.
 
 ## License
 
