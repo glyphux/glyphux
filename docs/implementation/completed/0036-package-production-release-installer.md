@@ -55,6 +55,14 @@ slice.
   `bootstrap.Boot` — proven by `TestVersionFlagShortCircuitsBeforeBoot`,
   since a release binary should report its version without needing a data
   dir or a real database available.
+- **`cmd/glyphux` (the CLI) now accepts `-version`/`--version` in addition
+  to its existing `version` subcommand.** Caught by the PR's own Standards
+  review: `cmd/glyphuxd`'s new `-version` flag and `cmd/glyphux`'s existing
+  `version` subcommand were two different conventions for the same
+  question, in the same release's two binaries. Rather than leave that
+  inconsistency for a user to discover, `glyphux`'s subcommand dispatch now
+  also matches `-version`/`--version` (see `TestVersionFlagSpellingsAllPrintVersion`),
+  so both binaries answer "what version is this" the same way.
 - **`.github/workflows/release.yml`'s build matrix is a literal copy of
   `ci.yml`'s existing build job's matrix** (linux/amd64+arm64,
   darwin/amd64+arm64, windows/amd64) — deliberately kept in sync so a

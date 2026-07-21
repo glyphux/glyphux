@@ -14,7 +14,7 @@ const usage = `glyphux — Glyphux developer CLI (secondary surface; glyphuxd is
 
 Usage:
   glyphux composition validate <file>   Validate a composition document
-  glyphux version                       Print the version
+  glyphux version | -version           Print the version
 `
 
 var version = "0.0.1-dev"
@@ -32,7 +32,12 @@ func run(args []string) error {
 		return nil
 	}
 	switch args[0] {
-	case "version":
+	case "version", "-version", "--version":
+		// Both spellings are accepted (not just the "version" subcommand
+		// already documented above) so this CLI answers "how do I check the
+		// version" the same way glyphuxd's own -version flag does — a
+		// packaged release's two binaries shouldn't make a user guess which
+		// convention applies to which one.
 		fmt.Println(version)
 		return nil
 	case "composition":
