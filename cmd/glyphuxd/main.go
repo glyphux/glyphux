@@ -28,6 +28,7 @@ import (
 	"github.com/glyphux/glyphux/internal/layout"
 	"github.com/glyphux/glyphux/internal/media"
 	"github.com/glyphux/glyphux/internal/preset"
+	"github.com/glyphux/glyphux/internal/pluginstore"
 	"github.com/glyphux/glyphux/internal/server"
 	"github.com/glyphux/glyphux/internal/setup"
 	"github.com/glyphux/glyphux/pkg/blocks"
@@ -74,6 +75,9 @@ func run() error {
 	migrations = append(migrations, layout.Migrations...)
 	migrations = append(migrations, preset.Migrations...)
 	migrations = append(migrations, bundle.Migrations...)
+	// Plugin KV persistence (gap 6 / Ticket T1): the durable backend every
+	// loaded plugin's Store() writes to — a fresh boot creates plugin_kv.
+	migrations = append(migrations, pluginstore.Migrations...)
 
 	boot, err := bootstrap.Boot(ctx, bootstrap.Options{
 		DataDir:           cfg.DataDir,

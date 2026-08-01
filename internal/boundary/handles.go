@@ -17,14 +17,19 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-// domainAPIPackages are the Phase-1 domain-API surfaces subject to the
+// domainAPIPackages are the domain-API surfaces subject to the
 // Communication Law (§5.2): kernel domain APIs must never leak a raw
-// database or filesystem handle to callers above them.
+// database or filesystem handle to callers above them. internal/pluginstore
+// was added by Phase-5 Ticket T1 (the SQL-backed plugin KV backend): it is
+// exactly the kind of db-touching store this invariant exists for, and its
+// only exported surface is NewStore(db.Queryer) + Get/Set/Delete — no raw
+// handle may cross it.
 var domainAPIPackages = []string{
 	"github.com/glyphux/glyphux/internal/content",
 	"github.com/glyphux/glyphux/internal/composition",
 	"github.com/glyphux/glyphux/internal/media",
 	"github.com/glyphux/glyphux/internal/identity",
+	"github.com/glyphux/glyphux/internal/pluginstore",
 }
 
 // disallowedHandleTypes are driver/FS-native types that must never appear in
