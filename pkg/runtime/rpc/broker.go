@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -95,6 +96,22 @@ type Config struct {
 	// os.Environ() and the GLYPHUX_HOST_SOCK/GLYPHUX_PLUGIN_SOCK vars this
 	// package sets itself).
 	Env []string
+	// NetworkAllowlist is the exact set of outbound hosts this plugin's
+	// consent granted — the "network" permission's Args from the
+	// consent-filtered manifest (sdk.FilterManifest over the granted
+	// subset). Launch sets it into the subprocess environment as
+	// GLYPHUX_NETWORK_ALLOWLIST (comma-joined, always present: an empty
+	// list is set as the empty string, the explicit "deny all outbound"
+	// state a subprocess can distinguish from a launcher that never set
+	// the variable).
+	NetworkAllowlist []string
+	// OutboundProxyURL, if non-empty, is the operator-configured egress
+	// proxy (config rpc_outbound_proxy_url) injected into the subprocess
+	// environment as HTTP_PROXY and HTTPS_PROXY — the choke point for a
+	// Tier-C plugin's own outbound connections, which the host cannot
+	// intercept for it. Empty leaves proxy variables untouched (inherited
+	// from the daemon's own environment).
+	OutboundProxyURL string
 	// HostAPI is the already capability-gated sdk.HostAPI (built via
 	// sdk.NewHostAPI against the plugin's manifest) exposed to the
 	// subprocess over gRPC. Required.
@@ -182,7 +199,20 @@ func Launch(cfg Config) (*Broker, error) {
 	cmd.Env = append(cmd.Env,
 		"GLYPHUX_HOST_SOCK="+hostSock,
 		"GLYPHUX_PLUGIN_SOCK="+pluginSock,
+		// The granted outbound allowlist, always present: empty string =
+		// explicit deny-all (Ticket T3 / gap 5). Appended last so it wins
+		// over any same-named variable inherited from os.Environ().
+		"GLYPHUX_NETWORK_ALLOWLIST="+strings.Join(cfg.NetworkAllowlist, ","),
 	)
+	// Operator egress proxy (rpc_outbound_proxy_url): injected only when
+	// configured; otherwise the subprocess inherits the daemon's own
+	// proxy environment untouched.
+	if cfg.OutboundProxyURL != "" {
+		cmd.Env = append(cmd.Env,
+			"HTTP_PROXY="+cfg.OutboundProxyURL,
+			"HTTPS_PROXY="+cfg.OutboundProxyURL,
+		)
+	}
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {

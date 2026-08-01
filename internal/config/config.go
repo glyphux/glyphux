@@ -62,6 +62,15 @@ type Config struct {
 	// (slice 1.9): no wildcard support, on purpose — every allowed origin
 	// must be named explicitly.
 	AllowedOrigins []string `json:"allowed_origins"`
+
+	// RPCOutboundProxyURL, when set, is injected as HTTP_PROXY and
+	// HTTPS_PROXY into every Tier-C plugin subprocess the RPC broker
+	// launches — the operator egress choke point for out-of-process
+	// plugins' own outbound connections, which the host cannot intercept
+	// for them (Ticket T3 / gap 5). Empty (default) leaves the
+	// subprocess's proxy environment inherited from the daemon's own
+	// environment.
+	RPCOutboundProxyURL string `json:"rpc_outbound_proxy_url"`
 }
 
 // OAuthConfig holds one provider's registered app credentials. Only GitHub
@@ -175,6 +184,9 @@ func Load(path string) (Config, error) {
 			}
 		}
 		cfg.AllowedOrigins = origins
+	}
+	if v := os.Getenv("GLYPHUX_RPC_OUTBOUND_PROXY_URL"); v != "" {
+		cfg.RPCOutboundProxyURL = v
 	}
 
 	if err := cfg.validate(); err != nil {

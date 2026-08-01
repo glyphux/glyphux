@@ -55,3 +55,32 @@ func TestAllowedOriginsFromEnv(t *testing.T) {
 		}
 	}
 }
+
+// TestRPCOutboundProxyURLDefaultsEmpty proves the Tier-C egress proxy is
+// opt-in (Ticket T3): with no GLYPHUX_RPC_OUTBOUND_PROXY_URL set,
+// RPCOutboundProxyURL is empty and the broker leaves subprocess proxy env
+// untouched.
+func TestRPCOutboundProxyURLDefaultsEmpty(t *testing.T) {
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.RPCOutboundProxyURL != "" {
+		t.Errorf("RPCOutboundProxyURL = %q, want empty by default", cfg.RPCOutboundProxyURL)
+	}
+}
+
+// TestRPCOutboundProxyURLFromEnv proves GLYPHUX_RPC_OUTBOUND_PROXY_URL
+// loads into Config.RPCOutboundProxyURL — the value the RPC broker injects
+// as HTTP_PROXY/HTTPS_PROXY into every plugin subprocess it launches.
+func TestRPCOutboundProxyURLFromEnv(t *testing.T) {
+	t.Setenv("GLYPHUX_RPC_OUTBOUND_PROXY_URL", "http://proxy.internal:3128")
+
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.RPCOutboundProxyURL != "http://proxy.internal:3128" {
+		t.Errorf("RPCOutboundProxyURL = %q, want %q", cfg.RPCOutboundProxyURL, "http://proxy.internal:3128")
+	}
+}
