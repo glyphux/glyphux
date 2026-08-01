@@ -97,10 +97,10 @@ func TestRegistrarActivatesFiveFirstPartyCapabilities(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"form_submission",    // forms
-		"product",            // commerce
-		"order",              // commerce
-		"membership_tier",    // membership
+		"form_submission",         // forms
+		"product",                 // commerce
+		"order",                   // commerce
+		"membership_tier",         // membership
 		"membership_subscription", // membership
 	} {
 		if _, ok := comp.ContentTypes[want]; !ok {

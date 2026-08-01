@@ -20,8 +20,8 @@ import (
 	"github.com/glyphux/glyphux/internal/identity"
 	"github.com/glyphux/glyphux/internal/layout"
 	"github.com/glyphux/glyphux/internal/media"
-	"github.com/glyphux/glyphux/internal/preset"
 	"github.com/glyphux/glyphux/internal/pluginstore"
+	"github.com/glyphux/glyphux/internal/preset"
 	"github.com/glyphux/glyphux/internal/setup"
 	"github.com/glyphux/glyphux/pkg/contract"
 )
