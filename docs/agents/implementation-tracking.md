@@ -1,5 +1,12 @@
 # Implementation Tracking
 
+> **Workflow (owner update):** `dev` is the integration base. Feature work
+> uses SHORT-LIVED per-feature/per-ticket branches off `dev` (e.g.
+> `t5-capability-registration`); each branch is PR-reviewed before merging
+> into `dev`; do NOT compound multiple features into one long-lived isolated
+> branch. Nothing merges into `staging` or `main` without review. Promotion
+> flow: `dev` -> `staging` -> `main`.
+
 How to track in-flight implementation work so agents don't duplicate or collide with work already underway, and so architectural context isn't lost between sessions.
 
 ## File structure

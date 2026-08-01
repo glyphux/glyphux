@@ -4,9 +4,15 @@ Manually derived breakdown of `docs/progress-handoff.md`'s nine "Known gaps /
 deferred items" into implementable tickets. "Phase 5" here means the fifth
 implementation round of the glyphux repo — NOT the PRD's far-future Phase 5
 (multi-tenancy, Layer-3, AI agents, stock-media, marketplace hosting service),
-which remains explicitly excluded. Every ticket is delivered as a commit on
-branch `phase5-gap-closure` off `dev` (PR-ready against `dev`, no direct merge
-in this environment) and passes an independent review + a full `-race`
+which remains explicitly excluded. Each ticket is developed on its OWN
+short-lived feature branch off `dev` (e.g. `t5-capability-registration`),
+PR-reviewed (the PR-review gate) before merging, and merged into `dev` only
+after that review — feature work is never compounded into a single long-lived
+isolated branch. Nothing is merged into `staging` or `main` without review;
+the promotion flow is `dev` -> `staging` -> `main`. (The planning docs +
+T1–T3 were initially developed together on a short-lived branch
+`phase5-gap-closure`, which was reviewed as a set, fast-forwarded into `dev`,
+and deleted.) Every ticket also passes a full `-race`
 validation pass before it is considered done. Repo convention: test-first /
 TDD, behavior-first tests, all suites run with `-race`.
 
@@ -48,8 +54,10 @@ TDD, behavior-first tests, all suites run with `-race`.
 - admin-ui `dist` freshness checked in CI (fresh build diff vs committed
   `internal/adminui/dist`).
 - One tracking note per ticket, numbers 0037-0045 (verified free).
-- Delivered as branch `phase5-gap-closure` off `dev`; committed per ticket;
-  PR-ready against `dev`.
+- Each ticket on its own short-lived branch off `dev`; per-ticket PR review
+  before merge into `dev`; feature work never compounded into one isolated
+  branch; `dev` -> `staging` -> `main` promotion only after review; no
+  direct merges to `staging`/`main`.
 
 ## Goals
 
@@ -486,19 +494,47 @@ green.
 listing, install via `InstallFromPackage`, offline entitlement status — with
 PRD §12.5 by-design semantics preserved and proven.
 
-**Scope IN:** `internal/api/marketplace.go` (+test): `GET
-/api/v0/marketplace/catalog` (packages from configured/embedded catalog
-source; version + `requires.core` compatibility via
-`CoreConstraintSatisfied(kernel.Version)`); `POST
+**Scope IN:** `internal/api/marketplace.go` (+marketplace_test.go) and
+`internal/api/marketplace_entitlements.go` (+test, new): the catalog is
+**pre-loaded at boot** and defined as **four loadable categories** — (a) free official plugins
+(first-party / capability-kind), (b) free official themes (preset-kind),
+(c) free community packages (community-contributed presets/bundles/plugins),
+(d) manually issued commercial entitlement tokens (operator-issued; gate
+updates for commercial packages only — first install still allowed per PRD
+§12.5). Endpoints: `GET /api/v0/marketplace/catalog` (packages from
+configured/embedded catalog source; version + `requires.core` compatibility
+via `CoreConstraintSatisfied(kernel.Version)`); `POST
 /api/v0/marketplace/packages/{id}/install` (fetch package bytes from catalog;
 call `preset.InstallFromPackage` / `bundle.InstallFromPackage(ctx, principal,
 sp, pub, kernelVersion)` — presets:manage-gated, admin-only + CSRF); `GET
-/api/v0/marketplace/entitlements` (offline verify entitlement token:
-`CanFetchUpdate` + `DescribeExpiry` -> active/expired/not_yet_valid/invalid);
+/api/v0/marketplace/entitlements` (offline verify operator-registered
+entitlement tokens: `CanFetchUpdate` + `DescribeExpiry` ->
+active/expired/not_yet_valid/invalid); `POST /api/v0/marketplace/entitlements`
+(register a manually issued commercial entitlement token; admin-only + CSRF);
 config `marketplace.public_key` (hex ed25519, baked-in default + operator
 override); sdk-js `marketplace.ts`; admin-ui `pages/marketplace/` page:
 catalog list, install button, entitlement/expiry badges, consent-screen hook
 for capability-kind packages.
+
+**Catalog model:**
+- Each catalog entry carries `id`, `name`, `kind` (plugin|theme|package),
+  source tier (official|community), `version`, `requires.core`, `license`
+  (free|commercial), and — for commercial entries — a flag that update-fetch
+  requires a valid entitlement token (verified via
+  `capabilities/marketplace` `CanFetchUpdate` + `DescribeExpiry`).
+- `GET /api/v0/marketplace/catalog` groups/annotates entries by the four
+  categories above, with per-entry update-eligibility state where applicable.
+- `GET /api/v0/marketplace/entitlements` reports the status of the
+  operator-registered tokens (active/expired/not_yet_valid/invalid) plus
+  per-commercial-package update eligibility.
+- Catalog source remains embedded sample JSON + optional operator file-path
+  override; the embedded sample catalog is **pre-loaded at daemon boot** so
+  `GET /api/v0/marketplace/catalog` works immediately with entries in all
+  four categories (free official plugins, free official themes, free
+  community packages, commercial entitlement tokens), no external fetch
+  required; the optional operator catalog-file override **extends** (does
+  not replace) the pre-loaded set. The embedded sample must include entries
+  in all four categories so the taxonomy is demonstrable out of the box.
 
 **Scope OUT:** remote catalog/registry server; update-fetch service; publish
 pipeline; storefront; gating first installs on entitlement (by-design skip
@@ -508,10 +544,11 @@ asserted not enforced).
 (plugin enablement path).
 
 **Files:** `internal/api/marketplace.go` (+marketplace_test.go);
-`internal/api/api.go` (WithMarketplace, routes); `cmd/glyphuxd/main.go`
-(stores + key config); `internal/config/config.go` (+marketplace section);
-`sdk-js/src/marketplace.ts` (+client/index); `admin-ui/src/pages/marketplace/`
-(+tests, routing).
+`internal/api/marketplace_entitlements.go` (+test, new — token registration +
+status endpoints); `internal/api/api.go` (WithMarketplace, routes);
+`cmd/glyphuxd/main.go` (stores + key config); `internal/config/config.go`
+(+marketplace section); `sdk-js/src/marketplace.ts` (+client/index);
+`admin-ui/src/pages/marketplace/` (+tests, routing).
 
 **Acceptance criteria:**
 - configured catalog entry for package P; `GET /api/v0/marketplace/catalog` =>
@@ -527,6 +564,10 @@ asserted not enforced).
 - valid entitlement token; GET entitlements => `CanFetchUpdate` true +
   `DescribeExpiry` readable; expired/missing => update gated but first install
   still allowed (by-design skip asserted).
+- GIVEN an operator registers a commercial token via `POST
+  /api/v0/marketplace/entitlements`, WHEN GET entitlements, THEN the token's
+  status (active/expired/not_yet_valid/invalid) + per-package update
+  eligibility are reported.
 - package whose manifest needs capabilities; installed => consent decision
   required before enablement (T4 hook surfaced in UI).
 - non-admin install => 403; anonymous 401; mutations require CSRF.
