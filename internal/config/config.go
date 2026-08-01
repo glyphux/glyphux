@@ -71,6 +71,42 @@ type Config struct {
 	// subprocess's proxy environment inherited from the daemon's own
 	// environment.
 	RPCOutboundProxyURL string `json:"rpc_outbound_proxy_url"`
+
+	// AI configures the AI authoring transport (POST /api/v0/ai/compose,
+	// PRD §14.1 Surface 2): which provider adapter to use, the operator's
+	// declared default model, an optional base URL for self-hosted
+	// openai-compatible endpoints, and an optional calls/minute rate cap.
+	// AI is opt-in: an empty Provider leaves the compose endpoint 404ing
+	// and requires no API key. The API key itself is never part of this
+	// struct's serialized form — see AIConfig.APIKey.
+	AI AIConfig `json:"ai"`
+}
+
+// AIConfig holds the operator's AI settings. APIKey is resolved at load
+// time exclusively through the package's secret() seam (GLYPHUX_AI_API_KEY)
+// and carries json:"-" so no serialized form of Config — config-file dumps,
+// diagnostics, anything embedding Config — can ever contain it.
+//
+// Valid Provider values are the adapter set in capabilities/ai:
+// claude | openai | gemini | openai-compatible (unknown providers are a
+// daemon-side fail-fast, reported by cmd/glyphuxd at boot).
+type AIConfig struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+
+	// BaseURL overrides the provider's default endpoint; required by the
+	// claude, gemini and openai-compatible adapters, ignored by openai
+	// (which always talks to https://api.openai.com).
+	BaseURL string `json:"base_url"`
+
+	// RateLimit caps every AI operation (generate/embed/classify) at this
+	// many calls per minute. Zero (default) leaves the service's
+	// DefaultLimits in place.
+	RateLimit int `json:"rate_limit"`
+
+	// APIKey is the provider credential, loaded only via secret(); it is
+	// never serialized (json:"-") and never written to any config file.
+	APIKey string `json:"-"`
 }
 
 // OAuthConfig holds one provider's registered app credentials. Only GitHub
@@ -188,6 +224,29 @@ func Load(path string) (Config, error) {
 	if v := os.Getenv("GLYPHUX_RPC_OUTBOUND_PROXY_URL"); v != "" {
 		cfg.RPCOutboundProxyURL = v
 	}
+	// AI (Ticket T5 / gap 3). The API key is the one secret field and goes
+	// through the package's single secrets seam — never a bare Getenv — so
+	// the redaction guarantee (json:"-") and the "this is where secrets
+	// come from" documentation hold in the same place.
+	if v := os.Getenv("GLYPHUX_AI_PROVIDER"); v != "" {
+		cfg.AI.Provider = v
+	}
+	if v := os.Getenv("GLYPHUX_AI_MODEL"); v != "" {
+		cfg.AI.Model = v
+	}
+	if v := os.Getenv("GLYPHUX_AI_BASE_URL"); v != "" {
+		cfg.AI.BaseURL = v
+	}
+	if v := os.Getenv("GLYPHUX_AI_RATE_LIMIT"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return cfg, fmt.Errorf("GLYPHUX_AI_RATE_LIMIT: %w", err)
+		}
+		cfg.AI.RateLimit = n
+	}
+	if v, ok := secret("GLYPHUX_AI_API_KEY"); ok && v != "" {
+		cfg.AI.APIKey = v
+	}
 
 	if err := cfg.validate(); err != nil {
 		return cfg, err
@@ -209,6 +268,9 @@ func (c *Config) validate() error {
 	}
 	if c.Addr == "" {
 		return fmt.Errorf("addr must not be empty")
+	}
+	if c.AI.RateLimit < 0 {
+		return fmt.Errorf("ai.rate_limit must not be negative")
 	}
 	return nil
 }

@@ -14,8 +14,15 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/glyphux/glyphux/blocks/firstparty"
+	"github.com/glyphux/glyphux/capabilities/ai"
+	"github.com/glyphux/glyphux/capabilities/commerce"
+	"github.com/glyphux/glyphux/capabilities/forms"
+	"github.com/glyphux/glyphux/capabilities/membership"
+	"github.com/glyphux/glyphux/capabilities/notifications"
+	"github.com/glyphux/glyphux/capabilities/seo"
 	"github.com/glyphux/glyphux/internal/api"
 	"github.com/glyphux/glyphux/internal/bootstrap"
 	"github.com/glyphux/glyphux/internal/bundle"
@@ -27,11 +34,13 @@ import (
 	"github.com/glyphux/glyphux/internal/identity"
 	"github.com/glyphux/glyphux/internal/layout"
 	"github.com/glyphux/glyphux/internal/media"
+	"github.com/glyphux/glyphux/internal/plugin"
 	"github.com/glyphux/glyphux/internal/preset"
 	"github.com/glyphux/glyphux/internal/pluginstore"
 	"github.com/glyphux/glyphux/internal/server"
 	"github.com/glyphux/glyphux/internal/setup"
 	"github.com/glyphux/glyphux/pkg/blocks"
+	"github.com/glyphux/glyphux/pkg/sdk"
 )
 
 // version is overridden at release-build time via
@@ -145,10 +154,55 @@ func buildFullHandler(cfg config.Config, log *slog.Logger) bootstrap.BuildFullHa
 		presetStore := preset.NewStore(database)
 		bundleStore := bundle.NewStore(database)
 
+		// Tier-A capability plugins (Ticket T5 / gap 3): the five
+		// first-party capabilities register through the in-process registrar,
+		// which owns the shared KernelDeps every plugin host is built from —
+		// the daemon's four domain stores plus the shared blocks registry
+		// above (plugin-registered Layer-2 blocks and the layout transport
+		// must see the same set), with the process-lifetime Bus/KV defaults
+		// plugin.New creates (T6 swaps KV for the pluginstore DB backend).
+		// Registering all five before activating keeps a duplicate/empty name
+		// a fatal-fast startup error, matching firstparty.RegisterAll's style:
+		// a first-party invariant violation, not an operator mistake.
+		capReg := plugin.New(sdk.KernelDeps{
+			Compositions: compositions,
+			Content:      contentAPI,
+			Media:        mediaAPI,
+			Identities:   identities,
+			Blocks:       blockRegistry,
+		})
+		for _, p := range firstPartyPlugins() {
+			if err := capReg.RegisterPlugin(p); err != nil {
+				return nil, err
+			}
+		}
+		if err := capReg.Activate(context.Background()); err != nil {
+			return nil, err
+		}
+
 		apiOpts := []api.Option{
 			api.TrustProxyHeaders(cfg.TrustProxyHeaders),
 			api.WithLayouts(layoutStore, blockRegistry),
 			api.WithPresets(presetStore, bundleStore),
+		}
+		// AI authoring (Ticket T5 / gap 3): opt-in via ai.provider. Unknown
+		// providers fail fast here, at boot, naming the valid adapter set;
+		// an unset provider leaves POST /api/v0/ai/compose 404ing (the
+		// endpoint's default when WithAI is absent) and requires no key.
+		if cfg.AI.Provider != "" {
+			adapter, err := buildAIAdapter(cfg.AI)
+			if err != nil {
+				return nil, err
+			}
+			svc := ai.NewService(adapter)
+			if cfg.AI.RateLimit > 0 {
+				// rate_limit is a single calls/minute knob applied uniformly
+				// to every operation the Service rate-limits (spec: "rate_limit
+				// maps to Service.Limits").
+				lim := ai.RateLimit{MaxCalls: cfg.AI.RateLimit, Window: time.Minute}
+				svc.Limits = ai.Limits{Generate: lim, Embed: lim, Classify: lim}
+			}
+			apiOpts = append(apiOpts, api.WithAI(svc))
 		}
 		if oauthMgr := githubOAuthManager(cfg); oauthMgr != nil {
 			apiOpts = append(apiOpts, api.WithOAuth(oauthMgr, publicURL(cfg)))
@@ -160,6 +214,47 @@ func buildFullHandler(cfg config.Config, log *slog.Logger) bootstrap.BuildFullHa
 		graphqlResolver := graphql.NewResolver(compositions, contentAPI, mediaAPI, identities, sessions, log)
 		graphqlHandler := graphql.NewHandler(graphqlResolver)
 		return server.Handler(apiServer, wizard, server.WithGraphQL(graphqlHandler), server.WithCORS(cfg.AllowedOrigins)), nil
+	}
+}
+
+// firstPartyPlugins returns the five first-party capability plugins the
+// daemon registers at boot, in registration order. commerce and membership
+// get nil gateways (no payment processor configured — their manifests then
+// declare no network permission); notifications gets the documented memory
+// mailer placeholder, the daemon's default mailer until a real one is
+// configured.
+func firstPartyPlugins() []sdk.Plugin {
+	return []sdk.Plugin{
+		forms.New(),
+		seo.New(),
+		commerce.New(nil),
+		membership.New(nil),
+		notifications.New(notifications.NewMemoryMailerAdapter()),
+	}
+}
+
+// aiAdapterSet is the real adapter set in capabilities/ai — the constructors
+// at capabilities/ai/claude.go:36, openai.go:43, gemini.go:31 and
+// openai.go:56. An unknown provider is a startup error naming exactly this
+// set (spec's accepted "claude|openai|gemini|openai-compatible").
+const aiAdapterSet = "claude|openai|gemini|openai-compatible"
+
+// buildAIAdapter constructs the provider adapter for cfg.AI.Provider. Base
+// URL is required by claude/gemini/openai-compatible (their constructors
+// reject an empty one — that error surfaces here as a fail-fast boot
+// error); openai always talks to https://api.openai.com and ignores it.
+func buildAIAdapter(cfg config.AIConfig) (ai.Adapter, error) {
+	switch cfg.Provider {
+	case "claude":
+		return ai.NewClaudeAdapter(cfg.APIKey, cfg.BaseURL)
+	case "openai":
+		return ai.NewOpenAIAdapter(cfg.APIKey)
+	case "gemini":
+		return ai.NewGeminiAdapter(cfg.APIKey, cfg.BaseURL)
+	case "openai-compatible":
+		return ai.NewOpenAICompatibleAdapter(cfg.BaseURL, cfg.APIKey)
+	default:
+		return nil, fmt.Errorf("unknown ai.provider %q (want %s)", cfg.Provider, aiAdapterSet)
 	}
 }
 

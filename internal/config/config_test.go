@@ -1,6 +1,8 @@
 package config_test
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/glyphux/glyphux/internal/config"
@@ -82,5 +84,78 @@ func TestRPCOutboundProxyURLFromEnv(t *testing.T) {
 	}
 	if cfg.RPCOutboundProxyURL != "http://proxy.internal:3128" {
 		t.Errorf("RPCOutboundProxyURL = %q, want %q", cfg.RPCOutboundProxyURL, "http://proxy.internal:3128")
+	}
+}
+
+// --- AI configuration (Ticket T5 / gap 3) ---
+
+// TestAIConfigDefaultsEmpty proves AI is opt-in: with no GLYPHUX_AI_* env,
+// every AI config field is empty/zero, so the daemon leaves the compose
+// endpoint 404ing.
+func TestAIConfigDefaultsEmpty(t *testing.T) {
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AI.Provider != "" || cfg.AI.Model != "" || cfg.AI.BaseURL != "" || cfg.AI.RateLimit != 0 || cfg.AI.APIKey != "" {
+		t.Errorf("AI = %+v, want all fields empty by default", cfg.AI)
+	}
+}
+
+// TestAIConfigFromEnv proves GLYPHUX_AI_PROVIDER/_MODEL/_BASE_URL/
+// _RATE_LIMIT parse into Config.AI, and that the API key is resolved ONLY
+// through the package's secrets seam (GLYPHUX_AI_API_KEY via secret(), the
+// same single path GLYPHUX_DB_DSN uses) — never as a plain config value.
+func TestAIConfigFromEnv(t *testing.T) {
+	t.Setenv("GLYPHUX_AI_PROVIDER", "openai-compatible")
+	t.Setenv("GLYPHUX_AI_MODEL", "llama3.2")
+	t.Setenv("GLYPHUX_AI_BASE_URL", "http://localhost:11434")
+	t.Setenv("GLYPHUX_AI_RATE_LIMIT", "42")
+	t.Setenv("GLYPHUX_AI_API_KEY", "sk-test-secret")
+
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AI.Provider != "openai-compatible" {
+		t.Errorf("AI.Provider = %q", cfg.AI.Provider)
+	}
+	if cfg.AI.Model != "llama3.2" {
+		t.Errorf("AI.Model = %q", cfg.AI.Model)
+	}
+	if cfg.AI.BaseURL != "http://localhost:11434" {
+		t.Errorf("AI.BaseURL = %q", cfg.AI.BaseURL)
+	}
+	if cfg.AI.RateLimit != 42 {
+		t.Errorf("AI.RateLimit = %d, want 42", cfg.AI.RateLimit)
+	}
+	if cfg.AI.APIKey != "sk-test-secret" {
+		t.Errorf("AI.APIKey = %q (must resolve through the secrets seam)", cfg.AI.APIKey)
+	}
+}
+
+// TestAIConfigAPIKeyNeverSerialized proves the api key cannot leak through
+// plain config serialization: the field carries json:"-", so marshaling a
+// fully-populated Config (or embedding it in any JSON document) never
+// contains the key — the redaction guarantee Ticket T5's acceptance
+// criteria require.
+func TestAIConfigAPIKeyNeverSerialized(t *testing.T) {
+	t.Setenv("GLYPHUX_AI_PROVIDER", "openai")
+	t.Setenv("GLYPHUX_AI_API_KEY", "sk-hunter2-never-serialize")
+
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AI.APIKey != "sk-hunter2-never-serialize" {
+		t.Fatalf("precondition: APIKey must load, got %q", cfg.AI.APIKey)
+	}
+
+	encoded, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(encoded); strings.Contains(got, "hunter2") || strings.Contains(got, "sk-") {
+		t.Fatalf("serialized config leaks the api key: %s", got)
 	}
 }
