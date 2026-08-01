@@ -37,4 +37,9 @@ package kernel
 // from the repo-root VERSION file. The source default is kept in sync with
 // that VERSION file; the sync mechanism is the unit test in version_test.go
 // (Ticket T9 / gap 9), which asserts the two agree under a plain build.
+// Sync deliberately goes through that test rather than a `go:embed` or
+// init-time assignment: either of those would overwrite the value at
+// program start and clobber the `-ldflags -X` release override (the
+// ldflags value lands in the variable before init runs, so an embed-based
+// assignment would make every release report the source default).
 var Version = "0.2.0"
