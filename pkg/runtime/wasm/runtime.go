@@ -70,10 +70,15 @@ var ErrFuelExhausted = errors.New("wasm: fuel exhausted")
 // per-instruction accounting anywhere in its public API (verified against
 // the vendored source; the only in-flight interruption hook is
 // WithCloseOnContextDone). Fuel is therefore implemented as a deterministic
-// per-Call COMPUTE budget: Fuel units are nanoseconds of guest compute
-// (0 = unlimited), enforced as a per-Call context deadline that is STRICTER
-// than ExecutionTimeout. Whichever deadline is earlier trips the call; the
-// error reported is the one whose deadline fired (ErrFuelExhausted vs
+// per-Call WALL-CLOCK COMPUTE budget: each Fuel unit is one nanosecond of
+// execution time (0 = unlimited), enforced as a per-Call context deadline
+// that is STRICTER than ExecutionTimeout. It is a wall-clock deadline, NOT
+// a count of guest instructions — the guest's actual compute per unit
+// varies with host speed, so fuel bounds "how long may this call burn CPU"
+// deterministically (fixed budget per call, whichever deadline trips
+// first), which is what the resource-limit tests actually assert (e.g.
+// fuel_burn's 300:1 budget margin). Whichever deadline fires earlier wins;
+// the error reported is the one whose deadline fired (ErrFuelExhausted vs
 // ErrExecutionTimeout), so the two constraints stay distinguishable and
 // compose as "whichever trips first" (see Instance.Call).
 type Limits struct {
@@ -113,7 +118,6 @@ type Option func(*Runtime)
 func WithLimits(l Limits) Option {
 	return func(r *Runtime) { r.limits = l.resolve() }
 }
-
 
 // Runtime is a factory for loading plugin guest modules. Every capability's
 // host module a guest imports from is conventionally named "env" (matching
@@ -193,6 +197,16 @@ func (i *Instance) Limits() Limits {
 // the host (wazero compiles context-done checks into loop headers only when
 // it is enabled — verified against wazero v1.12's interpreter and wazevo
 // engines).
+//
+// WithCloseOnContextDone has a second, easily-missed consequence: a
+// cancelled caller CONTEXT also closes the instance module — wazero treats
+// any context cancellation as "shut the module down", not just "stop this
+// call". The per-Call deadline here is stacked BELOW the caller's own
+// context (a caller-cancelled context trips the outer deadline and closes
+// the module even if the inner fuel/timeout deadline hasn't fired), so a
+// caller that cancels its context must expect the Instance to be unusable
+// afterwards — no in-repo caller does this today (every call site passes a
+// fresh, uncancelled context).
 func (r *Runtime) Load(ctx context.Context, manifest sdk.Manifest, host sdk.HostAPI, code []byte) (*Instance, error) {
 	cfg := wazero.NewRuntimeConfig().WithCompilationCache(r.cache)
 	cfg = cfg.WithMemoryLimitPages(r.limits.MaxMemoryPages)

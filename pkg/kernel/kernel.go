@@ -28,8 +28,13 @@ package kernel
 // tracks the kernel's actual current development stage (mid Phase 2 of the
 // PRD's multi-phase build), not the PRD document's own "Version: 1.0.0"
 // header — the PRD describes where the project is going, not what glyphuxd
-// actually is today. Bump this by hand as phases land; nothing else in the
-// repo derives it automatically (no VERSION file, no git tag convention
-// exists yet in this repo — see this slice's tracking doc,
-// docs/implementation/active/0014-phase2-slice2.6-permissions-enforcement.md).
-const Version = "0.2.0"
+// actually is today.
+//
+// This is a var (not a const) so a release build can ldflags-override it:
+// `-ldflags "-X github.com/glyphux/glyphux/pkg/kernel.Version=..."` — the
+// same mechanism cmd/glyphuxd uses for its own display `version` var, and
+// the one the justfile `release` target and scripts/release/build.sh drive
+// from the repo-root VERSION file. The source default is kept in sync with
+// that VERSION file; the sync mechanism is the unit test in version_test.go
+// (Ticket T9 / gap 9), which asserts the two agree under a plain build.
+var Version = "0.2.0"

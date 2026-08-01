@@ -35,6 +35,18 @@ When you open multiple Pi agents that share a session key (e.g. from the same te
 - `.pi/agents/` — Agent definitions for agent-team extension
 - `.pi/agent-sessions/` — Ephemeral session files (gitignored)
 
+### Branch hygiene
+
+Feature work happens on short-lived branches off `dev` (never directly on
+`dev`): one branch per ticket, TDD red-first, a conventional-commit message,
+review, then consolidation to `dev` (fast-forward) and deletion of the
+branch. Any branch whose tip is an ancestor of `dev` with no unique commits
+is stale — usually an agent worktree that finished before the owner merged.
+Prune it with `git worktree prune` (drops orphaned worktree metadata) then
+delete the branch with `git branch -d <name>` (NOT `-D`; `-d` refuses if the
+branch still has unique commits, which is the safety check that a branch is
+safe to drop). Keep `main`, `staging`, `dev` and `origin/*` untouched.
+
 ## Conventions
 - Extensions are standalone .ts files loaded by Pi's jiti runtime
 - Available imports: `@mariozechner/pi-coding-agent`, `@mariozechner/pi-tui`, `@mariozechner/pi-ai`, `@sinclair/typebox`, plus any deps in package.json

@@ -13,7 +13,10 @@
 # VERSION defaults to `git describe --tags --always --dirty` if unset, so a
 # local run off an untagged commit still produces a distinguishable
 # (non-"dev") version string rather than silently reusing the source
-# default.
+# default. The single ldflags line below injects VERSION into BOTH the
+# glyphuxd display version (main.version) and the kernel's own version
+# (pkg/kernel.Version — the value plugin requires.core constraints are
+# checked against; Ticket T9 / gap 9 (a)).
 #
 # Output: dist/<platform-archives> + dist/SHA256SUMS, ready to attach to a
 # GitHub Release.
@@ -46,7 +49,7 @@ platforms=(
 	"windows amd64"
 )
 
-ldflags="-s -w -X main.version=${VERSION}"
+ldflags="-s -w -X main.version=${VERSION} -X github.com/glyphux/glyphux/pkg/kernel.Version=${VERSION}"
 
 for platform in "${platforms[@]}"; do
 	read -r goos goarch <<<"$platform"
