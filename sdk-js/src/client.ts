@@ -7,6 +7,7 @@ import { ContentTypesResource } from "./content-types.js";
 import { HttpClient } from "./http.js";
 import { LayoutsResource } from "./layouts.js";
 import { MediaResource } from "./media.js";
+import { PluginsResource } from "./plugins.js";
 import { PresetsResource } from "./presets.js";
 import { UsersResource } from "./users.js";
 
@@ -32,6 +33,7 @@ export class GlyphuxClient {
   readonly presets: PresetsResource;
   readonly bundles: BundlesResource;
   readonly ai: AiResource;
+  readonly plugins: PluginsResource;
 
   constructor(options: GlyphuxClientOptions) {
     this.http = new HttpClient(options.baseUrl, options.token);
@@ -45,6 +47,7 @@ export class GlyphuxClient {
     this.presets = new PresetsResource(this.http);
     this.bundles = new BundlesResource(this.http);
     this.ai = new AiResource(this.http);
+    this.plugins = new PluginsResource(this.http);
   }
 
   /** The bearer token currently in use, if any (set by auth.login() or the

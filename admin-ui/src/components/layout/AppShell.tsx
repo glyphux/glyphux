@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import { FileText, Image, LayoutDashboard, LayoutTemplate, LogOut, Menu, Palette, Shapes, Users, X } from "lucide-react";
+import { FileText, Image, LayoutDashboard, LayoutTemplate, LogOut, Menu, Palette, Plug, Shapes, Users, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useContentTypes } from "@/lib/use-content-types";
 import { allows } from "@/lib/permissions";
@@ -73,6 +73,11 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
         {allows(user?.role, "users:manage") && (
           <NavItem to="/users" onClick={onNavigate}>
             <Users className="size-4" /> Users
+          </NavItem>
+        )}
+        {allows(user?.role, "plugins:manage") && (
+          <NavItem to="/plugins" onClick={onNavigate}>
+            <Plug className="size-4" /> Plugins
           </NavItem>
         )}
       </div>

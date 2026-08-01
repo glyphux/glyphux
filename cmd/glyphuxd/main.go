@@ -24,10 +24,12 @@ import (
 	"github.com/glyphux/glyphux/capabilities/notifications"
 	"github.com/glyphux/glyphux/capabilities/seo"
 	"github.com/glyphux/glyphux/internal/api"
+	"github.com/glyphux/glyphux/internal/audit"
 	"github.com/glyphux/glyphux/internal/bootstrap"
 	"github.com/glyphux/glyphux/internal/bundle"
 	"github.com/glyphux/glyphux/internal/composition"
 	"github.com/glyphux/glyphux/internal/config"
+	"github.com/glyphux/glyphux/internal/consent"
 	"github.com/glyphux/glyphux/internal/content"
 	"github.com/glyphux/glyphux/internal/db"
 	"github.com/glyphux/glyphux/internal/graphql"
@@ -87,6 +89,12 @@ func run() error {
 	// Plugin KV persistence (gap 6 / Ticket T1): the durable backend every
 	// loaded plugin's Store() writes to — a fresh boot creates plugin_kv.
 	migrations = append(migrations, pluginstore.Migrations...)
+	// Install-time consent (gap 2 / Ticket T4): consent_decisions (14) and
+	// audit_records (15). Migration-list ownership for these two versions
+	// belongs to T4 — no other ticket adds a migration here (single-owner
+	// rule).
+	migrations = append(migrations, audit.Migrations...)
+	migrations = append(migrations, consent.Migrations...)
 
 	boot, err := bootstrap.Boot(ctx, bootstrap.Options{
 		DataDir:           cfg.DataDir,
@@ -176,14 +184,43 @@ func buildFullHandler(cfg config.Config, log *slog.Logger) bootstrap.BuildFullHa
 				return nil, err
 			}
 		}
-		if err := capReg.Activate(context.Background()); err != nil {
-			return nil, err
+		// Activation is deferred on a virgin install: the wizard writes the
+		// initial composition on first-run submission, and the first-party
+		// plugins' Register calls (forms/commerce/membership define content
+		// types) genuinely require it — RegisterContentType ->
+		// DefineContentType fails with composition.ErrNotFound otherwise.
+		// The wizard committer rebuilds this handler immediately after
+		// committing, so plugins come up with the app on setup completion
+		// (and an activation failure then fails the submission, never a
+		// half-booted app); on every provisioned boot the composition
+		// already exists and activation happens here, fail-fast.
+		compsExist, err := compositions.Exists(context.Background())
+		if err != nil {
+			return nil, fmt.Errorf("check composition: %w", err)
 		}
+		if compsExist {
+			if err := capReg.Activate(context.Background()); err != nil {
+				return nil, err
+			}
+		} else {
+			log.Info("first-party capability plugins deferred until setup completes")
+		}
+
+		// Install-time consent (gap 2 / Ticket T4): the consent engine over
+		// the real database, with an audit logger wired in so every decision
+		// is recorded (audit is strictly additive — an engine built without
+		// WithAudit would still persist decisions). The T6 loader will build
+		// the wasm/rpc consent adapter from this same engine + the registrar's
+		// Registered() set; the adapter itself ships in internal/plugin with
+		// its own suite (no AlwaysConsent anywhere in the daemon path).
+		auditLogger := audit.NewLogger(database)
+		consentEngine := consent.NewEngine(database, consent.WithAudit(auditLogger))
 
 		apiOpts := []api.Option{
 			api.TrustProxyHeaders(cfg.TrustProxyHeaders),
 			api.WithLayouts(layoutStore, blockRegistry),
 			api.WithPresets(presetStore, bundleStore),
+			api.WithConsent(consentEngine, capReg.Registered()),
 		}
 		// AI authoring (Ticket T5 / gap 3): opt-in via ai.provider. Unknown
 		// providers fail fast here, at boot, naming the valid adapter set;

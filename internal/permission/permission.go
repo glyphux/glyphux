@@ -54,6 +54,14 @@ const (
 	// a preset/bundle can rewrite an arbitrary route's Layout, the same
 	// blast radius layouts:manage already gates.
 	PresetsManage Capability = "presets:manage"
+	// PluginsManage gates the plugin consent surface (Ticket T4 / gap 2):
+	// listing plugins, reading pending consent requests, and — most
+	// importantly — making install-time consent decisions, each of which
+	// changes the trust boundary of the whole site (what a plugin may do
+	// beyond its declared manifest). Held only by admin, for the same
+	// "structural, site-wide change" reason ContentTypesManage is
+	// admin-only. PRD §10.2's consent flow is an admin act by definition.
+	PluginsManage Capability = "plugins:manage"
 )
 
 // Roles known to v1's fixed capability matrix.
@@ -69,6 +77,7 @@ var roleCapabilities = map[string]map[Capability]bool{
 		ContentRead: true, ContentReadDrafts: true, ContentWrite: true,
 		ContentPublish: true, MediaWrite: true, UsersManage: true,
 		ContentTypesManage: true, LayoutsManage: true, PresetsManage: true,
+		PluginsManage: true,
 	},
 	RoleEditor: {
 		ContentRead: true, ContentReadDrafts: true, ContentWrite: true, MediaWrite: true,
