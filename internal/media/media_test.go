@@ -3,6 +3,7 @@ package media_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"image"
 	"image/color"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/glyphux/glyphux/internal/audit"
 	"github.com/glyphux/glyphux/internal/db"
 	"github.com/glyphux/glyphux/internal/media"
 	"github.com/glyphux/glyphux/internal/permission"
@@ -507,5 +509,113 @@ func TestDeleteRejectsUnderPrivilegedAndAnonymousPrincipal(t *testing.T) {
 	// Item must still exist: neither rejected Delete call took effect.
 	if _, err := api.Get(ctx, item.ID); err != nil {
 		t.Errorf("item should still exist after denied deletes: %v", err)
+	}
+}
+
+// ---- Ticket T7 (gap 4): item-level CRUD auditing via the WithAudit option ----
+
+// testAuditAPI wires a media API over a fresh SQLite DB (audit migration
+// included) with a live audit logger attached.
+func testAuditAPI(t *testing.T) (*media.API, *db.DB) {
+	t.Helper()
+	d, err := db.OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+	migs := append(append([]db.Migration{}, media.Migrations...), audit.Migrations...)
+	if err := d.Migrate(context.Background(), migs); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	return media.NewAPI(media.NewStore(d), root, media.WithAudit(audit.NewLogger(d))), d
+}
+
+func listMediaAuditRows(t *testing.T, d *db.DB) []audit.Record {
+	t.Helper()
+	rows, err := audit.NewLogger(d).ListByPlugin(context.Background(), "media")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rows
+}
+
+// TestAuditRecordsMediaWritesAndSkipsReads: GIVEN a media API wired with a
+// live audit logger, WHEN Upload/UpdateMetadata/Delete run, THEN one row
+// per write lands stamped plugin "media" with the pinned action; reads
+// (Get/List/Open) write nothing.
+func TestAuditRecordsMediaWritesAndSkipsReads(t *testing.T) {
+	ctx := context.Background()
+	api, d := testAuditAPI(t)
+
+	item, err := api.Upload(ctx, mediaAdminPrincipal, "pic.png", "image/png", pngBytes(t, 4, 4))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := listMediaAuditRows(t, d)
+	if len(rows) != 1 || rows[0].Action != audit.ActionMediaUploaded {
+		t.Fatalf("after Upload: rows = %+v, want one %s", rows, audit.ActionMediaUploaded)
+	}
+	var createDetail map[string]string
+	if err := json.Unmarshal([]byte(rows[0].Detail), &createDetail); err != nil {
+		t.Fatalf("parse detail %q: %v", rows[0].Detail, err)
+	}
+	if createDetail["role"] != "admin" || createDetail["item_id"] != item.ID || createDetail["type"] != "media" {
+		t.Errorf("upload detail = %v, want role=admin item_id=%s type=media", createDetail, item.ID)
+	}
+
+	// Reads write nothing.
+	if _, err := api.Get(ctx, item.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := api.List(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := api.Open(ctx, item.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(listMediaAuditRows(t, d)) != 1 {
+		t.Error("reads must not write audit rows")
+	}
+
+	if _, err := api.UpdateMetadata(ctx, mediaAdminPrincipal, item.ID, media.MetadataUpdate{AltText: "a red square"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := api.Delete(ctx, mediaAdminPrincipal, item.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{audit.ActionMediaUploaded, audit.ActionMediaUpdated, audit.ActionMediaDeleted}
+	rows = listMediaAuditRows(t, d)
+	if len(rows) != len(want) {
+		t.Fatalf("rows = %d, want %d: %+v", len(rows), len(want), rows)
+	}
+	for i, w := range want {
+		if rows[i].Action != w {
+			t.Errorf("row %d action = %q, want %q", i, rows[i].Action, w)
+		}
+	}
+}
+
+// TestAuditNilMediaLoggerIsANoOp: GIVEN WithAudit(nil), WHEN any write
+// runs, THEN no audit rows appear and behavior is unchanged (no panic).
+func TestAuditNilMediaLoggerIsANoOp(t *testing.T) {
+	ctx := context.Background()
+	d, err := db.OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+	migs := append(append([]db.Migration{}, media.Migrations...), audit.Migrations...)
+	if err := d.Migrate(context.Background(), migs); err != nil {
+		t.Fatal(err)
+	}
+	api := media.NewAPI(media.NewStore(d), t.TempDir(), media.WithAudit(nil))
+
+	if _, err := api.Upload(ctx, mediaAdminPrincipal, "pic.png", "image/png", pngBytes(t, 4, 4)); err != nil {
+		t.Fatal(err)
+	}
+	if rows := listMediaAuditRows(t, d); len(rows) != 0 {
+		t.Errorf("WithAudit(nil) must write no rows, got %d", len(rows))
 	}
 }

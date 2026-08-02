@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/glyphux/glyphux/internal/audit"
 	"github.com/glyphux/glyphux/internal/composition"
 	"github.com/glyphux/glyphux/internal/db"
 	"github.com/glyphux/glyphux/internal/identity"
@@ -57,7 +58,7 @@ func (c *committer) Commit(ctx context.Context, in setup.Input) error {
 			pg.Close()
 			return fmt.Errorf("migrate postgres: %w", err)
 		}
-		database, compositions, identities = pg, composition.NewStore(pg), identity.NewService(pg)
+		database, compositions, identities = pg, composition.NewStore(pg), identity.NewService(pg, identity.WithAudit(audit.NewLogger(pg)))
 		dsnEnvVar = "GLYPHUX_DB_DSN"
 		opened = true
 	default:

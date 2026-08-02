@@ -16,6 +16,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/glyphux/glyphux/internal/audit"
 	"github.com/glyphux/glyphux/internal/composition"
 	"github.com/glyphux/glyphux/internal/permission"
 	"github.com/glyphux/glyphux/pkg/contract"
@@ -26,11 +27,41 @@ import (
 type API struct {
 	compositions *composition.Store
 	items        *Store
+	audit        *audit.Logger // nil unless WithAudit wired (Ticket T7)
+}
+
+// Option configures optional API behavior beyond the required kernel stores.
+type Option func(*API)
+
+// WithAudit wires an audit logger so every item-level write (create/update/
+// delete/publish/unpublish/rollback) records one row via the content
+// recorder (Ticket T7 / gap 4). Nil — the zero value — is a byte-identical
+// no-op: no rows, no behavior change, no panic. Reads are deliberately
+// un-audited.
+func WithAudit(logger *audit.Logger) Option {
+	return func(a *API) { a.audit = logger }
 }
 
 // NewAPI wires the domain API to the kernel stores.
-func NewAPI(comps *composition.Store, items *Store) *API {
-	return &API{compositions: comps, items: items}
+func NewAPI(comps *composition.Store, items *Store, opts ...Option) *API {
+	a := &API{compositions: comps, items: items}
+	for _, opt := range opts {
+		opt(a)
+	}
+	return a
+}
+
+// auditItem best-effort logs one item-level write. A nil logger is a
+// no-op; a logging failure never masks the write itself — audit is
+// append-only infrastructure, matching pkg/sdk's host-side auditLog
+// convention. The domain boundary sees role-only principals, so Actor.ID
+// is always "" here (owner-confirmed: HTTP-layer actor enrichment is out
+// of scope this round).
+func (a *API) auditItem(ctx context.Context, action string, principal *permission.Principal, typeName, id string) {
+	if a.audit == nil {
+		return
+	}
+	_ = a.audit.RecordContent(ctx, action, audit.Actor{Role: permission.RoleOf(principal)}, typeName, id)
 }
 
 // Status values for an item's publication lifecycle (slice 1.5).
@@ -101,6 +132,7 @@ func (a *API) Create(ctx context.Context, principal *permission.Principal, typeN
 	}); err != nil {
 		return nil, err
 	}
+	a.auditItem(ctx, audit.ActionContentCreated, principal, typeName, item.ID)
 	return item, nil
 }
 
@@ -313,6 +345,7 @@ func (a *API) Update(ctx context.Context, principal *permission.Principal, typeN
 	}); err != nil {
 		return nil, err
 	}
+	a.auditItem(ctx, audit.ActionContentUpdated, principal, typeName, id)
 	return a.get(ctx, typeName, id)
 }
 
@@ -338,7 +371,11 @@ func (a *API) Delete(ctx context.Context, principal *permission.Principal, typeN
 	if _, err := a.contentType(ctx, typeName); err != nil {
 		return err
 	}
-	return a.items.delete(ctx, typeName, id)
+	if err := a.items.delete(ctx, typeName, id); err != nil {
+		return err
+	}
+	a.auditItem(ctx, audit.ActionContentDeleted, principal, typeName, id)
+	return nil
 }
 
 // Publish marks an item as published, making it the item's live status.
@@ -348,7 +385,12 @@ func (a *API) Publish(ctx context.Context, principal *permission.Principal, type
 	if !permission.AllowsPrincipal(principal, permission.ContentPublish) {
 		return nil, permission.ErrDenied
 	}
-	return a.setStatus(ctx, typeName, id, StatusPublished)
+	item, err := a.setStatus(ctx, typeName, id, StatusPublished)
+	if err != nil {
+		return nil, err
+	}
+	a.auditItem(ctx, audit.ActionContentPublished, principal, typeName, id)
+	return item, nil
 }
 
 // Unpublish reverts a published item to draft. Returns ErrNotFound if the
@@ -358,7 +400,12 @@ func (a *API) Unpublish(ctx context.Context, principal *permission.Principal, ty
 	if !permission.AllowsPrincipal(principal, permission.ContentPublish) {
 		return nil, permission.ErrDenied
 	}
-	return a.setStatus(ctx, typeName, id, StatusDraft)
+	item, err := a.setStatus(ctx, typeName, id, StatusDraft)
+	if err != nil {
+		return nil, err
+	}
+	a.auditItem(ctx, audit.ActionContentUnpublished, principal, typeName, id)
+	return item, nil
 }
 
 func (a *API) setStatus(ctx context.Context, typeName, id, status string) (*Item, error) {
@@ -435,6 +482,7 @@ func (a *API) Rollback(ctx context.Context, principal *permission.Principal, typ
 	}); err != nil {
 		return nil, err
 	}
+	a.auditItem(ctx, audit.ActionContentRolledBack, principal, typeName, id)
 	return a.get(ctx, typeName, id)
 }
 

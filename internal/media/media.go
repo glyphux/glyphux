@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/glyphux/glyphux/internal/audit"
 	"github.com/glyphux/glyphux/internal/permission"
 )
 
@@ -69,14 +70,40 @@ type MetadataUpdate struct {
 // media state.
 type API struct {
 	items *Store
-	root  string // local-FS storage root, e.g. <data-dir>/media
+	root  string        // local-FS storage root, e.g. <data-dir>/media
+	audit *audit.Logger // nil unless WithAudit wired (Ticket T7)
+}
+
+// Option configures optional API behavior beyond the required kernel store.
+type Option func(*API)
+
+// WithAudit wires an audit logger so every media write (upload/update
+// metadata/delete) records one row via the media recorder (Ticket T7 / gap
+// 4). Nil — the zero value — is a byte-identical no-op: no rows, no
+// behavior change, no panic. Reads are deliberately un-audited.
+func WithAudit(logger *audit.Logger) Option {
+	return func(a *API) { a.audit = logger }
 }
 
 // NewAPI wires the domain API to the kernel store and a local-FS storage root.
 // The root is created on first use, not at construction, so tests and dry
 // runs never touch disk unnecessarily.
-func NewAPI(items *Store, root string) *API {
-	return &API{items: items, root: root}
+func NewAPI(items *Store, root string, opts ...Option) *API {
+	a := &API{items: items, root: root}
+	for _, opt := range opts {
+		opt(a)
+	}
+	return a
+}
+
+// auditItem best-effort logs one media write. A nil logger is a no-op; a
+// logging failure never masks the write itself. The domain boundary sees
+// role-only principals, so Actor.ID is always "" here (owner-confirmed).
+func (a *API) auditItem(ctx context.Context, action string, principal *permission.Principal, id string) {
+	if a.audit == nil {
+		return
+	}
+	_ = a.audit.RecordMedia(ctx, action, audit.Actor{Role: permission.RoleOf(principal)}, id)
 }
 
 // Upload validates data's MIME type, decodes image dimensions where possible,
@@ -120,6 +147,7 @@ func (a *API) Upload(ctx context.Context, principal *permission.Principal, filen
 		_ = os.Remove(filepath.Join(a.root, storagePath))
 		return nil, err
 	}
+	a.auditItem(ctx, audit.ActionMediaUploaded, principal, item.ID)
 	return item, nil
 }
 
@@ -160,6 +188,7 @@ func (a *API) Delete(ctx context.Context, principal *permission.Principal, id st
 		return err
 	}
 	_ = os.Remove(filepath.Join(a.root, r.StoragePath))
+	a.auditItem(ctx, audit.ActionMediaDeleted, principal, id)
 	return nil
 }
 
@@ -177,6 +206,7 @@ func (a *API) UpdateMetadata(ctx context.Context, principal *permission.Principa
 	if err := a.items.updateMetadata(ctx, id, update.AltText, update.Tags, update.Source, update.Attribution, time.Now().UTC()); err != nil {
 		return nil, err
 	}
+	a.auditItem(ctx, audit.ActionMediaUpdated, principal, id)
 	return a.Get(ctx, id)
 }
 

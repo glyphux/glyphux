@@ -142,8 +142,14 @@ func databaseExplicit(cfg config.Config) bool {
 func buildFullHandler(cfg config.Config, log *slog.Logger) bootstrap.BuildFullHandlerFunc {
 	return func(database *db.DB, compositions *composition.Store, identities *identity.Service, wizard *setup.Wizard) (http.Handler, error) {
 		sessions := identity.NewSessions(database)
-		contentAPI := content.NewAPI(compositions, content.NewStore(database))
-		mediaAPI := media.NewAPI(media.NewStore(database), filepath.Join(cfg.DataDir, "media"))
+		// Audit trail (gap 4 / Ticket T7): one logger for the whole daemon —
+		// it backs the consent engine's decision records (T4), the item-level
+		// content/media recorders below, and KernelDeps.Audit so every loaded
+		// plugin's boundary gates log. Migration 15 (audit_records) is in the
+		// list appended at main.go's migration block.
+		auditLogger := audit.NewLogger(database)
+		contentAPI := content.NewAPI(compositions, content.NewStore(database), content.WithAudit(auditLogger))
+		mediaAPI := media.NewAPI(media.NewStore(database), filepath.Join(cfg.DataDir, "media"), media.WithAudit(auditLogger))
 
 		// Layer-2 block/layout transport (slice 4.4a). The registry is
 		// populated with the first-party blocks at construction time — this
@@ -163,13 +169,12 @@ func buildFullHandler(cfg config.Config, log *slog.Logger) bootstrap.BuildFullHa
 		bundleStore := bundle.NewStore(database)
 
 		// Install-time consent (gap 2 / Ticket T4): the consent engine over
-		// the real database, with an audit logger wired in so every decision
-		// is recorded (audit is strictly additive — an engine built without
-		// WithAudit would still persist decisions). The T6 loader builds the
-		// wasm/rpc consent adapter from this same engine; the adapter ships
-		// in internal/plugin with its own suite (no AlwaysConsent anywhere
-		// in the daemon path).
-		auditLogger := audit.NewLogger(database)
+		// the real database, with the shared audit logger wired in so every
+		// decision is recorded (audit is strictly additive — an engine built
+		// without WithAudit would still persist decisions). The T6 loader
+		// builds the wasm/rpc consent adapter from this same engine; the
+		// adapter ships in internal/plugin with its own suite (no
+		// AlwaysConsent anywhere in the daemon path).
 		consentEngine := consent.NewEngine(database, consent.WithAudit(auditLogger))
 
 		// Plugin loading (Ticket T6 / gap 1): the 3-tier loader generalizes
@@ -190,6 +195,7 @@ func buildFullHandler(cfg config.Config, log *slog.Logger) bootstrap.BuildFullHa
 			Identities:   identities,
 			KV:           pluginstore.NewStore(database),
 			Blocks:       blockRegistry,
+			Audit:        auditLogger,
 		}, consentEngine)
 		for _, p := range firstPartyPlugins() {
 			if err := capLoader.RegisterPlugin(p); err != nil {
@@ -230,6 +236,7 @@ func buildFullHandler(cfg config.Config, log *slog.Logger) bootstrap.BuildFullHa
 			api.WithLayouts(layoutStore, blockRegistry),
 			api.WithPresets(presetStore, bundleStore),
 			api.WithConsent(consentEngine, capLoader.Registered()),
+			api.WithAuditLogger(auditLogger),
 		}
 		// AI authoring (Ticket T5 / gap 3): opt-in via ai.provider. Unknown
 		// providers fail fast here, at boot, naming the valid adapter set;
