@@ -56,7 +56,9 @@ jobs:
   # files). Node is pinned to the same version release.yml uses so rebuilds
   # are byte-identical; if a rebuild produces a different tree, commit the
   # freshly-built dist (via `just admin-ui-rebuild`) rather than relaxing
-  # this check.
+  # this check. The sdk-js and admin-ui test suites (vitest) run here too —
+  # the jobs' primary purpose is freshness, but the suites must not be
+  # silently untested in CI.
   admin-ui-dist-freshness:
     runs-on: ubuntu-latest
     steps:
@@ -70,6 +72,10 @@ jobs:
           npm --prefix sdk-js run build
           npm --prefix admin-ui ci
           npm --prefix admin-ui run build
+      - name: Test sdk-js (vitest)
+        run: npm --prefix sdk-js test
+      - name: Test admin-ui (vitest)
+        run: npm --prefix admin-ui test
       - name: Fail if committed dist is stale
         run: |
           if ! git diff --quiet -- internal/adminui/dist || [ -n "$(git status --porcelain -- internal/adminui/dist)" ]; then
