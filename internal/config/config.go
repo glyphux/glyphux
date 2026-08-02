@@ -18,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/glyphux/glyphux/pkg/sdk"
 )
 
 // Config is the fully-resolved daemon configuration.
@@ -80,6 +82,38 @@ type Config struct {
 	// and requires no API key. The API key itself is never part of this
 	// struct's serialized form — see AIConfig.APIKey.
 	AI AIConfig `json:"ai"`
+
+	// Plugins configures Tier B/C plugin loading (Ticket T6 / gap 1): the
+	// tier-b plugins directory (GLYPHUX_PLUGINS_DIR) plus the
+	// plugins[]{name,tier,source} entries the loader materializes. Empty by
+	// default — first-party-only (the T5 path). The config-file shape is
+	// flat top-level "plugins_dir"/"plugins" keys, parsed in Load() (the
+	// struct tag here is json:"-" so the plain field pass never collides
+	// with the plugins array).
+	Plugins PluginsConfig `json:"-"`
+}
+
+// PluginsConfig is the operator-facing plugin section: a directory to read
+// tier-b .wasm files from and the list of configured plugins.
+type PluginsConfig struct {
+	// Dir is the tier-b plugins directory (GLYPHUX_PLUGINS_DIR).
+	Dir string `json:"plugins_dir"`
+	// Plugins is the configured plugin list, each naming a tier and source.
+	Plugins []PluginConfig `json:"plugins"`
+}
+
+// PluginConfig names one configured plugin. Tier "a" is first-party-only
+// (registered in-process via internal/plugin's RegisterPlugin — never via
+// config); config tiers are "b" (wasm) and "c" (rpc subprocess). Manifest
+// is the declared trust surface the loader consents and filters against —
+// the interim carrier until T8's package containers ship it; it is optional
+// at parse time, and a plugin without one is refused at load
+// (deny-by-default) while the daemon continues.
+type PluginConfig struct {
+	Name     string       `json:"name"`
+	Tier     string       `json:"tier"`
+	Source   string       `json:"source"`
+	Manifest sdk.Manifest `json:"manifest"`
 }
 
 // AIConfig holds the operator's AI settings. APIKey is resolved at load
@@ -154,6 +188,21 @@ func Load(path string) (Config, error) {
 		if err := json.Unmarshal(raw, &cfg); err != nil {
 			return cfg, fmt.Errorf("parse config %s: %w", path, err)
 		}
+		// The plugins section has a flat config-file shape — top-level
+		// "plugins_dir" and "plugins" (array) keys (pinned by the T6 config
+		// tests) — so it is parsed here rather than via a Config-level
+		// UnmarshalJSON (which would clobber the Default() seed for every
+		// field the document omits). The Plugins field itself carries
+		// json:"-", keeping the plain pass above from colliding with the
+		// plugins array.
+		var flat struct {
+			Dir     string         `json:"plugins_dir"`
+			Plugins []PluginConfig `json:"plugins"`
+		}
+		if err := json.Unmarshal(raw, &flat); err != nil {
+			return cfg, fmt.Errorf("parse config %s: plugins section: %w", path, err)
+		}
+		cfg.Plugins = PluginsConfig{Dir: flat.Dir, Plugins: flat.Plugins}
 	}
 
 	if v := os.Getenv("GLYPHUX_ADDR"); v != "" {
@@ -246,6 +295,11 @@ func Load(path string) (Config, error) {
 	}
 	if v, ok := secret("GLYPHUX_AI_API_KEY"); ok && v != "" {
 		cfg.AI.APIKey = v
+	}
+	// Plugins (Ticket T6 / gap 1): the tier-b plugins directory. The
+	// plugins[] list itself is config-file-only (no env carrier for JSON).
+	if v := os.Getenv("GLYPHUX_PLUGINS_DIR"); v != "" {
+		cfg.Plugins.Dir = v
 	}
 
 	if err := cfg.validate(); err != nil {
