@@ -143,25 +143,51 @@ type TrustedKey struct {
 	NotAfter  *time.Time `json:"not_after"`
 }
 
-// DevRootKeyID is the id of the embedded default trust anchor — the dev
-// root. Its public key is DevRootPublicKey below; the matching PRIVATE key
-// exists only in the fixture-generation tooling (it is never embedded, and
-// never in the daemon).
+// DevRootKeyID is the id of the dev-era trust anchor — the embedded
+// DEFAULT seed only in `-tags dev` builds (the T10 era/prod split); normal
+// builds seed the prod root (ProdRootKeyID). Its public key is
+// DevRootPublicKey below; the matching PRIVATE key exists only in the
+// fixture-generation tooling (it is never embedded, and never in the
+// daemon).
 const DevRootKeyID = "glyphux-dev-2026-01"
 
-// DevRootPublicKey is the pinned dev root public key (hex) — the one
-// embedded default trust anchor, per the locked T8 decision. An era/prod
-// root split is deferred to T10 (the trust model's status/trust_mode
-// fields make it a config change later).
+// DevRootPublicKey is the pinned dev root public key (hex). Since the T10
+// era/prod split it is the seed of dev-tagged builds only; a normal build
+// does NOT trust it unless an operator explicitly lists it in
+// trusted_keys[] (additive) or opts into custom-only.
 const DevRootPublicKey = "a0919864e1e100024db888a7a4e4f9f85113fa2457eba83fc070bdb239b59b67"
 
-// embeddedDevRoot is the Default() seed record — the one key every host
-// trusts unless the operator opts into custom-only.
+// ProdRootKeyID is the id of the embedded production-era default trust
+// anchor — the seed of every normal (non-dev-tagged) build since the T10
+// era/prod split. Its public key is ProdRootPublicKey below; the matching
+// PRIVATE key exists only in the fixture-generation tooling (it is never
+// embedded, and never in the daemon) — the mirror of the dev-root pattern.
+const ProdRootKeyID = "glyphux-packages-prod-2026-01"
+
+// ProdRootPublicKey is the pinned prod-era root public key (hex) — the
+// embedded default trust anchor of normal builds.
+const ProdRootPublicKey = "35aca05ea0ce70a7fe71c5fe11ff8d52e812ef1d7b98b926d7ab52174b3c7736"
+
+// embeddedDevRoot is the dev-root seed record — returned by Default() only
+// in `-tags dev` builds (see the build-tagged seed selectors).
 func embeddedDevRoot() TrustedKey {
 	return TrustedKey{
 		ID:        DevRootKeyID,
 		Algorithm: "ed25519",
 		PublicKey: DevRootPublicKey,
+		Purpose:   []string{"package-signing"},
+		Issuer:    "glyphux",
+		Status:    "active",
+	}
+}
+
+// embeddedProdRoot is the prod-era Default() seed record — the one key
+// every normal host trusts unless the operator opts into custom-only.
+func embeddedProdRoot() TrustedKey {
+	return TrustedKey{
+		ID:        ProdRootKeyID,
+		Algorithm: "ed25519",
+		PublicKey: ProdRootPublicKey,
 		Purpose:   []string{"package-signing"},
 		Issuer:    "glyphux",
 		Status:    "active",
@@ -248,7 +274,7 @@ func Default() Config {
 		ShutdownTimeout: 10 * time.Second,
 		OpenBrowser:     false,
 		Marketplace: MarketplaceConfig{
-			TrustedKeys: []TrustedKey{embeddedDevRoot()},
+			TrustedKeys: []TrustedKey{embeddedDefaultRoot()},
 		},
 	}
 }
