@@ -21,6 +21,7 @@ import (
 	"github.com/glyphux/glyphux/internal/db"
 	"github.com/glyphux/glyphux/internal/identity"
 	"github.com/glyphux/glyphux/internal/layout"
+	"github.com/glyphux/glyphux/internal/marketplace"
 	"github.com/glyphux/glyphux/internal/media"
 	"github.com/glyphux/glyphux/internal/permission"
 	"github.com/glyphux/glyphux/internal/pluginstore"
@@ -84,6 +85,7 @@ func bootDaemonParts(t *testing.T, cfg config.Config, dbPath string, seed bool) 
 	migs = append(migs, pluginstore.Migrations...)
 	migs = append(migs, audit.Migrations...)
 	migs = append(migs, consent.Migrations...)
+	migs = append(migs, marketplace.Migrations...)
 	if err := d.Migrate(ctx, migs); err != nil {
 		t.Fatal(err)
 	}

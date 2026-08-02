@@ -34,7 +34,7 @@ import (
 	"time"
 
 	"github.com/glyphux/glyphux/blocks/firstparty"
-	"github.com/glyphux/glyphux/capabilities/marketplace"
+	capmarket "github.com/glyphux/glyphux/capabilities/marketplace"
 	"github.com/glyphux/glyphux/internal/api"
 	"github.com/glyphux/glyphux/internal/bundle"
 	"github.com/glyphux/glyphux/internal/composition"
@@ -109,9 +109,9 @@ func sha256HexOf(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func entitlementTokenJSON(t *testing.T, priv ed25519.PrivateKey, ent marketplace.Entitlement) string {
+func entitlementTokenJSON(t *testing.T, priv ed25519.PrivateKey, ent capmarket.Entitlement) string {
 	t.Helper()
-	tok, err := marketplace.IssueEntitlement(priv, ent)
+	tok, err := capmarket.IssueEntitlement(priv, ent)
 	if err != nil {
 		t.Fatalf("IssueEntitlement: %v", err)
 	}
@@ -125,10 +125,13 @@ func entitlementTokenJSON(t *testing.T, priv ed25519.PrivateKey, ent marketplace
 // ---- server harness ----
 
 // testServerWithMarketplace mirrors testServerWithPresets, adds the
-// marketplace migrations, and wires a marketplace.Manager holding cat and
-// tokens over the same real SQLite database. adminCreds are the admin
-// session; editorCookie is a second login with an editor role.
-func testServerWithMarketplace(t *testing.T, mgr *marketplace.Manager) (http.Handler, authCreds, *http.Cookie) {
+// marketplace migrations, and wires a marketplace.Manager over the same
+// real SQLite database (the entitlement store is the harness's own). cat is
+// the test's catalog; keys is the trust set. adminCreds are the admin
+// session; editorCookie is a second login with an editor role; the returned
+// *db.DB is the server's own database, for post-request verification
+// queries.
+func testServerWithMarketplace(t *testing.T, cat *marketplace.Catalog, keys map[string]ed25519.PublicKey) (http.Handler, authCreds, *http.Cookie, *db.DB) {
 	t.Helper()
 	d, err := db.OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -164,6 +167,7 @@ func testServerWithMarketplace(t *testing.T, mgr *marketplace.Manager) (http.Han
 	}
 	contentAPI := content.NewAPI(comps, content.NewStore(d))
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := marketplace.NewManager(cat, marketplace.NewStore(d), keys)
 	srv := api.New(comps, contentAPI, newTestMediaAPI(t, d), identities, sessions, log,
 		api.WithLayouts(layout.NewStore(d), registry),
 		api.WithPresets(preset.NewStore(d), bundle.NewStore(d)),
@@ -186,22 +190,22 @@ func testServerWithMarketplace(t *testing.T, mgr *marketplace.Manager) (http.Han
 	rec = do(t, mux, http.MethodPost, "/api/v0/auth/login", map[string]any{
 		"email": "editor@example.com", "password": "editor horse battery",
 	})
-	editorCreds := sessionCookie(t, rec)
-	_ = editorCreds
 
 	// Return the editor's raw session cookie for the no-CSRF case.
 	for _, c := range rec.Result().Cookies() {
 		if c.Name == "glyphux_session" {
-			return mux, adminCreds, c
+			return mux, adminCreds, c, d
 		}
 	}
 	t.Fatal("editor session cookie missing")
-	return mux, adminCreds, nil
+	return mux, adminCreds, nil, d
 }
 
-// marketplaceManager builds a Manager with a test keypair in the trust set,
-// a four-category catalog, and a real entitlement Store over d.
-func marketplaceManager(t *testing.T, d *db.DB) (*marketplace.Manager, ed25519.PrivateKey) {
+// marketplaceManager builds a four-category test catalog plus the trust set
+// (a fresh in-test keypair under the fixed key id), with signed containers
+// for the installable entries. No database involved — the harness owns the
+// store.
+func marketplaceManager(t *testing.T) (*marketplace.Catalog, map[string]ed25519.PublicKey, ed25519.PrivateKey) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
@@ -218,8 +222,7 @@ func marketplaceManager(t *testing.T, d *db.DB) (*marketplace.Manager, ed25519.P
 		{ID: "future-theme", Name: "Future Theme", Kind: packagefmt.KindPreset, Tier: "official", Version: "3.0.0", RequiresCore: ">=0.3.0", License: "proprietary", Commercial: true, PackageBytes: tooNew},
 		{ID: "starter-bundle", Name: "Starter Bundle", Kind: packagefmt.KindBundle, Tier: "community", Version: "0.9.0", RequiresCore: ">=0.1.0", License: "free"},
 	})
-	tokens := marketplace.NewStore(d)
-	return marketplace.NewManager(cat, tokens, map[string]ed25519.PublicKey{keyID: pub}), priv
+	return cat, map[string]ed25519.PublicKey{keyID: pub}, priv
 }
 
 // ---- tests ----
@@ -229,13 +232,8 @@ func marketplaceManager(t *testing.T, d *db.DB) (*marketplace.Manager, ed25519.P
 // catalog, THEN it is grouped under exactly the four locked categories with
 // each entry carrying its manifest metadata.
 func TestMarketplaceCatalogGroupsFourCategories(t *testing.T) {
-	d, err := db.OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { d.Close() })
-	mgr, _ := marketplaceManager(t, d)
-	h, admin, _ := testServerWithMarketplace(t, mgr)
+	cat, keys, _ := marketplaceManager(t)
+	h, admin, _, _ := testServerWithMarketplace(t, cat, keys)
 
 	rec := doWithCookieBody(t, h, http.MethodGet, "/api/v0/marketplace/catalog", admin, nil)
 	if rec.Code != http.StatusOK {
@@ -264,13 +262,8 @@ func TestMarketplaceCatalogGroupsFourCategories(t *testing.T) {
 // listed, THEN each entry carries core_compatible + core_status derived from
 // pkg/kernel.Version.
 func TestMarketplaceCatalogAnnotatesCoreCompatibility(t *testing.T) {
-	d, err := db.OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { d.Close() })
-	mgr, _ := marketplaceManager(t, d)
-	h, admin, _ := testServerWithMarketplace(t, mgr)
+	cat, keys, _ := marketplaceManager(t)
+	h, admin, _, _ := testServerWithMarketplace(t, cat, keys)
 
 	rec := doWithCookieBody(t, h, http.MethodGet, "/api/v0/marketplace/catalog", admin, nil)
 	if rec.Code != http.StatusOK {
@@ -299,13 +292,8 @@ func TestMarketplaceCatalogAnnotatesCoreCompatibility(t *testing.T) {
 // (integrity + key-ID-aware signature), the preset pipeline persists the
 // record, and the endpoint returns its id.
 func TestMarketplaceInstallPresetPersists(t *testing.T) {
-	d, err := db.OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { d.Close() })
-	mgr, _ := marketplaceManager(t, d)
-	h, admin, _ := testServerWithMarketplace(t, mgr)
+	cat, keys, _ := marketplaceManager(t)
+	h, admin, _, d := testServerWithMarketplace(t, cat, keys)
 
 	rec := doWithCookieBody(t, h, http.MethodPost, "/api/v0/marketplace/packages/hero-theme/install", admin, nil)
 	if rec.Code != http.StatusOK {
@@ -316,6 +304,9 @@ func TestMarketplaceInstallPresetPersists(t *testing.T) {
 		t.Fatalf("install response has no id: %v", installed)
 	}
 	// The preset record must actually be persisted (query the real store).
+	// The installed record's Name is the artifact's own preset name (the
+	// container's manifest name, decoded from the payload) — the listing id
+	// "hero-theme" is a catalog concern, distinct from the artifact name.
 	presets := preset.NewStore(d)
 	records, err := presets.List(context.Background())
 	if err != nil {
@@ -323,7 +314,7 @@ func TestMarketplaceInstallPresetPersists(t *testing.T) {
 	}
 	found := false
 	for _, r := range records {
-		if r.Name == "hero-theme" {
+		if r.Name == "acme-hero-pro" {
 			found = true
 		}
 	}
@@ -336,14 +327,9 @@ func TestMarketplaceInstallPresetPersists(t *testing.T) {
 // payload was flipped in transit, WHEN an admin installs it, THEN the
 // packagefmt integrity check rejects it with 422 and nothing is persisted.
 func TestMarketplaceInstallRejectsTamperedPackage(t *testing.T) {
-	d, err := db.OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { d.Close() })
-	mgr, priv := marketplaceManager(t, d)
+	_, keys, priv := marketplaceManager(t)
 	// A second container for the tamper — build via the same encoder, flip a
-	// payload byte, and swap it into a manager whose catalog points at it.
+	// payload byte, and swap it into a catalog whose entry points at it.
 	good := signedPresetContainer(t, priv, "glyphux-dev-2026-01", "tampered-theme", ">=0.1.0")
 	tampered := bytes.Clone(good)
 	if i := bytes.Index(tampered, []byte(`"name":"tampered-theme"`)); i >= 0 {
@@ -353,9 +339,7 @@ func TestMarketplaceInstallRejectsTamperedPackage(t *testing.T) {
 	cat := marketplace.NewCatalog([]marketplace.CatalogEntry{
 		{ID: "tampered-theme", Name: "Tampered Theme", Kind: packagefmt.KindPreset, Tier: "official", Version: "1.0.0", RequiresCore: ">=0.1.0", License: "proprietary", Commercial: true, PackageBytes: tampered},
 	})
-	keys := mgr.Keys
-	mgr2 := marketplace.NewManager(cat, mgr.Entitlements, keys)
-	h, admin, _ := testServerWithMarketplace(t, mgr2)
+	h, admin, _, d := testServerWithMarketplace(t, cat, keys)
 
 	rec := doWithCookieBody(t, h, http.MethodPost, "/api/v0/marketplace/packages/tampered-theme/install", admin, nil)
 	if rec.Code != http.StatusUnprocessableEntity {
@@ -379,13 +363,8 @@ func TestMarketplaceInstallRejectsTamperedPackage(t *testing.T) {
 // persisted (kernel.Version is the host's, baked into the check at install
 // time).
 func TestMarketplaceInstallRejectsTooNewRequiresCore(t *testing.T) {
-	d, err := db.OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { d.Close() })
-	mgr, _ := marketplaceManager(t, d)
-	h, admin, _ := testServerWithMarketplace(t, mgr)
+	cat, keys, _ := marketplaceManager(t)
+	h, admin, _, d := testServerWithMarketplace(t, cat, keys)
 
 	rec := doWithCookieBody(t, h, http.MethodPost, "/api/v0/marketplace/packages/future-theme/install", admin, nil)
 	if rec.Code != http.StatusUnprocessableEntity {
@@ -408,26 +387,21 @@ func TestMarketplaceInstallRejectsTooNewRequiresCore(t *testing.T) {
 // POSTed (admin + CSRF) and the list is GET, THEN each reports its computed
 // status; a tampered token is rejected at registration.
 func TestMarketplaceEntitlementsRegisterAndReportStatus(t *testing.T) {
-	d, err := db.OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { d.Close() })
-	mgr, priv := marketplaceManager(t, d)
-	h, admin, _ := testServerWithMarketplace(t, mgr)
+	cat, keys, priv := marketplaceManager(t)
+	h, admin, _, _ := testServerWithMarketplace(t, cat, keys)
 
 	now := time.Now().UTC()
-	active := entitlementTokenJSON(t, priv, marketplace.Entitlement{
+	active := entitlementTokenJSON(t, priv, capmarket.Entitlement{
 		LicenseID: "lic-1", ExtensionName: "acme-hero-pro",
 		MinVersion: "1.0.0", MaxVersion: "2.0.0",
 		NotBefore: now.Add(-time.Hour), NotAfter: now.Add(24 * time.Hour),
-		Scope: "single-host",
+		Scope: []string{"single-host"},
 	})
-	expired := entitlementTokenJSON(t, priv, marketplace.Entitlement{
+	expired := entitlementTokenJSON(t, priv, capmarket.Entitlement{
 		LicenseID: "lic-2", ExtensionName: "acme-gone",
 		MinVersion: "1.0.0", MaxVersion: "2.0.0",
 		NotBefore: now.Add(-48 * time.Hour), NotAfter: now.Add(-24 * time.Hour),
-		Scope: "single-host",
+		Scope: []string{"single-host"},
 	})
 
 	for _, tok := range []string{active, expired} {
@@ -474,13 +448,8 @@ func TestMarketplaceEntitlementsRegisterAndReportStatus(t *testing.T) {
 // routes, THEN the server denies — 401 anonymous, 403 under-privileged, 403
 // missing CSRF. Catalog GET stays admin-gated too.
 func TestMarketplaceDeniesByDefault(t *testing.T) {
-	d, err := db.OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { d.Close() })
-	mgr, _ := marketplaceManager(t, d)
-	h, admin, editorSession := testServerWithMarketplace(t, mgr)
+	cat, keys, _ := marketplaceManager(t)
+	h, admin, editorSession, _ := testServerWithMarketplace(t, cat, keys)
 	_ = admin
 
 	// Anonymous install → 401.
