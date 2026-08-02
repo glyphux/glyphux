@@ -143,25 +143,51 @@ type TrustedKey struct {
 	NotAfter  *time.Time `json:"not_after"`
 }
 
-// DevRootKeyID is the id of the embedded default trust anchor — the dev
-// root. Its public key is DevRootPublicKey below; the matching PRIVATE key
-// exists only in the fixture-generation tooling (it is never embedded, and
-// never in the daemon).
+// DevRootKeyID is the id of the dev-era trust anchor — the embedded
+// DEFAULT seed only in `-tags dev` builds (the T10 era/prod split); normal
+// builds seed the prod root (ProdRootKeyID). Its public key is
+// DevRootPublicKey below; the matching PRIVATE key exists only in the
+// fixture-generation tooling (it is never embedded, and never in the
+// daemon).
 const DevRootKeyID = "glyphux-dev-2026-01"
 
-// DevRootPublicKey is the pinned dev root public key (hex) — the one
-// embedded default trust anchor, per the locked T8 decision. An era/prod
-// root split is deferred to T10 (the trust model's status/trust_mode
-// fields make it a config change later).
+// DevRootPublicKey is the pinned dev root public key (hex). Since the T10
+// era/prod split it is the seed of dev-tagged builds only; a normal build
+// does NOT trust it unless an operator explicitly lists it in
+// trusted_keys[] (additive) or opts into custom-only.
 const DevRootPublicKey = "a0919864e1e100024db888a7a4e4f9f85113fa2457eba83fc070bdb239b59b67"
 
-// embeddedDevRoot is the Default() seed record — the one key every host
-// trusts unless the operator opts into custom-only.
+// ProdRootKeyID is the id of the embedded production-era default trust
+// anchor — the seed of every normal (non-dev-tagged) build since the T10
+// era/prod split. Its public key is ProdRootPublicKey below; the matching
+// PRIVATE key exists only in the fixture-generation tooling (it is never
+// embedded, and never in the daemon) — the mirror of the dev-root pattern.
+const ProdRootKeyID = "glyphux-packages-prod-2026-01"
+
+// ProdRootPublicKey is the pinned prod-era root public key (hex) — the
+// embedded default trust anchor of normal builds.
+const ProdRootPublicKey = "35aca05ea0ce70a7fe71c5fe11ff8d52e812ef1d7b98b926d7ab52174b3c7736"
+
+// embeddedDevRoot is the dev-root seed record — returned by Default() only
+// in `-tags dev` builds (see the build-tagged seed selectors).
 func embeddedDevRoot() TrustedKey {
 	return TrustedKey{
 		ID:        DevRootKeyID,
 		Algorithm: "ed25519",
 		PublicKey: DevRootPublicKey,
+		Purpose:   []string{"package-signing"},
+		Issuer:    "glyphux",
+		Status:    "active",
+	}
+}
+
+// embeddedProdRoot is the prod-era Default() seed record — the one key
+// every normal host trusts unless the operator opts into custom-only.
+func embeddedProdRoot() TrustedKey {
+	return TrustedKey{
+		ID:        ProdRootKeyID,
+		Algorithm: "ed25519",
+		PublicKey: ProdRootPublicKey,
 		Purpose:   []string{"package-signing"},
 		Issuer:    "glyphux",
 		Status:    "active",
@@ -248,7 +274,7 @@ func Default() Config {
 		ShutdownTimeout: 10 * time.Second,
 		OpenBrowser:     false,
 		Marketplace: MarketplaceConfig{
-			TrustedKeys: []TrustedKey{embeddedDevRoot()},
+			TrustedKeys: []TrustedKey{embeddedDefaultRoot()},
 		},
 	}
 }
@@ -439,7 +465,35 @@ func (c *Config) validate() error {
 	default:
 		return fmt.Errorf("unknown marketplace.trust_mode %q (want %q for full replacement, or unset for additive)", c.Marketplace.TrustMode, TrustModeCustomOnly)
 	}
+	// T10a.1: custom-only means FULL replacement — only the operator's
+	// declared keys are trusted. When it yields zero operator-declared
+	// keys (file omits trusted_keys entirely, or declares an empty
+	// array), boot must FAIL instead of silently keeping a default seed:
+	// the embedded seed is not an operator key, so it cannot satisfy the
+	// replacement contract — an operator who opts out of the embedded
+	// root must say which keys replace it.
+	if c.Marketplace.TrustMode == TrustModeCustomOnly && !operatorDeclared(c.Marketplace.TrustedKeys) {
+		return fmt.Errorf("marketplace.trust_mode=custom-only requires at least one operator-declared trusted_keys entry (got zero)")
+	}
 	return nil
+}
+
+// operatorDeclared reports whether the trust set contains at least one key
+// that is not an embedded root — i.e. one the operator actually declared
+// (in custom-only mode the embedded dev/prod roots do not count; the
+// operator's own keys do).
+
+// operatorDeclared reports whether the trust set contains at least one key
+// that is not an embedded root — i.e. one the operator actually declared
+// (in custom-only mode the embedded dev/prod roots do not count; the
+// operator's own keys do).
+func operatorDeclared(keys []TrustedKey) bool {
+	for _, k := range keys {
+		if k.ID != DevRootKeyID && k.ID != ProdRootKeyID {
+			return true
+		}
+	}
+	return false
 }
 
 // SQLitePath is the on-disk location of the embedded database.
