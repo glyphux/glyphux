@@ -354,6 +354,107 @@ func TestMarketplaceTrustModeRejectsUnknownValue(t *testing.T) {
 	}
 }
 
+// --- T10a.1: custom-only must not silently keep a default seed. ---
+//
+// The retro-audit flagged the least-safe failure direction at
+// config.go's trust-merge: json merge semantics keep the embedded seed
+// when a custom-only file omits trusted_keys entirely — an operator who
+// asked for FULL replacement silently ends up trusting the default root.
+// The T10a.1 contract: custom-only with ZERO operator-declared keys is a
+// boot error, not a silent seed.
+
+// TestMarketplaceCustomOnlyOmittedKeysFails: GIVEN trust_mode=custom-only
+// and a file that omits trusted_keys entirely, WHEN Load runs, THEN boot
+// fails with an error naming custom-only and the zero-key situation (the
+// unsafe direction — the embedded seed must NOT be kept silently).
+func TestMarketplaceCustomOnlyOmittedKeysFails(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "glyphux.json")
+	if err := os.WriteFile(p, []byte(`{
+		"marketplace": {"trust_mode": "custom-only"}
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := config.Load(p)
+	if err == nil {
+		t.Fatal("custom-only with no trusted_keys must fail boot")
+	}
+	for _, want := range []string{"custom-only", "zero"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %q", err, want)
+		}
+	}
+}
+
+// TestMarketplaceCustomOnlyExplicitlyEmptyKeysFails: an explicitly empty
+// trusted_keys array is the same unsafe configuration as an omission —
+// boot must fail for it too.
+func TestMarketplaceCustomOnlyExplicitlyEmptyKeysFails(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "glyphux.json")
+	if err := os.WriteFile(p, []byte(`{
+		"marketplace": {"trust_mode": "custom-only", "trusted_keys": []}
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := config.Load(p)
+	if err == nil {
+		t.Fatal("custom-only with an explicitly empty trusted_keys must fail boot")
+	}
+	for _, want := range []string{"custom-only", "zero"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %q", err, want)
+		}
+	}
+}
+
+// TestMarketplaceCustomOnlyWithOperatorKeysStillValid pins the no-regression
+// half of the contract: custom-only WITH at least one operator-declared key
+// stays valid (full replacement, no seed).
+func TestMarketplaceCustomOnlyWithOperatorKeysStillValid(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "glyphux.json")
+	if err := os.WriteFile(p, []byte(`{
+		"marketplace": {
+			"trust_mode": "custom-only",
+			"trusted_keys": [
+				{"id": "acme-prod-2026", "algorithm": "ed25519",
+				 "public_key": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+				 "purpose": ["package-signing"], "issuer": "acme", "status": "active"}
+			]
+		}
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatalf("custom-only with operator keys must stay valid: %v", err)
+	}
+	if len(cfg.Marketplace.TrustedKeys) != 1 || cfg.Marketplace.TrustedKeys[0].ID != "acme-prod-2026" {
+		t.Errorf("TrustedKeys = %+v, want exactly [acme-prod-2026] (custom-only replaces)", cfg.Marketplace.TrustedKeys)
+	}
+}
+
+// TestMarketplaceAdditiveOmittedKeysKeepsSeed pins the unchanged additive
+// behavior: with the default trust_mode (no custom-only), a file that omits
+// trusted_keys is NOT an error — the embedded seed is retained.
+func TestMarketplaceAdditiveOmittedKeysKeepsSeed(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "glyphux.json")
+	if err := os.WriteFile(p, []byte(`{
+		"marketplace": {}
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatalf("additive with omitted trusted_keys must stay valid: %v", err)
+	}
+	if !hasTrustedKey(cfg, defaultSeedID()) {
+		t.Errorf("embedded seed %q missing in additive mode", defaultSeedID())
+	}
+}
+
 // TestMarketplaceTrustModeCustomOnlyReplaces pins the escape hatch: an
 // operator who sets trust_mode=custom-only gets a full replacement — the
 // embedded dev root is dropped and only the operator keys remain.
