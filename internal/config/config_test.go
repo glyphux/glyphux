@@ -233,12 +233,6 @@ func TestPluginsSectionFromJSONFile(t *testing.T) {
 
 // ---- Ticket T8 (gap 8): key-ID-aware marketplace trust config ----
 
-// devRootPublicKey is the pinned embedded default trust anchor — the dev
-// root the T8 package fixtures are signed with. The matching private key is
-// held by the fixture-generation tooling only (never embedded, never in the
-// daemon); the public half is the one thing every verifying host embeds.
-const devRootPublicKey = "a0919864e1e100024db888a7a4e4f9f85113fa2457eba83fc070bdb239b59b67"
-
 func findTrustedKey(t *testing.T, cfg config.Config, id string) *config.TrustedKey {
 	t.Helper()
 	for i := range cfg.Marketplace.TrustedKeys {
@@ -250,23 +244,33 @@ func findTrustedKey(t *testing.T, cfg config.Config, id string) *config.TrustedK
 	return nil
 }
 
-// TestMarketplaceTrustDefaultsEmbedDevRoot pins the locked trust decision:
-// the embedded default is the dev public key — one active package-signing
-// record — with additive trust_mode by default (no "custom-only").
-func TestMarketplaceTrustDefaultsEmbedDevRoot(t *testing.T) {
+// hasTrustedKey reports whether the trust set contains id — the non-fatal
+// lookup for "must NOT be a seed" assertions (findTrustedKey fatals).
+func hasTrustedKey(cfg config.Config, id string) bool {
+	for i := range cfg.Marketplace.TrustedKeys {
+		if cfg.Marketplace.TrustedKeys[i].ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// TestMarketplaceTrustDefaultsEmbedSeed pins the trust decision's default
+// shape: exactly ONE embedded seed (T10 era split: the prod root in normal
+// builds, the dev root under `-tags dev` — see prod_root_test.go /
+// dev_root_test.go) with additive trust_mode by default (no
+// "custom-only").
+func TestMarketplaceTrustDefaultsEmbedSeed(t *testing.T) {
 	cfg := config.Default()
 	if cfg.Marketplace.TrustMode != "" {
 		t.Errorf("TrustMode = %q, want default additive (\"\")", cfg.Marketplace.TrustMode)
 	}
 	if len(cfg.Marketplace.TrustedKeys) != 1 {
-		t.Fatalf("TrustedKeys = %d, want exactly the embedded dev root", len(cfg.Marketplace.TrustedKeys))
+		t.Fatalf("TrustedKeys = %d, want exactly the embedded seed", len(cfg.Marketplace.TrustedKeys))
 	}
 	k := cfg.Marketplace.TrustedKeys[0]
-	if k.ID != "glyphux-dev-2026-01" || k.Algorithm != "ed25519" || k.Issuer != "glyphux" || k.Status != "active" {
-		t.Errorf("dev root = %+v, want id=glyphux-dev-2026-01 algorithm=ed25519 issuer=glyphux status=active", k)
-	}
-	if k.PublicKey != devRootPublicKey {
-		t.Errorf("dev root public key = %q, want the pinned dev key", k.PublicKey)
+	if k.ID != defaultSeedID() {
+		t.Errorf("seed root id = %q, want %q (this build mode's default seed)", k.ID, defaultSeedID())
 	}
 	if len(k.Purpose) != 1 || k.Purpose[0] != "package-signing" {
 		t.Errorf("purpose = %v, want [package-signing]", k.Purpose)
@@ -277,8 +281,9 @@ func TestMarketplaceTrustDefaultsEmbedDevRoot(t *testing.T) {
 // structured trusted_keys record, WHEN Load runs, THEN every field lands
 // (algorithm, public_key, purpose, issuer, status, validity window) and the
 // catalog_file override parses — the operator key is ADDITIVE next to the
-// embedded dev root (owner decision: operator keys never replace official
-// roots unless trust_mode=custom-only).
+// embedded seed (owner decision: operator keys never replace official
+// roots unless trust_mode=custom-only). The seed id is this build mode's
+// default (prod normally, dev under `-tags dev`).
 func TestMarketplaceTrustedKeysParseFromJSON(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "glyphux.json")
 	if err := os.WriteFile(p, []byte(`{
@@ -308,13 +313,13 @@ func TestMarketplaceTrustedKeysParseFromJSON(t *testing.T) {
 	if cfg.Marketplace.CatalogFile != "/srv/glyphux/marketplace-catalog.json" {
 		t.Errorf("CatalogFile = %q", cfg.Marketplace.CatalogFile)
 	}
-	// Additive: the operator key joins the embedded dev root, it does not
+	// Additive: the operator key joins the embedded seed, it does not
 	// replace it.
 	if len(cfg.Marketplace.TrustedKeys) != 2 {
-		t.Fatalf("TrustedKeys = %d, want dev root + operator key (additive)", len(cfg.Marketplace.TrustedKeys))
+		t.Fatalf("TrustedKeys = %d, want seed root + operator key (additive)", len(cfg.Marketplace.TrustedKeys))
 	}
-	if findTrustedKey(t, cfg, "glyphux-dev-2026-01") == nil {
-		t.Error("embedded dev root missing after operator key added")
+	if findTrustedKey(t, cfg, defaultSeedID()) == nil {
+		t.Error("embedded seed root missing after operator key added")
 	}
 	k := findTrustedKey(t, cfg, "acme-prod-2026")
 	if k.Algorithm != "ed25519" || k.Status != "active" || k.Issuer != "acme" {
