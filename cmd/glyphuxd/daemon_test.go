@@ -21,6 +21,7 @@ import (
 	"github.com/glyphux/glyphux/internal/db"
 	"github.com/glyphux/glyphux/internal/identity"
 	"github.com/glyphux/glyphux/internal/layout"
+	"github.com/glyphux/glyphux/internal/marketplace"
 	"github.com/glyphux/glyphux/internal/media"
 	"github.com/glyphux/glyphux/internal/permission"
 	"github.com/glyphux/glyphux/internal/pluginstore"
@@ -84,6 +85,7 @@ func bootDaemonParts(t *testing.T, cfg config.Config, dbPath string, seed bool) 
 	migs = append(migs, pluginstore.Migrations...)
 	migs = append(migs, audit.Migrations...)
 	migs = append(migs, consent.Migrations...)
+	migs = append(migs, marketplace.Migrations...)
 	if err := d.Migrate(ctx, migs); err != nil {
 		t.Fatal(err)
 	}
@@ -716,5 +718,34 @@ func TestDaemonAuditEndpointAuth(t *testing.T) {
 	records, ok := body["records"].([]any)
 	if !ok || len(records) < 1 {
 		t.Errorf("records = %v, want at least the content.created row", body["records"])
+	}
+}
+
+// ---- Ticket T8 (gap 8): marketplace surface — daemon wiring ----
+
+// TestDaemonPreloadsMarketplaceCatalogAtBoot pins the locked boot decision:
+// the embedded sample catalog is pre-loaded at boot across all four
+// categories (official_plugins / official_themes / community /
+// entitlements) even with zero operator configuration — an operator catalog
+// file only ever extends it, never replaces it.
+func TestDaemonPreloadsMarketplaceCatalogAtBoot(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "glyphux.db")
+	parts := bootDaemonParts(t, config.Default(), dbPath, true)
+	sess := loginAdmin(t, parts.h)
+
+	rec := doJSON(t, parts.h, http.MethodGet, "/api/v0/marketplace/catalog", sess, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/v0/marketplace/catalog at boot = %d, want 200 (embedded sample pre-loaded), body %s", rec.Code, rec.Body.String())
+	}
+	body := decodeBody(t, rec)
+	cats, ok := body["categories"].(map[string]any)
+	if !ok {
+		t.Fatalf("categories missing: %v", body)
+	}
+	for _, want := range []string{"official_plugins", "official_themes", "community", "entitlements"} {
+		list, ok := cats[want].([]any)
+		if !ok || len(list) == 0 {
+			t.Errorf("embedded catalog missing category %q: %v", want, cats[want])
+		}
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/glyphux/glyphux/internal/config"
 )
@@ -227,5 +228,156 @@ func TestPluginsSectionFromJSONFile(t *testing.T) {
 	second := cfg.Plugins.Plugins[1]
 	if second.Name != "rpc-tool" || second.Tier != "c" || second.Source != "/usr/local/bin/rpc-tool" {
 		t.Errorf("entry[1] = %+v, want {rpc-tool c /usr/local/bin/rpc-tool}", second)
+	}
+}
+
+// ---- Ticket T8 (gap 8): key-ID-aware marketplace trust config ----
+
+// devRootPublicKey is the pinned embedded default trust anchor — the dev
+// root the T8 package fixtures are signed with. The matching private key is
+// held by the fixture-generation tooling only (never embedded, never in the
+// daemon); the public half is the one thing every verifying host embeds.
+const devRootPublicKey = "a0919864e1e100024db888a7a4e4f9f85113fa2457eba83fc070bdb239b59b67"
+
+func findTrustedKey(t *testing.T, cfg config.Config, id string) *config.TrustedKey {
+	t.Helper()
+	for i := range cfg.Marketplace.TrustedKeys {
+		if cfg.Marketplace.TrustedKeys[i].ID == id {
+			return &cfg.Marketplace.TrustedKeys[i]
+		}
+	}
+	t.Fatalf("trusted key %q not in %+v", id, cfg.Marketplace.TrustedKeys)
+	return nil
+}
+
+// TestMarketplaceTrustDefaultsEmbedDevRoot pins the locked trust decision:
+// the embedded default is the dev public key — one active package-signing
+// record — with additive trust_mode by default (no "custom-only").
+func TestMarketplaceTrustDefaultsEmbedDevRoot(t *testing.T) {
+	cfg := config.Default()
+	if cfg.Marketplace.TrustMode != "" {
+		t.Errorf("TrustMode = %q, want default additive (\"\")", cfg.Marketplace.TrustMode)
+	}
+	if len(cfg.Marketplace.TrustedKeys) != 1 {
+		t.Fatalf("TrustedKeys = %d, want exactly the embedded dev root", len(cfg.Marketplace.TrustedKeys))
+	}
+	k := cfg.Marketplace.TrustedKeys[0]
+	if k.ID != "glyphux-dev-2026-01" || k.Algorithm != "ed25519" || k.Issuer != "glyphux" || k.Status != "active" {
+		t.Errorf("dev root = %+v, want id=glyphux-dev-2026-01 algorithm=ed25519 issuer=glyphux status=active", k)
+	}
+	if k.PublicKey != devRootPublicKey {
+		t.Errorf("dev root public key = %q, want the pinned dev key", k.PublicKey)
+	}
+	if len(k.Purpose) != 1 || k.Purpose[0] != "package-signing" {
+		t.Errorf("purpose = %v, want [package-signing]", k.Purpose)
+	}
+}
+
+// TestMarketplaceTrustedKeysParseFromJSON: GIVEN a config file with a
+// structured trusted_keys record, WHEN Load runs, THEN every field lands
+// (algorithm, public_key, purpose, issuer, status, validity window) and the
+// catalog_file override parses — the operator key is ADDITIVE next to the
+// embedded dev root (owner decision: operator keys never replace official
+// roots unless trust_mode=custom-only).
+func TestMarketplaceTrustedKeysParseFromJSON(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "glyphux.json")
+	if err := os.WriteFile(p, []byte(`{
+		"marketplace": {
+			"catalog_file": "/srv/glyphux/marketplace-catalog.json",
+			"trusted_keys": [
+				{
+					"id": "acme-prod-2026",
+					"algorithm": "ed25519",
+					"public_key": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+					"purpose": ["package-signing", "entitlement-signing"],
+					"issuer": "acme",
+					"status": "active",
+					"not_before": "2026-01-01T00:00:00Z",
+					"not_after": "2027-01-01T00:00:00Z"
+				}
+			]
+		}
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Marketplace.CatalogFile != "/srv/glyphux/marketplace-catalog.json" {
+		t.Errorf("CatalogFile = %q", cfg.Marketplace.CatalogFile)
+	}
+	// Additive: the operator key joins the embedded dev root, it does not
+	// replace it.
+	if len(cfg.Marketplace.TrustedKeys) != 2 {
+		t.Fatalf("TrustedKeys = %d, want dev root + operator key (additive)", len(cfg.Marketplace.TrustedKeys))
+	}
+	if findTrustedKey(t, cfg, "glyphux-dev-2026-01") == nil {
+		t.Error("embedded dev root missing after operator key added")
+	}
+	k := findTrustedKey(t, cfg, "acme-prod-2026")
+	if k.Algorithm != "ed25519" || k.Status != "active" || k.Issuer != "acme" {
+		t.Errorf("operator key = %+v", k)
+	}
+	if len(k.Purpose) != 2 || k.Purpose[0] != "package-signing" || k.Purpose[1] != "entitlement-signing" {
+		t.Errorf("operator purposes = %v", k.Purpose)
+	}
+	if k.NotBefore.IsZero() || !k.NotBefore.Equal(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Errorf("not_before = %v, want 2026-01-01T00:00:00Z", k.NotBefore)
+	}
+	if k.NotAfter == nil || !k.NotAfter.Equal(time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Errorf("not_after = %v, want 2027-01-01T00:00:00Z", k.NotAfter)
+	}
+}
+
+// TestMarketplaceTrustModeRejectsUnknownValue pins the fail-fast behavior
+// at config.go's validate(): an unknown trust_mode is an operator error —
+// a typo must not silently fall back to additive trust.
+func TestMarketplaceTrustModeRejectsUnknownValue(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "glyphux.json")
+	if err := os.WriteFile(p, []byte(`{
+		"marketplace": {"trust_mode": "bogus"}
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := config.Load(p); err == nil {
+		t.Fatal("Load accepted an unknown trust_mode")
+	} else if !strings.Contains(err.Error(), "trust_mode") {
+		t.Fatalf("error %q does not name trust_mode", err)
+	}
+}
+
+// TestMarketplaceTrustModeCustomOnlyReplaces pins the escape hatch: an
+// operator who sets trust_mode=custom-only gets a full replacement — the
+// embedded dev root is dropped and only the operator keys remain.
+func TestMarketplaceTrustModeCustomOnlyReplaces(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "glyphux.json")
+	if err := os.WriteFile(p, []byte(`{
+		"marketplace": {
+			"trust_mode": "custom-only",
+			"trusted_keys": [
+				{"id": "acme-prod-2026", "algorithm": "ed25519",
+				 "public_key": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+				 "purpose": ["package-signing"], "issuer": "acme", "status": "active"}
+			]
+		}
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Marketplace.TrustMode != "custom-only" {
+		t.Errorf("TrustMode = %q, want custom-only", cfg.Marketplace.TrustMode)
+	}
+	if len(cfg.Marketplace.TrustedKeys) != 1 {
+		t.Fatalf("TrustedKeys = %d, want only the operator key (custom-only replaces)", len(cfg.Marketplace.TrustedKeys))
+	}
+	if cfg.Marketplace.TrustedKeys[0].ID != "acme-prod-2026" {
+		t.Errorf("only key = %+v, want acme-prod-2026", cfg.Marketplace.TrustedKeys[0])
 	}
 }

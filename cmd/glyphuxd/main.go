@@ -35,6 +35,7 @@ import (
 	"github.com/glyphux/glyphux/internal/graphql"
 	"github.com/glyphux/glyphux/internal/identity"
 	"github.com/glyphux/glyphux/internal/layout"
+	"github.com/glyphux/glyphux/internal/marketplace"
 	"github.com/glyphux/glyphux/internal/media"
 	"github.com/glyphux/glyphux/internal/plugin"
 	"github.com/glyphux/glyphux/internal/pluginstore"
@@ -95,6 +96,9 @@ func run() error {
 	// rule).
 	migrations = append(migrations, audit.Migrations...)
 	migrations = append(migrations, consent.Migrations...)
+	// Marketplace (gap 8 / Ticket T8): marketplace_entitlements (20) — the
+	// entitlement-token registry the marketplace surface reports against.
+	migrations = append(migrations, marketplace.Migrations...)
 
 	boot, err := bootstrap.Boot(ctx, bootstrap.Options{
 		DataDir:           cfg.DataDir,
@@ -238,6 +242,22 @@ func buildFullHandler(cfg config.Config, log *slog.Logger) bootstrap.BuildFullHa
 			api.WithConsent(consentEngine, capLoader.Registered()),
 			api.WithAuditLogger(auditLogger),
 		}
+		// Marketplace (gap 8 / Ticket T8): the resolved catalog (embedded
+		// sample + optional operator catalog file — the file only ever
+		// extends), the entitlement registry, and the key-ID-aware trust set
+		// decoded from the config's trusted_keys records. A broken operator
+		// catalog file or trust record fails the boot fast (fail-fast
+		// convention); the embedded dev root default means every default
+		// boot trusts exactly one key.
+		catalog, err := marketplace.BuildCatalog(cfg.Marketplace.CatalogFile)
+		if err != nil {
+			return nil, fmt.Errorf("build marketplace catalog: %w", err)
+		}
+		trustKeys, err := marketplace.DecodeTrustedKeys(cfg.Marketplace.TrustedKeys)
+		if err != nil {
+			return nil, fmt.Errorf("decode marketplace trust set: %w", err)
+		}
+		apiOpts = append(apiOpts, api.WithMarketplace(marketplace.NewManager(catalog, marketplace.NewStore(database), trustKeys)))
 		// AI authoring (Ticket T5 / gap 3): opt-in via ai.provider. Unknown
 		// providers fail fast here, at boot, naming the valid adapter set;
 		// an unset provider leaves POST /api/v0/ai/compose 404ing (the
