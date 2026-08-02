@@ -331,6 +331,24 @@ func TestMarketplaceTrustedKeysParseFromJSON(t *testing.T) {
 	}
 }
 
+// TestMarketplaceTrustModeRejectsUnknownValue pins the fail-fast behavior
+// at config.go's validate(): an unknown trust_mode is an operator error —
+// a typo must not silently fall back to additive trust.
+func TestMarketplaceTrustModeRejectsUnknownValue(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "glyphux.json")
+	if err := os.WriteFile(p, []byte(`{
+		"marketplace": {"trust_mode": "bogus"}
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := config.Load(p); err == nil {
+		t.Fatal("Load accepted an unknown trust_mode")
+	} else if !strings.Contains(err.Error(), "trust_mode") {
+		t.Fatalf("error %q does not name trust_mode", err)
+	}
+}
+
 // TestMarketplaceTrustModeCustomOnlyReplaces pins the escape hatch: an
 // operator who sets trust_mode=custom-only gets a full replacement — the
 // embedded dev root is dropped and only the operator keys remain.
