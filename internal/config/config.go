@@ -465,7 +465,35 @@ func (c *Config) validate() error {
 	default:
 		return fmt.Errorf("unknown marketplace.trust_mode %q (want %q for full replacement, or unset for additive)", c.Marketplace.TrustMode, TrustModeCustomOnly)
 	}
+	// T10a.1: custom-only means FULL replacement — only the operator's
+	// declared keys are trusted. When it yields zero operator-declared
+	// keys (file omits trusted_keys entirely, or declares an empty
+	// array), boot must FAIL instead of silently keeping a default seed:
+	// the embedded seed is not an operator key, so it cannot satisfy the
+	// replacement contract — an operator who opts out of the embedded
+	// root must say which keys replace it.
+	if c.Marketplace.TrustMode == TrustModeCustomOnly && !operatorDeclared(c.Marketplace.TrustedKeys) {
+		return fmt.Errorf("marketplace.trust_mode=custom-only requires at least one operator-declared trusted_keys entry (got zero)")
+	}
 	return nil
+}
+
+// operatorDeclared reports whether the trust set contains at least one key
+// that is not an embedded root — i.e. one the operator actually declared
+// (in custom-only mode the embedded dev/prod roots do not count; the
+// operator's own keys do).
+
+// operatorDeclared reports whether the trust set contains at least one key
+// that is not an embedded root — i.e. one the operator actually declared
+// (in custom-only mode the embedded dev/prod roots do not count; the
+// operator's own keys do).
+func operatorDeclared(keys []TrustedKey) bool {
+	for _, k := range keys {
+		if k.ID != DevRootKeyID && k.ID != ProdRootKeyID {
+			return true
+		}
+	}
+	return false
 }
 
 // SQLitePath is the on-disk location of the embedded database.
