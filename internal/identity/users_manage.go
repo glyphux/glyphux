@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/glyphux/glyphux/internal/audit"
 	"github.com/glyphux/glyphux/internal/db"
 	"github.com/glyphux/glyphux/internal/permission"
 )
@@ -52,6 +53,7 @@ func (s *Service) UpdateRole(ctx context.Context, principal *permission.Principa
 	if _, err := s.db.Exec(ctx, `UPDATE users SET role = ? WHERE id = ?`, role, userID); err != nil {
 		return nil, fmt.Errorf("update role: %w", err)
 	}
+	s.auditUser(ctx, audit.ActionUserRoleChanged, principal, userID)
 	return s.userByID(ctx, userID)
 }
 
@@ -68,6 +70,7 @@ func (s *Service) Deactivate(ctx context.Context, principal *permission.Principa
 	if _, err := s.db.Exec(ctx, `UPDATE users SET active = 0 WHERE id = ?`, userID); err != nil {
 		return fmt.Errorf("deactivate user: %w", err)
 	}
+	s.auditUser(ctx, audit.ActionUserDeactivated, principal, userID)
 	return nil
 }
 
@@ -80,5 +83,6 @@ func (s *Service) Reactivate(ctx context.Context, principal *permission.Principa
 	if _, err := s.db.Exec(ctx, `UPDATE users SET active = 1 WHERE id = ?`, userID); err != nil {
 		return fmt.Errorf("reactivate user: %w", err)
 	}
+	s.auditUser(ctx, audit.ActionUserReactivated, principal, userID)
 	return nil
 }

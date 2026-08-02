@@ -12,6 +12,7 @@ import (
 	"strconv"
 
 	"github.com/glyphux/glyphux/capabilities/ai"
+	"github.com/glyphux/glyphux/internal/audit"
 	"github.com/glyphux/glyphux/internal/bundle"
 	"github.com/glyphux/glyphux/internal/composition"
 	"github.com/glyphux/glyphux/internal/consent"
@@ -41,6 +42,7 @@ type Server struct {
 	bundles           *bundle.Store
 	ai                *ai.Service
 	consent           *consent.Engine
+	audit             *audit.Logger // nil unless WithAuditLogger wired (T7)
 	pluginManifests   []sdk.Manifest
 	log               *slog.Logger
 	loginLimiter      *loginLimiter
@@ -250,6 +252,14 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v0/plugins", s.requireCapability(permission.PluginsManage, s.handlePluginsList))
 	mux.HandleFunc("GET /api/v0/plugins/consent-requests", s.requireCapability(permission.PluginsManage, s.handleConsentRequestsList))
 	mux.HandleFunc("POST /api/v0/plugins/consent-requests/{plugin}/decide", s.requireCSRF(s.requireCapability(permission.PluginsManage, s.handleConsentDecide)))
+
+	// Audit trail (gap 4 / Ticket T7): admin-only, gated on plugins:manage
+	// like the consent surface — the audit log exposes every plugin boundary
+	// decision and item-level write, so it is operator-only infrastructure.
+	// The ?plugin= query parameter is required (ListByPlugin is the only
+	// accessor). 404s if WithAuditLogger wasn't configured, matching the
+	// other opt-in transports.
+	mux.HandleFunc("GET /api/v0/audit", s.requireCapability(permission.PluginsManage, s.handleAuditList))
 
 	// Authentication (slice 1.7). Login has no session cookie yet on a
 	// fresh visit, so requireCSRF is a no-op there; it still protects an

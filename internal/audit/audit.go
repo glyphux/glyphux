@@ -23,14 +23,15 @@ import (
 // allowed, and free-form detail describing what happened. Denied attempts
 // are recorded exactly like allowed ones — a denial is itself a security-
 // relevant event (PRD §10.1's adversarial-by-default model assumes plugins
-// will probe boundaries they aren't granted).
+// will probe boundaries they aren't granted). The JSON tags are the wire
+// shape for GET /api/v0/audit (Ticket T7).
 type Record struct {
-	ID         int64
-	PluginName string
-	Action     string
-	Allowed    bool
-	Detail     string
-	OccurredAt time.Time
+	ID         int64     `json:"id"`
+	PluginName string    `json:"plugin_name"`
+	Action     string    `json:"action"`
+	Allowed    bool      `json:"allowed"`
+	Detail     string    `json:"detail"`
+	OccurredAt time.Time `json:"occurred_at"`
 }
 
 // Logger persists audit records against the database abstraction — never a

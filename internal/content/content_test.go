@@ -2,11 +2,13 @@ package content
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/glyphux/glyphux/internal/audit"
 	"github.com/glyphux/glyphux/internal/composition"
 	"github.com/glyphux/glyphux/internal/db"
 	"github.com/glyphux/glyphux/internal/permission"
@@ -759,5 +761,169 @@ func TestGetAndListRejectAnonymousAndViewerLacksReadDrafts(t *testing.T) {
 	// reason (not published, not permission).
 	if _, err := api.GetPublished(ctx, "article", created.ID); !errors.Is(err, ErrNotFound) {
 		t.Errorf("GetPublished on draft: got %v, want ErrNotFound", err)
+	}
+}
+
+// ---- Ticket T7 (gap 4): item-level CRUD auditing via the WithAudit option ----
+
+// testAuditAPI wires a content API over a fresh SQLite DB (audit migration
+// included) with a live audit logger attached, returning the db and logger
+// too so tests can query the rows the API should have written.
+func testAuditAPI(t *testing.T, types map[string]contract.ContentType) (*API, *db.DB, *audit.Logger) {
+	t.Helper()
+	d, err := db.OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+	migs := append(append([]db.Migration{}, composition.Migrations...), Migrations...)
+	migs = append(migs, audit.Migrations...)
+	if err := d.Migrate(context.Background(), migs); err != nil {
+		t.Fatal(err)
+	}
+	comps := composition.NewStore(d)
+	comp := &contract.Composition{
+		ContractVersion: contract.ContentCompositionV0,
+		Site:            contract.Site{Name: "Test"},
+		ContentTypes:    types,
+	}
+	if err := comps.Save(context.Background(), nil, comp); err != nil {
+		t.Fatal(err)
+	}
+	logger := audit.NewLogger(d)
+	return NewAPI(comps, NewStore(d), WithAudit(logger)), d, logger
+}
+
+// testAuditAPINil wires the same API with WithAudit(nil) — the no-op
+// contract (nil-safe option, byte-identical behavior).
+func testAuditAPINil(t *testing.T, types map[string]contract.ContentType) (*API, *db.DB) {
+	t.Helper()
+	d, err := db.OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+	migs := append(append([]db.Migration{}, composition.Migrations...), Migrations...)
+	migs = append(migs, audit.Migrations...)
+	if err := d.Migrate(context.Background(), migs); err != nil {
+		t.Fatal(err)
+	}
+	comps := composition.NewStore(d)
+	comp := &contract.Composition{
+		ContractVersion: contract.ContentCompositionV0,
+		Site:            contract.Site{Name: "Test"},
+		ContentTypes:    types,
+	}
+	if err := comps.Save(context.Background(), nil, comp); err != nil {
+		t.Fatal(err)
+	}
+	return NewAPI(comps, NewStore(d), WithAudit(nil)), d
+}
+
+func listAuditRows(t *testing.T, d *db.DB, plugin string) []audit.Record {
+	t.Helper()
+	rows, err := audit.NewLogger(d).ListByPlugin(context.Background(), plugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rows
+}
+
+func parseAuditDetail(t *testing.T, r audit.Record) map[string]string {
+	t.Helper()
+	var out map[string]string
+	if err := json.Unmarshal([]byte(r.Detail), &out); err != nil {
+		t.Fatalf("parse detail %q: %v", r.Detail, err)
+	}
+	return out
+}
+
+// TestAuditRecordsContentWritesAndSkipsReads: GIVEN a content API wired
+// with a live audit logger, WHEN each write path runs (Create/Update/
+// Publish/Unpublish/Rollback/Delete), THEN one audit_records row per write
+// lands stamped plugin "content" with the pinned action and a Detail
+// carrying role+item_id+type (actor_id "" — the domain boundary sees only
+// role-only principals); reads (Get/List/GetPublished) write nothing.
+func TestAuditRecordsContentWritesAndSkipsReads(t *testing.T) {
+	ctx := context.Background()
+	api, d, _ := testAuditAPI(t, articleTypes())
+
+	created, err := api.Create(ctx, adminPrincipal, "article", map[string]any{"title": "Hi", "body": "B"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := listAuditRows(t, d, "content")
+	if len(rows) != 1 || rows[0].Action != audit.ActionContentCreated {
+		t.Fatalf("after Create: rows = %+v, want one %s", rows, audit.ActionContentCreated)
+	}
+	createDetail := parseAuditDetail(t, rows[0])
+	if createDetail["role"] != "admin" || createDetail["item_id"] != created.ID || createDetail["type"] != "article" {
+		t.Errorf("create detail = %v, want role=admin item_id=%s type=article", createDetail, created.ID)
+	}
+
+	// Reads write nothing.
+	if _, err := api.Get(ctx, adminPrincipal, "article", created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := api.List(ctx, adminPrincipal, "article"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := api.GetPublished(ctx, "article", created.ID); err != nil && !errors.Is(err, ErrNotFound) {
+		t.Fatal(err)
+	}
+	if len(listAuditRows(t, d, "content")) != 1 {
+		t.Error("reads must not write audit rows")
+	}
+
+	// Remaining writes, in order.
+	if _, err := api.Update(ctx, adminPrincipal, "article", created.ID, map[string]any{"title": "Hi 2", "body": "B"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := api.Publish(ctx, adminPrincipal, "article", created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := api.Unpublish(ctx, adminPrincipal, "article", created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := api.Rollback(ctx, adminPrincipal, "article", created.ID, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := api.Delete(ctx, adminPrincipal, "article", created.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{
+		audit.ActionContentCreated,
+		audit.ActionContentUpdated,
+		audit.ActionContentPublished,
+		audit.ActionContentUnpublished,
+		audit.ActionContentRolledBack,
+		audit.ActionContentDeleted,
+	}
+	rows = listAuditRows(t, d, "content")
+	if len(rows) != len(want) {
+		t.Fatalf("rows = %d, want %d: %+v", len(rows), len(want), rows)
+	}
+	for i, w := range want {
+		if rows[i].Action != w {
+			t.Errorf("row %d action = %q, want %q", i, rows[i].Action, w)
+		}
+	}
+}
+
+// TestAuditNilLoggerIsANoOp: GIVEN WithAudit(nil), WHEN any write runs,
+// THEN no audit rows appear and behavior is unchanged (no panic).
+func TestAuditNilLoggerIsANoOp(t *testing.T) {
+	ctx := context.Background()
+	api, d := testAuditAPINil(t, articleTypes())
+
+	if _, err := api.Create(ctx, adminPrincipal, "article", map[string]any{"title": "Hi", "body": "B"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := api.Delete(ctx, adminPrincipal, "article", "nope"); err == nil {
+		t.Error("delete of missing item must still fail with nil logger")
+	}
+	if rows := listAuditRows(t, d, "content"); len(rows) != 0 {
+		t.Errorf("WithAudit(nil) must write no rows, got %d", len(rows))
 	}
 }

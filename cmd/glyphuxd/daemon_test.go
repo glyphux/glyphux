@@ -22,6 +22,7 @@ import (
 	"github.com/glyphux/glyphux/internal/identity"
 	"github.com/glyphux/glyphux/internal/layout"
 	"github.com/glyphux/glyphux/internal/media"
+	"github.com/glyphux/glyphux/internal/permission"
 	"github.com/glyphux/glyphux/internal/pluginstore"
 	"github.com/glyphux/glyphux/internal/preset"
 	"github.com/glyphux/glyphux/internal/setup"
@@ -572,5 +573,148 @@ func TestDaemonFailsFastOnMisconfiguredPluginEntry(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "mystery") || !strings.Contains(err.Error(), "tier") {
 		t.Errorf("fail-fast error %q must name the plugin and the tier", err)
+	}
+}
+
+// ---- Ticket T7 (gap 4): daemon-level audit activation ----
+
+// saveArticleType replaces the seeded composition with one declaring the
+// article content type — the daemon-level content write path needs it
+// (bootDaemonParts seeds a site-only composition). Saving over an existing
+// composition requires content_types:manage, so the helper writes as an
+// admin principal.
+func saveArticleType(t *testing.T, p daemonParts) {
+	t.Helper()
+	if err := p.comps.Save(context.Background(), &permission.Principal{Role: permission.RoleAdmin}, &contract.Composition{
+		ContractVersion: contract.ContentCompositionV0,
+		Site:            contract.Site{Name: "Test"},
+		ContentTypes: map[string]contract.ContentType{
+			"article": {Fields: map[string]contract.Field{
+				"title": {Type: contract.FieldString, Required: true},
+				"body":  {Type: contract.FieldRichText},
+			}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// auditRows reads audit records through a brand-new connection to dbPath —
+// the restart-survival proof: rows written by one daemon boot must be
+// visible to a fresh handle on the same SQLite file.
+func auditRows(t *testing.T, dbPath, plugin string) []audit.Record {
+	t.Helper()
+	check, err := db.OpenSQLite(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer check.Close()
+	rows, err := audit.NewLogger(check).ListByPlugin(context.Background(), plugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rows
+}
+
+// loginAs logs in a non-default account (loginAdmin is pinned to the seeded
+// admin) and returns its session+CSRF pair.
+func loginAs(t *testing.T, h http.Handler, email string) daemonSession {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{"email": email, "password": "correct horse battery"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v0/auth/login", strings.NewReader(string(body)))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login %s = %d, body %s", email, rec.Code, rec.Body.String())
+	}
+	var sess daemonSession
+	for _, c := range rec.Result().Cookies() {
+		switch c.Name {
+		case "glyphux_session":
+			sess.session = c.Value
+		case "glyphux_csrf":
+			sess.csrf = c.Value
+		}
+	}
+	return sess
+}
+
+// TestDaemonAuditsContentWriteOverHTTPAndSurvivesRestart: GIVEN a real
+// daemon boot (buildFullHandler + real SQLite), WHEN an admin creates a
+// content item over HTTP, THEN a content.created row lands in audit_records
+// (stamped plugin "content", Detail with role+item_id+type) and is visible
+// through a fresh connection to the same database file — the restart-AC
+// proof.
+func TestDaemonAuditsContentWriteOverHTTPAndSurvivesRestart(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "glyphux.db")
+	cfg := config.Default()
+	cfg.DataDir = t.TempDir()
+	p := bootDaemonParts(t, cfg, dbPath, true)
+	saveArticleType(t, p)
+	sess := loginAdmin(t, p.h)
+
+	rec := doJSON(t, p.h, http.MethodPost, "/api/v0/content/article", sess, map[string]any{"title": "Hello", "body": "World"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /content/article = %d, body %s", rec.Code, rec.Body.String())
+	}
+	id := decodeBody(t, rec)["id"].(string)
+
+	rows := auditRows(t, dbPath, "content")
+	if len(rows) != 1 {
+		t.Fatalf("audit rows = %d, want 1 (content.created)", len(rows))
+	}
+	r := rows[0]
+	if r.Action != "content.created" || !r.Allowed || r.PluginName != "content" {
+		t.Errorf("row = %+v, want action=content.created allowed plugin=content", r)
+	}
+	var detail map[string]string
+	if err := json.Unmarshal([]byte(r.Detail), &detail); err != nil {
+		t.Fatalf("parse detail %q: %v", r.Detail, err)
+	}
+	if detail["item_id"] != id || detail["type"] != "article" || detail["role"] != "admin" {
+		t.Errorf("detail = %v, want item_id=%s type=article role=admin", detail, id)
+	}
+}
+
+// TestDaemonAuditEndpointAuth: GIVEN a real daemon, WHEN an anonymous
+// caller, an editor, and an admin GET /api/v0/audit, THEN the endpoint
+// answers 401, 403 and 200 (with the audited rows) respectively.
+func TestDaemonAuditEndpointAuth(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "glyphux.db")
+	cfg := config.Default()
+	cfg.DataDir = t.TempDir()
+	p := bootDaemonParts(t, cfg, dbPath, true)
+	saveArticleType(t, p)
+	ctx := context.Background()
+	if _, err := p.ids.CreateUser(ctx, "editor@example.com", "correct horse battery", "editor"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Anonymous: 401.
+	rec := doJSON(t, p.h, http.MethodGet, "/api/v0/audit?plugin=content", daemonSession{}, nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("anonymous = %d, want 401 (body %s)", rec.Code, rec.Body.String())
+	}
+
+	// Editor: 403.
+	rec = doJSON(t, p.h, http.MethodGet, "/api/v0/audit?plugin=content", loginAs(t, p.h, "editor@example.com"), nil)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("editor = %d, want 403 (body %s)", rec.Code, rec.Body.String())
+	}
+
+	// Admin: 200 with the audited write's row.
+	sess := loginAdmin(t, p.h)
+	rec = doJSON(t, p.h, http.MethodPost, "/api/v0/content/article", sess, map[string]any{"title": "Hello", "body": "World"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /content/article = %d, body %s", rec.Code, rec.Body.String())
+	}
+	rec = doJSON(t, p.h, http.MethodGet, "/api/v0/audit?plugin=content", sess, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin audit = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	body := decodeBody(t, rec)
+	records, ok := body["records"].([]any)
+	if !ok || len(records) < 1 {
+		t.Errorf("records = %v, want at least the content.created row", body["records"])
 	}
 }
