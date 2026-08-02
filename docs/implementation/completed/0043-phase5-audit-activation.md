@@ -19,7 +19,7 @@ Ticket T7.
 
 ## Status
 
-In-flight
+Completed (merged to dev @ 5531619)
 
 ## Current Decisions
 

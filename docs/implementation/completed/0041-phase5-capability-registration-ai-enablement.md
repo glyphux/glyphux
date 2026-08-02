@@ -20,7 +20,7 @@ scope, acceptance criteria, and definition of done:
 
 ## Status
 
-In-flight
+Completed (merged to dev @ 5531619)
 
 ## Current Decisions
 

@@ -17,7 +17,7 @@ definition of done: `docs/specs/phase5-gap-closure-spec.md` Ticket T9.
 
 ## Status
 
-In-flight
+Completed (merged to dev @ 5531619)
 
 ## Current Decisions
 
