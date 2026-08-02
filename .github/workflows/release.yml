@@ -96,7 +96,7 @@ jobs:
           path: dist
           pattern: glyphux-*
           merge-multiple: true
-      - name: Package release artifacts (T10c: deterministic zips + VERSION + SHA256SUMS)
+      - name: "Package release artifacts (T10c: deterministic zips + VERSION + SHA256SUMS)"
         run: go run ./cmd/glyphux-release
       - name: Publish GitHub Release
         env:
