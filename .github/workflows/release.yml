@@ -5,8 +5,12 @@ name: Release
 # set than CI already verified. Builds admin-ui fresh and cross-compiles
 # glyphuxd/glyphux per platform (modernc.org/sqlite is pure Go, so
 # CGO_ENABLED=0 cross-compilation from one Linux runner is safe for every
-# target, including darwin/windows), packages archives + SHA256SUMS, and
-# publishes them to a GitHub Release.
+# target, including darwin/windows), then packages the release artifact
+# contract (Ticket T10c) with cmd/glyphux-release: deterministic
+# per-platform zips (binaries + a VERSION file single-sourced from the
+# repo-root VERSION) plus a SHA256SUMS listing, published to a GitHub
+# Release. (The legacy shell builder scripts/release/build.sh remains for
+# local use; this workflow is the canonical release path.)
 on:
   push:
     tags:
@@ -54,7 +58,7 @@ jobs:
           cd admin-ui
           npm ci
           npm run build
-      - name: Build + package glyphuxd + glyphux
+      - name: Cross-compile glyphuxd + glyphux
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
@@ -63,22 +67,14 @@ jobs:
         run: |
           ext=""
           [ "$GOOS" = "windows" ] && ext=".exe"
-          work="glyphux-${VERSION}-${GOOS}-${GOARCH}"
-          mkdir -p "dist/$work"
+          mkdir -p dist
           ldflags="-s -w -X main.version=${VERSION}"
-          go build -trimpath -ldflags "$ldflags" -o "dist/$work/glyphuxd$ext" ./cmd/glyphuxd
-          go build -trimpath -ldflags "$ldflags" -o "dist/$work/glyphux$ext" ./cmd/glyphux
-          cp README.md "dist/$work/"
-          if [ "$GOOS" = "windows" ]; then
-            (cd dist && zip -qr "${work}.zip" "$work")
-          else
-            tar -C dist -czf "dist/${work}.tar.gz" "$work"
-          fi
-          rm -rf "dist/$work"
+          go build -trimpath -ldflags "$ldflags" -o "dist/glyphuxd-$GOOS-$GOARCH$ext" ./cmd/glyphuxd
+          go build -trimpath -ldflags "$ldflags" -o "dist/glyphux-$GOOS-$GOARCH$ext" ./cmd/glyphux
       - uses: actions/upload-artifact@v4
         with:
           name: glyphux-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: dist/*
+          path: dist/
 
   publish:
     runs-on: ubuntu-latest
@@ -92,17 +88,20 @@ jobs:
         # .git directory at all and fails with "fatal: not a git
         # repository" (caught by actually running this workflow against a
         # real tag push, not just reading the YAML).
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
       - uses: actions/download-artifact@v4
         with:
           path: dist
           pattern: glyphux-*
           merge-multiple: true
-      - name: Checksums
-        run: (cd dist && sha256sum -- *.tar.gz *.zip > SHA256SUMS)
+      - name: "Package release artifacts (T10c: deterministic zips + VERSION + SHA256SUMS)"
+        run: go run ./cmd/glyphux-release
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ github.ref_name }}" dist/*.tar.gz dist/*.zip dist/SHA256SUMS \
+          gh release create "${{ github.ref_name }}" dist/*.zip dist/SHA256SUMS \
             --title "${{ github.ref_name }}" \
             --generate-notes
