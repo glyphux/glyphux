@@ -1,87 +1,145 @@
-# Progress Handoff — Glyphux Codebase Exploration
+# Progress Handoff — Phase 5 Close-out (9/9 gaps CLOSED)
 
-**Date:** 2025-07-21
-**Session type:** End-to-end codebase exploration (read-only; no code changes made)
-**Branches:** working on `dev` (current checkout); `main`, `staging`, and many stale `worktree-agent-*` branches also exist.
+**Branch:** `dev` @ `5531619` (Ticket T8 — the final Phase 5 commit). `main` and
+`staging` exist; per-repo promotion is `dev` → `staging` → `main` (ADR-0001 §9).
+**Phase 5 state:** CLOSED — all 9 gaps from the exploration handoff are landed,
+tested, and recorded. Tracking notes 0037–0045 were moved from
+`docs/implementation/active/` to `docs/implementation/completed/`.
 
-## What this session did
+## Phase 5 artifacts
 
-Explored the glyphux codebase end-to-end with an explicit instruction to **not trust docs/comments** — every claim below was verified against the actual implementations and by running the full test suites. No files were modified.
+- **Spec:** `docs/specs/phase5-gap-closure-spec.md` — Tickets T1–T9, staged
+  T1/T2/T3/T5 → T4 → T6 → T7/T8 → T9.
+- **ADR:** `docs/adr/0001-repository-boundary.md` — the repository-boundary
+  decision (separate `glyphux/registry` / `glyphux/installer` repos, `.gxp/.gxt/.gxb`
+  package format, key-ID-aware trust model). First ADR per `docs/agents/domain.md`.
+- **Implemented with T8 (ADR-0001 §7–8):**
+  - `pkg/packagefmt` — deterministic ZIP containers (`.gxp/.gxt/.gxb`,
+    schema `glyphux-package/v1`), `SignedPackage` as the verified in-memory
+    representation (not a distribution format), key-ID-aware signature
+    verification; single `Decode` entry point → verified `SignedPackage` → install.
+  - Key-ID-aware `marketplace.trusted_keys[]` config replacing the scalar
+    `public_key`: structured records (id/algorithm/public_key/purpose[]/issuer/
+    status/validity), additive trust by default, `trust_mode="custom-only"`
+    full-replacement escape hatch, embedded dev root as the default anchor
+    (era/prod root split deferred to T10 — a config-level change).
 
-## Verification results (all green)
+## Phase 5 gates — all 9 closed
 
-- `go build ./...` and `go vet ./...` — clean
-- `go test -race ./...` — **every package passes** (notable: `internal/api` ~190s, `internal/graphql` ~67s of race-tested integration tests)
-- `sdk-js`: `npm run build` clean, **66 tests pass**
-- `admin-ui`: `npm run build` clean, **119 tests pass** (vite reports one large-chunk warning, non-blocking)
+| # | Gap (from the exploration handoff) | Ticket | Commit | Note |
+|---|------------------------------------|--------|--------|------|
+| 1 | Plugin KV was process-lifetime (in-memory `ScopedKV`) | T1 | `e894421` | 0037 |
+| 2 | WASM sandbox lacked resource limits (fuel, memory cap, execution timeout) | T2 | `b7e127c` | 0038 |
+| 3 | `AllowsNetworkHost` was a decision primitive, not enforced at call time | T3 | `43e5684` | 0039 |
+| 4 | Consent engine not wired into the daemon; no consent-screen UI | T4 | `8d73a9b` | 0040 |
+| 5 | Capabilities unregistered; AI compose not enabled / no provider config | T5 | `4d807a7` | 0041 |
+| 6 | No plugin loader wired the WASM/RPC runtimes into `glyphuxd` | T6 | `e4a2fb6` | 0042 |
+| 7 | Audit logging dormant; item-level CRUD auditing missing | T7 | `deb40c4` | 0043 |
+| 8 | Marketplace had no HTTP/UI surface (catalog / install / entitlements) | T8 | `5531619` | 0044 |
+| 9 | Process/build caveats (VERSION file, migration guard, admin dist freshness, branch hygiene) | T9 | `5f923cc` | 0045 |
 
-## Verified architecture summary
+**Evidence:** each tracking note (0037–0045, now under `docs/implementation/completed/`)
+records the acceptance criteria and definition-of-done proven for its ticket in
+`docs/specs/phase5-gap-closure-spec.md` (key proofs per ticket, e.g. T8: catalog
+list/install/entitlements endpoints with auth + CSRF, tampered-package 422,
+`requires.core` rejection, §12.5 by-design semantics preserved).
 
-Reference points for the full picture: `README.md` (product/market doc — treat as aspirational, not implementation truth), `go.mod` (dependency reality), `docs/implementation/completed/` (36 slice notes; `active/` is currently **empty**), `docs/specs/phase3-4-spec.md`.
+## Validation gates (green at close-out)
 
-### Core model — two-layer typed contract (`pkg/contract`)
-- Layer 1: `contract.Composition` (`content-composition/v0`) — content types/fields; stored as one JSON row with optimistic-concurrency CAS (`internal/composition/store.go`, max 50 retries).
-- Layer 2: `contract.Layout` (`layout-composition/v1`) — regions → blocks → nested slots per route.
-- Artifacts: `CompositionPreset` (`composition-preset/v1`), `CompositionBundle` (`composition-bundle/v1`) = pages + presets + sample content + theme ref.
-- `contract.WalkBlocks` is the single shared block-tree walk (used by structural validation, `pkg/blocks.ValidateLayout`, `pkg/compat`).
+- `go build ./...` and `go vet ./...` — clean.
+- `go test -race ./...` — all 43 packages pass.
+- `internal/boundary` — boundary-verify static-analysis gate green (runs as part
+  of the test suite).
+- `sdk-js` — 72/72 tests pass (`npm run build` clean).
+- `admin-ui` — 125/125 tests pass (`npm run build` clean).
 
-### Verified mechanisms
-- `internal/db`: `?`→`$n` rebind as portability choke point; `Queryer` interface (transaction-agnostic stores); global ordered idempotent migrations (duplicate versions rejected); SQLite = single-conn WAL, Postgres = pooled (pgx).
-- `internal/permission`: fixed role matrix (admin/editor/viewer → capabilities incl. `content_types:manage`, `layouts:manage`, `presets:manage`); `Principal{Role}` keeps domain packages decoupled from identity; enforced at BOTH transport and domain-API boundary (defense-in-depth).
-- `internal/content`: JSON items validated per declared type; draft/published gating (drafts need `content:read_drafts`); version snapshots, rollback, localization with fallback, relation integrity, richtext sanitization.
-- `internal/identity`: PBKDF2-SHA256 @ 600k iters, constant-time compare, sessions, TOTP MFA, GitHub OAuth (opt-in), deactivation.
-- `internal/setup` + `internal/bootstrap`: atomic admin+composition creation; token-gated remote setup; `Gateway` swaps the full handler in-process after wizard Postgres selection (no restart).
-- HTTP surface (`internal/server`, `internal/api`): Go 1.22 ServeMux routing; CORS (explicit allowlist, none by default), CSRF double-submit, 300 req/min general rate limit (health/ready exempt), 1 MiB body cap (media exempt), security headers; REST `/api/v0/*` + GraphQL (gqlgen, mirrors REST over same domain APIs) + admin SPA `/admin/` + wizard `/setup`.
+## Verified architecture (reference — unchanged by Phase 5)
 
-### Extension system — built and tested, but NOT wired into the daemon
-This is the single most important finding for any future work on plugins:
+- Two-layer typed contract: `contract.Composition` (`content-composition/v0`) +
+  `contract.Layout` (`layout-composition/v1`); artifacts `CompositionPreset`/
+  `CompositionBundle`; single `contract.WalkBlocks` block-tree walk shared by
+  validation, `pkg/blocks`, `pkg/compat`.
+- `internal/db` `?`→`$n` rebind choke point; `Queryer` transaction-agnostic
+  stores; global ordered idempotent migrations (duplicates rejected).
+- `internal/permission` fixed role matrix enforced at transport + domain-API
+  boundary; `internal/content` draft/published gating, snapshots, localization,
+  relation integrity; `internal/identity` PBKDF2-SHA256 @ 600k, TOTP MFA,
+  GitHub OAuth; `internal/setup`+`internal/bootstrap` atomic admin+composition
+  creation with in-process handler swap.
+- HTTP surface: Go 1.22 ServeMux, CORS allowlist, CSRF double-submit,
+  300 req/min general limit, 1 MiB body cap, security headers; REST `/api/v0/*`
+  + GraphQL + admin SPA `/admin/` + setup wizard.
+- Extension system now **wired into the daemon** (was the #1 gap): plugin
+  loader (T6), consent engine + consent-screen UI (T4), persistent SQL-backed
+  plugin KV (T1), WASM resource limits (T2), network policy enforcement (T3),
+  capability registration + AI config/enablement (T5), audit activation +
+  item-level CRUD auditing (T7), marketplace HTTP/UI surface (T8), process/build
+  caveats (T9). Details per note 0037–0045.
 
-- `pkg/sdk`: `Manifest` (API scopes + Permissions axes); `NewHostAPI` enforces `requires.core` vs `pkg/kernel.Version` (`0.2.0`) and `requires.contract`; `HostAPI` methods return nil / deny unless the scope was declared; sensitive-event gating on `On` (`user.created`→`users:read`, payments/membership events→their capabilities); shared `EventBus`, in-memory namespaced KV, audit logging.
-- `pkg/runtime/wasm`: Wazero, **per-instance private engines** (strict isolation); deny-by-default via absent host functions (link error); no fuel/memory caps yet.
-- `pkg/runtime/rpc`: gRPC over Unix socket; subprocess supervision with `GLYPHUX_RPC_PLUGIN_READY` handshake (no polling); crash isolation.
-- `internal/consent`: SHA-256 fingerprint of canonicalized API+Permissions (stale-consent detection); partial consent; `ErrGrantExceedsRequest` (cannot grant more than requested).
-- **Import analysis (ground truth):** nothing outside `capabilities/` + the runtimes' own tests imports `pkg/runtime` or `internal/consent`. `cmd/glyphuxd` wires content/composition/identity/media/layout/preset/bundle/graphql/blocks-firstparty/themes-starter + `pkg/compat` (via preset/bundle stores) — and **no plugin loader, no consent check, no capability registration, and no `WithAI`** (the AI endpoint exists in `internal/api/ai.go` but `cmd/glyphuxd` never enables it).
+## Branch state
 
-### Capabilities (`capabilities/*`) — standalone `sdk.Plugin` implementations
-- commerce: real `stripe-go/v81` against fake-gateway test server; real webhook signature verification.
-- ai: provider-agnostic `Adapter` (Claude/OpenAI/Gemini); 4-step gate per call (scope → `AllowsNetworkHost` → rate limit → adapter).
-- marketplace: Ed25519-signed packages + offline-verifiable entitlement tokens (test statically proves no networking imports).
-- notifications (mailer adapter), seo, membership (content gating + billing), forms (dogfood on public SDK only).
+- `dev` @ `5531619` — Phase 5 head.
+- `main` / `staging` exist; ADR-0001 §9 promotion is per-repo `dev` → `staging`
+  → `main`.
+- The 12 stale `worktree-agent-*` branch cleanup was in T9's scope (note 0045);
+  confirm the current branch list with `git branch` before any new slice.
 
-### Other verified pieces
-- `pkg/theme`: `CompositionView` has unexported fields + read-only accessors — themes structurally cannot mutate composition; `themes/headless` (JSON), `themes/starter` (HTML, used by live preview `POST /api/v0/layouts/preview`).
-- `blocks/firstparty`: heading/paragraph/image/container — pure declarations, deliberately logic-free.
-- `pkg/compat`: preset/bundle compatibility vs live registry + theme regions; used by preset/bundle Save and AI compose.
-- `internal/boundary`: **`go/types` static analysis** (not text greps) proves domain packages never leak raw `*sql.DB`/`*os.File` through exported signatures — runs as part of the test suite.
-- `admin-ui`: React 19 + TS + Vite + Tailwind 4, @craftjs/core builder, Radix UI; embedded via go:embed under `/admin`.
-- `sdk-js`: typed client over `/api/v0`, used by admin-ui itself; 10 resources (auth, content, content-types, media, users, blocks, layouts, presets, bundles, ai).
+## Forward-looking — future work, NOT done
 
-## Known gaps / deferred items (honest end-to-end state)
+### T10 installer round (per `docs/one-click-installer.md` + `docs/OS-installer.md`, ADR-0001)
+- **Separate repos** `glyphux/registry` and `glyphux/installer` (optional
+  `glyphux/docs`) — **not created yet**; core keeps its root layout
+  (`cmd/ internal/ pkg/ capabilities/ themes/ admin-ui/ sdk-js/ scripts/`), no
+  nested monorepo, no content-identical move commit.
+- **`.gxp/.gxt/.gxb` deterministic ZIP + `SignedPackage`** — **already landed**
+  with T8 via `pkg/packagefmt`; T10 consumes the verified container rather than
+  establishing it.
+- **Key-ID trust config** — **already landed** with T8 (`trusted_keys[]`,
+  additive default, `custom-only` escape hatch). Era/prod root split and root
+  custody process (offline org-custodied roots, HSM/KMS-backed intermediate
+  signing, short-lived CI identity) remain for the release pipeline.
+- **Installer repo ownership** (per ADR-0001 §5): OS packaging
+  (`windows/{wix,innosetup,powershell}`, `macos/{app,dmg,signing,notarization}`,
+  `linux/{appimage,deb,rpm,desktop}`) + launcher at `installer/launcher/`
+  (preferred; temporary `cmd/glyphux-launcher` in core only as a deliberate
+  exception); consumes released artifacts, never core `internal/*`.
+- **Core-owned daemon-behavior CLI** (`glyphux service install/uninstall/status`,
+  `glyphux instance open`) is defined by ADR-0001 §3 but **not yet implemented** —
+  the current CLI exposes `version` and `composition validate` only.
 
-1. **No plugin loader** wires the WASM/RPC runtimes into `glyphuxd` — nothing outside `capabilities/` and the runtimes' own tests imports `pkg/runtime`, so no plugin can actually be loaded today.
-2. **Consent engine not wired** — `internal/consent.IsConsented` is never called by anything outside its own tests; the `ConsentChecker` seam in `pkg/runtime/wasm` is unused ("declared == consented" today). Also deferred per `internal/consent`'s own doc: rendering a consent-screen UI, and marketplace review (PRD §10.2 mechanism #1).
-3. **Capabilities unregistered** — forms/seo/commerce/membership/notifications are standalone `sdk.Plugin` implementations not registered anywhere; the AI compose endpoint (`internal/api/ai.go`, `WithAI`) exists but `cmd/glyphuxd` never enables it (no operator-facing AI provider credential config exists in `internal/config`).
-4. **Audit logging dormant + incomplete** — only fires if a `HostAPI` with `KernelDeps.Audit` is built (nothing in the daemon does); item-level Content/Users/Media CRUD auditing is also deferred (only boundary-gate + consent decisions are logged).
-5. **`AllowsNetworkHost` is a decision primitive, not an enforcement point** — no outbound-network interception exists in the WASM host or RPC broker, so the `network` permission's allowlist is not yet actually enforced at call time.
-6. **Plugin KV is process-lifetime** — `pkg/sdk`'s `ScopedKV` is backed by in-memory `MemoryKVBackend`; persistence to a real table is deferred.
-7. **WASM sandbox lacks resource limits** — no fuel/gas metering, no explicit memory cap, no execution-timeout wiring (only what Wazero provides by default); the host-function ABI is hand-rolled (no formal WIT contract yet).
-8. **Marketplace has no HTTP/UI surface** — `capabilities/marketplace` is only reachable via `internal/preset`/`internal/bundle` `InstallFromPackage` (verified: `internal/api` has zero marketplace references). `InstallFromPackage` deliberately skips the live-registry compat gate, and — by design per PRD §12.5 (see `internal/preset/marketplace.go`) — skips the entitlement check (entitlements gate updates, not first install). No marketplace server, catalog, or consent-screen UI exists.
-9. **Process/build caveats** — `pkg/kernel.Version` is hand-bumped (no VERSION file / git-tag derivation); the admin SPA is pre-built and committed under `internal/adminui/dist/` (rebuilding requires Node — `go build` does not rebuild it); migration version numbers are manually kept globally unique across packages (this has already caused collisions twice, per `internal/consent/store.go`); repo has **12 stale `worktree-agent-*` branches** (hygiene).
+### Restructure decision (ADR-0001)
+- Recorded only; nothing moved. Registry/installer repos are created when work
+  begins, not before.
 
-## Suggested next steps (if continuing exploration/implementation)
+### Open owner decisions (TBD, recorded in ADR-0001)
+- Registry repo: reserve-now vs defer.
+- Registry hosting scope: self-hosted only vs third-party hostable.
+- Docs website repo (`glyphux/docs`) timing.
+- Also recorded there: launcher v1 home; `pkg/packagefmt` T8-scope vs T8a
+  (resolved in practice — it landed with T8); signed publication metadata vs
+  RFC3166 timestamps; `capabilities/marketplace` crypto split/rename timing
+  (use neutral `pkg/` seams for new types).
 
-- Decide whether the next session is (a) continue read-only exploration, (b) start the missing "plugin loader" slice, or (c) a specific bug/feature. The repo's own convention: check `docs/implementation/active/` first, follow `docs/agents/implementation-tracking.md`, branch off `dev`, and open a PR against `dev`.
-- If starting a plugin-loader slice: the natural wiring point is `cmd/glyphuxd/main.go`'s `buildFullHandler` (where `firstparty.RegisterAll` and the stores are already assembled), plus a consent check before `NewHostAPI`, per `docs/agents/domain.md` and the boundary/import invariants in `internal/boundary/`.
+### Registry / Phase 2+
+- No registry server exists. T8's catalog is embedded/local (embedded sample
+  JSON + optional operator file override, pre-loaded at boot) shaped for future
+  remote sync. Remote catalog/registry server, update-fetch service, publish
+  pipeline, and storefront remain explicit non-goals (T8 scope-out; note 0044) —
+  that is registry Phase 2+.
 
-## Suggested skills
+## Suggested skills for the next session
 
-- **code-review** — if the next session reviews any changes since a commit/PR.
-- **tdd** — if implementing the plugin-loader slice or any feature/fix (repo convention is test-first; all suites run with `-race`).
-- **diagnosing-bugs** — if a failure/regression is reported instead.
-- **domain-modeling** — if touching the composition contract, layout contract, or plugin capabilities (keeps the single `CONTEXT.md`/ADR conventions consistent).
-- **research** — if verifying a claim about the PRD/phase specs (treat `README.md` and docs as claims to verify against code, as done this session).
+- **tdd** — implementing the T10 installer round or any new slice (repo
+  convention: test-first, all suites `-race`).
+- **code-review** — reviewing the Phase 5 consolidation to `main`/`staging`.
+- **domain-modeling** — if reopening ADR-0001 open items (registry boundary,
+  trust model) or adding `CONTEXT.md` terms.
+- **research** — verifying installer/registry decisions against
+  `docs/one-click-installer.md`, `docs/OS-installer.md`, `docs/glyphux-installer-update.md`.
 - **handoff** — for future session compaction.
 
 ## Sensitive material note
 
-No secrets, API keys, or PII were encountered or recorded. Runtime-generated values (setup token, admin credentials at install time) are created fresh per install and are not present in the repo.
+No secrets, API keys, or PII encountered or recorded. Runtime-generated values
+(setup token, admin credentials at install time) are created fresh per install
+and are not present in the repo.
