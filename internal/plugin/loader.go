@@ -127,6 +127,15 @@ func (l *Loader) RegisterPlugin(p sdk.Plugin) error {
 // an unconsented plugin.
 func (l *Loader) Load(ctx context.Context, cfg LoadConfig) error {
 	// Pass 1 — invariant validation, fatal-fast, before any plugin loads.
+	// A configured name must not collide with another configured entry NOR
+	// with a tier-A first-party plugin already registered via
+	// RegisterPlugin: the consent adapter resolves manifests by name, so a
+	// tier-B "commerce" would otherwise shadow the first-party
+	// "commerce" for consent lookups (last-wins).
+	firstParty := make(map[string]bool)
+	for _, p := range l.reg.Registered() {
+		firstParty[p.Manifest().Name] = true
+	}
 	seen := make(map[string]bool, len(cfg.Plugins))
 	for _, pc := range cfg.Plugins {
 		if pc.Tier != "b" && pc.Tier != "c" {
@@ -136,6 +145,9 @@ func (l *Loader) Load(ctx context.Context, cfg LoadConfig) error {
 			return fmt.Errorf("plugin %q: duplicate plugin name across configured entries", pc.Name)
 		}
 		seen[pc.Name] = true
+		if firstParty[pc.Name] {
+			return fmt.Errorf("plugin %q: name collides with a registered first-party (tier A) plugin", pc.Name)
+		}
 	}
 
 	// Pass 2 — load each configured plugin; refusals are recorded, not fatal.

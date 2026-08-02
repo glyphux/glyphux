@@ -45,10 +45,14 @@ func FilterManifest(m Manifest, granted []Permission, grantedAPI []APIScope) Man
 	for _, g := range granted {
 		grantedByName[g.Name] = g
 	}
+	grantedScopes := make(map[string][]string, len(grantedAPI))
+	for _, g := range grantedAPI {
+		grantedScopes[g.Capability] = g.Scopes
+	}
 
 	filtered := m
-	// Fresh backing array: the filtered manifest must never alias (and
-	// thereby mutate) the caller's declared Permissions.
+	// Fresh backing arrays: the filtered manifest must never alias (and
+	// thereby mutate) the caller's declared Permissions or API.
 	filtered.Permissions = make([]Permission, 0, len(granted))
 	for _, declared := range m.Permissions {
 		g, ok := grantedByName[declared.Name]
@@ -62,6 +66,26 @@ func FilterManifest(m Manifest, granted []Permission, grantedAPI []APIScope) Man
 			continue
 		}
 		filtered.Permissions = append(filtered.Permissions, g)
+	}
+
+	// API axis: the same granted-subset narrowing as Permissions, applied
+	// to the declared domain-surface capabilities. A plugin granted
+	// content:[read] of a declared content:[read,write] gets a host whose
+	// hasScope gates answer only for content:read — both the wasm and rpc
+	// hosts are built from THIS manifest, so the Tier-C broker's surface is
+	// the granted subset even where its per-scope consent seam is not
+	// consulted. A capability granted with zero scopes means "allow
+	// nothing": drop it rather than emit an empty scope set.
+	filtered.API = make([]APIScope, 0, len(grantedAPI))
+	for _, declared := range m.API {
+		scopes, ok := grantedScopes[declared.Capability]
+		if !ok {
+			continue // consent dropped this capability — denied, absent.
+		}
+		if len(scopes) == 0 {
+			continue // zero-scope grant is "allow nothing".
+		}
+		filtered.API = append(filtered.API, APIScope{Capability: declared.Capability, Scopes: scopes})
 	}
 	return filtered
 }

@@ -49,6 +49,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 )
 
 // SchemaVersionV1 is the current container schema.
@@ -305,6 +306,9 @@ func Decode(data []byte, keys map[string]ed25519.PublicKey) (*SignedPackage, err
 			continue
 		}
 		path := name[len(payloadPrefix):]
+		if err := validatePayloadPath(path); err != nil {
+			return nil, err
+		}
 		sum, ok := checksums[path]
 		if !ok {
 			return nil, fmt.Errorf("%w: payload %q has no checksums.json entry", ErrInvalidContainer, path)
@@ -417,16 +421,51 @@ func (sp *SignedPackage) Artifact() ([]byte, error) {
 	return nil, fmt.Errorf("%w: missing payload file %q", ErrInvalidContainer, name)
 }
 
-// readEntry returns a zip entry's full contents.
+// validatePayloadPath enforces the container's payload-path invariant: a
+// payload path must be a clean relative POSIX path — non-empty, no leading
+// slash (an absolute path would escape the payload dir), no backslash (a
+// Windows path separator), and no ".." segment (zip-slip). Nothing writes
+// payloads to disk today, but the format must not carry a path a future
+// consumer could be tricked into resolving outside the package.
+func validatePayloadPath(path string) error {
+	if path == "" {
+		return fmt.Errorf("%w: empty payload path", ErrInvalidContainer)
+	}
+	if strings.HasPrefix(path, "/") {
+		return fmt.Errorf("%w: payload path %q must not be absolute", ErrInvalidContainer, path)
+	}
+	if strings.Contains(path, `\`) {
+		return fmt.Errorf("%w: payload path %q must not contain backslashes", ErrInvalidContainer, path)
+	}
+	for _, seg := range strings.Split(path, "/") {
+		if seg == ".." {
+			return fmt.Errorf("%w: payload path %q must not contain \"..\" segments (zip-slip)", ErrInvalidContainer, path)
+		}
+	}
+	return nil
+}
+
+// readEntry returns a zip entry's full contents, capped at MaxEntrySize —
+// the declared size is checked before any read, and the actual read is
+// bounded too, so an oversized entry (declared or real) is refused without
+// materializing it. Decode reads every entry in full before the signature
+// gate, so this cap is what stops a hostile-but-unsigned container from
+// being a zip bomb.
 func readEntry(f *zip.File) ([]byte, error) {
+	if f.UncompressedSize64 > MaxEntrySize {
+		return nil, fmt.Errorf("%w: entry %q is %d bytes (cap %d)", ErrEntryTooLarge, f.Name, f.UncompressedSize64, MaxEntrySize)
+	}
 	rc, err := f.Open()
 	if err != nil {
 		return nil, fmt.Errorf("%w: open %s: %v", ErrInvalidContainer, f.Name, err)
 	}
 	defer rc.Close()
-	data, err := io.ReadAll(rc)
+	data, err := io.ReadAll(io.LimitReader(rc, MaxEntrySize+1))
 	if err != nil {
 		return nil, fmt.Errorf("%w: read %s: %v", ErrInvalidContainer, f.Name, err)
+	}
+	if len(data) > MaxEntrySize {
+		return nil, fmt.Errorf("%w: entry %q exceeds %d bytes", ErrEntryTooLarge, f.Name, MaxEntrySize)
 	}
 	return data, nil
 }
