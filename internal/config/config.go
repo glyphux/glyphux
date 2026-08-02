@@ -274,7 +274,7 @@ func Default() Config {
 		ShutdownTimeout: 10 * time.Second,
 		OpenBrowser:     false,
 		Marketplace: MarketplaceConfig{
-			TrustedKeys: []TrustedKey{embeddedDevRoot()},
+			TrustedKeys: []TrustedKey{embeddedDefaultRoot()},
 		},
 	}
 }
