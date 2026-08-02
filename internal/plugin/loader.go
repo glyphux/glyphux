@@ -280,7 +280,7 @@ func (l *Loader) loadWasm(ctx context.Context, dir string, pc PluginConfig) erro
 	if pc.Manifest.Name != pc.Name {
 		return fmt.Errorf("plugin %q: manifest name %q does not match the configured name", pc.Name, pc.Manifest.Name)
 	}
-	filtered := sdk.FilterManifest(pc.Manifest, decision.GrantedPermissions)
+	filtered := sdk.FilterManifest(pc.Manifest, decision.GrantedPermissions, decision.GrantedAPI)
 	host, err := sdk.NewHostAPI(filtered, l.deps)
 	if err != nil {
 		return fmt.Errorf("plugin %q: build host: %w", pc.Name, err)
@@ -324,7 +324,7 @@ func (l *Loader) loadRPC(ctx context.Context, pc PluginConfig) error {
 	if pc.Manifest.Name != pc.Name {
 		return fmt.Errorf("plugin %q: manifest name %q does not match the configured name", pc.Name, pc.Manifest.Name)
 	}
-	filtered := sdk.FilterManifest(pc.Manifest, decision.GrantedPermissions)
+	filtered := sdk.FilterManifest(pc.Manifest, decision.GrantedPermissions, decision.GrantedAPI)
 	host, err := sdk.NewHostAPI(filtered, l.deps)
 	if err != nil {
 		return fmt.Errorf("plugin %q: build host: %w", pc.Name, err)

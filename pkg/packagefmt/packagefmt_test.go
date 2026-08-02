@@ -202,3 +202,79 @@ func TestDecodeRejectsForeignSchemaVersion(t *testing.T) {
 		t.Fatal("Decode accepted a foreign schema version")
 	}
 }
+
+// --- Fix C (red-team hardening): Decode must reject zip-slip payload paths
+// (.. segments, absolute paths, backslashes) and cap per-entry size before
+// the signature gate, so a hostile-but-unsigned container cannot be a
+// zip bomb and cannot carry paths a future consumer would resolve outside
+// the package. Encode intentionally does NOT validate paths (Decode is the
+// gate — the v2-schema RED test relies on Encode accepting what Decode
+// rejects) — these tests build the containers directly through Encode. ---
+
+// encodePayload encodes a signed container whose single payload file is
+// path with content payload. Encode trusts the caller; Decode must not.
+func encodePayload(t *testing.T, priv ed25519.PrivateKey, keyID, path string, payload []byte) []byte {
+	t.Helper()
+	sp := packagefmt.SignedPackage{
+		Manifest: packagefmt.Manifest{
+			SchemaVersion: packagefmt.SchemaVersionV1,
+			Name:          "evil",
+			Version:       "1.0.0",
+			Kind:          packagefmt.KindPreset,
+			License:       "free",
+			RequiresCore:  ">=0.1.0",
+		},
+		Files: []packagefmt.PackageFile{
+			{Path: path, SHA256: sha256Hex(payload), Data: payload},
+		},
+		Checksums: map[string]string{path: sha256Hex(payload)},
+	}
+	data, err := packagefmt.Encode(sp, priv, keyID)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	return data
+}
+
+// TestDecodeRejectsZipSlipPayloadPaths: GIVEN signed containers whose
+// payload path escapes the payload/ dir (parent traversal, absolute, or
+// Windows separator), WHEN Decode runs against the trust set, THEN every
+// one is rejected — the format must not carry a path a future consumer
+// could resolve outside the package.
+func TestDecodeRejectsZipSlipPayloadPaths(t *testing.T) {
+	pub, priv := testKeys(t)
+	trust := map[string]ed25519.PublicKey{"glyphux-dev-2026-01": pub}
+
+	// Sanity: a benign relative path still round-trips.
+	good := encodePayload(t, priv, "glyphux-dev-2026-01", "preset.json", []byte("fine"))
+	if _, err := packagefmt.Decode(good, trust); err != nil {
+		t.Fatalf("benign payload path must still decode: %v", err)
+	}
+
+	for _, p := range []string{
+		"../../evil.json",
+		"a/../../evil.json",
+		"/etc/evil.json",
+		"..\\..\\evil.json",
+	} {
+		data := encodePayload(t, priv, "glyphux-dev-2026-01", p, []byte("evil"))
+		if _, err := packagefmt.Decode(data, trust); err == nil {
+			t.Errorf("path %q: Decode must reject a zip-slip payload path", p)
+		}
+	}
+}
+
+// TestDecodeRejectsOversizedEntry: GIVEN a container whose payload exceeds
+// MaxEntrySize, WHEN Decode runs, THEN the read is refused with
+// ErrEntryTooLarge — before any of the oversized content is materialized
+// (and, being the pre-signature integrity pass, before the signature gate).
+func TestDecodeRejectsOversizedEntry(t *testing.T) {
+	pub, priv := testKeys(t)
+	big := bytes.Repeat([]byte{'x'}, packagefmt.MaxEntrySize+1)
+	data := encodePayload(t, priv, "glyphux-dev-2026-01", "preset.json", big)
+
+	_, err := packagefmt.Decode(data, map[string]ed25519.PublicKey{"glyphux-dev-2026-01": pub})
+	if !errors.Is(err, packagefmt.ErrEntryTooLarge) {
+		t.Fatalf("Decode error = %v, want ErrEntryTooLarge (per-entry size cap)", err)
+	}
+}

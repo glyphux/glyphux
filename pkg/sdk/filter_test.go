@@ -23,7 +23,7 @@ func TestFilterManifestGrantedMatchesDeclaredKeepsExactlyGranted(t *testing.T) {
 	m := netManifest("a.example")
 	granted := []sdk.Permission{{Name: "network", Args: []string{"a.example"}}}
 
-	filtered := sdk.FilterManifest(m, granted)
+	filtered := sdk.FilterManifest(m, granted, nil)
 	if err := filtered.Validate(); err != nil {
 		t.Fatalf("filtered manifest must stay valid: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestFilterManifestGrantedSubsetWinsOverDeclared(t *testing.T) {
 	m := netManifest("a.example", "b.example")
 	granted := []sdk.Permission{{Name: "network", Args: []string{"a.example"}}}
 
-	filtered := sdk.FilterManifest(m, granted)
+	filtered := sdk.FilterManifest(m, granted, nil)
 	if err := filtered.Validate(); err != nil {
 		t.Fatalf("filtered manifest must stay valid: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestFilterManifestGrantedSubsetWinsOverDeclared(t *testing.T) {
 func TestFilterManifestNoNetworkGrantDeniesEveryHost(t *testing.T) {
 	m := netManifest("a.example", "b.example")
 
-	filtered := sdk.FilterManifest(m, nil) // nothing granted
+	filtered := sdk.FilterManifest(m, nil, nil) // nothing granted
 	if err := filtered.Validate(); err != nil {
 		t.Fatalf("filtered manifest must stay valid: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestFilterManifestOnlyGrantedPermissionsSurvive(t *testing.T) {
 	}
 	granted := []sdk.Permission{{Name: "network", Args: []string{"a.example"}}}
 
-	filtered := sdk.FilterManifest(m, granted)
+	filtered := sdk.FilterManifest(m, granted, nil)
 	if err := filtered.Validate(); err != nil {
 		t.Fatalf("filtered manifest must stay valid: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestFilterManifestEmptyNetworkGrantDeniesAllAndStaysValid(t *testing.T) {
 	m := netManifest("a.example")
 	granted := []sdk.Permission{{Name: "network", Args: nil}}
 
-	filtered := sdk.FilterManifest(m, granted)
+	filtered := sdk.FilterManifest(m, granted, nil)
 	if err := filtered.Validate(); err != nil {
 		t.Fatalf("filtered manifest must stay valid even for an empty network grant: %v", err)
 	}
@@ -146,11 +146,88 @@ func TestFilterManifestNeverAddsUndeclaredPermission(t *testing.T) {
 	m := netManifest("a.example")
 	granted := []sdk.Permission{{Name: "admin_ui"}} // declared nowhere in m
 
-	filtered := sdk.FilterManifest(m, granted)
+	filtered := sdk.FilterManifest(m, granted, nil)
 	if err := filtered.Validate(); err != nil {
 		t.Fatalf("filtered manifest must stay valid: %v", err)
 	}
 	if len(filtered.Permissions) != 0 {
 		t.Fatalf("filtered Permissions = %+v, want none (admin_ui was never declared, network was not granted)", filtered.Permissions)
+	}
+}
+
+// --- Fix A (red-team hardening): the API axis must be narrowed the same
+// way the Permissions axis is. A Tier-C plugin granted content:[read] of a
+// declared content:[read,write] must get a host whose hasScope gates answer
+// only for content:read — the broker's per-scope consent seam is consulted
+// at the host, and the host is built from THIS filtered manifest. ---
+
+// apiManifest builds a valid WASM-tier manifest declaring exactly caps as
+// its API axis.
+func apiManifest(caps ...sdk.APIScope) sdk.Manifest {
+	m := validManifest()
+	m.API = caps
+	return m
+}
+
+func TestFilterManifestAPIAxisNarrowsToGrantedSubset(t *testing.T) {
+	m := apiManifest(
+		sdk.APIScope{Capability: "content", Scopes: []string{"read", "write"}},
+		sdk.APIScope{Capability: "media", Scopes: []string{"read"}},
+	)
+	granted := []sdk.Permission{{Name: "network", Args: []string{"a.example"}}}
+	grantedAPI := []sdk.APIScope{{Capability: "content", Scopes: []string{"read"}}}
+
+	filtered := sdk.FilterManifest(m, granted, grantedAPI)
+	if err := filtered.Validate(); err != nil {
+		t.Fatalf("filtered manifest must stay valid: %v", err)
+	}
+	if len(filtered.API) != 1 || filtered.API[0].Capability != "content" {
+		t.Fatalf("filtered API = %+v, want exactly content (media declared but not granted)", filtered.API)
+	}
+	if len(filtered.API[0].Scopes) != 1 || filtered.API[0].Scopes[0] != "read" {
+		t.Fatalf("filtered content scopes = %v, want exactly [read] (granted subset wins over declared)", filtered.API[0].Scopes)
+	}
+
+	// The enforcement point: a HostAPI built from the filtered manifest
+	// gates scopes from the granted subset only — content:write must be
+	// denied even though the plugin DECLARED it.
+	host, err := sdk.NewHostAPI(filtered, sdk.KernelDeps{})
+	if err != nil {
+		t.Fatalf("NewHostAPI(filtered): %v", err)
+	}
+	if !host.HasAPIScope("content", "read") {
+		t.Fatal("host must allow content:read (declared and granted)")
+	}
+	if host.HasAPIScope("content", "write") {
+		t.Fatal("host must deny content:write (declared but NOT granted — the Tier-C API-axis over-grant)")
+	}
+	if host.HasAPIScope("media", "read") {
+		t.Fatal("host must deny media:read (declared but not granted)")
+	}
+}
+
+func TestFilterManifestDropsAPICapabilityGrantedZeroScopes(t *testing.T) {
+	m := apiManifest(sdk.APIScope{Capability: "content", Scopes: []string{"read", "write"}})
+	grantedAPI := []sdk.APIScope{{Capability: "content", Scopes: nil}} // "allow nothing"
+
+	filtered := sdk.FilterManifest(m, nil, grantedAPI)
+	if len(filtered.API) != 0 {
+		t.Fatalf("filtered API = %+v, want empty (a zero-scope grant means allow nothing)", filtered.API)
+	}
+	if err := filtered.Validate(); err != nil {
+		t.Fatalf("filtered manifest must stay valid: %v", err)
+	}
+}
+
+func TestFilterManifestAPIAxisNeverAddsUndeclaredCapability(t *testing.T) {
+	m := apiManifest(sdk.APIScope{Capability: "content", Scopes: []string{"read"}})
+	grantedAPI := []sdk.APIScope{
+		{Capability: "content", Scopes: []string{"read"}},
+		{Capability: "media", Scopes: []string{"read"}}, // declared nowhere in m
+	}
+
+	filtered := sdk.FilterManifest(m, nil, grantedAPI)
+	if len(filtered.API) != 1 || filtered.API[0].Capability != "content" {
+		t.Fatalf("filtered API = %+v, want content only (undeclared grants are never invented)", filtered.API)
 	}
 }

@@ -441,6 +441,38 @@ func TestLoaderFailsFastOnDuplicatePluginNames(t *testing.T) {
 	}
 }
 
+// TestLoaderFailsFastWhenConfigNameCollidesWithTierA pins Fix B (red-team
+// hardening): pass 1 must also dedupe against tier-A first-party names
+// already registered via RegisterPlugin — otherwise a tier-B plugin named
+// e.g. "commerce" would shadow the first-party "commerce" for consent
+// lookups (the consent adapter resolves manifests by name, last-wins).
+func TestLoaderFailsFastWhenConfigNameCollidesWithTierA(t *testing.T) {
+	ctx := context.Background()
+	d := openLoaderDB(t, filepath.Join(t.TempDir(), "glyphux.db"))
+	t.Cleanup(func() { d.Close() })
+	eng := newEngine(t, d)
+
+	l := plugin.NewLoader(loaderDeps(t, d), eng)
+	if err := l.RegisterPlugin(forms.New()); err != nil {
+		t.Fatalf("RegisterPlugin(forms): %v", err)
+	}
+
+	// A configured tier-b plugin claiming the first-party name "forms".
+	m := plainManifest(forms.New().Manifest().Name)
+	err := l.Load(ctx, plugin.LoadConfig{
+		Dir: wasmTestdata,
+		Plugins: []plugin.PluginConfig{
+			{Name: m.Name, Tier: "b", Source: "kv_guest.wasm", Manifest: m},
+		},
+	})
+	if err == nil {
+		t.Fatal("loader must fail fast when a configured name collides with a registered tier-A plugin")
+	}
+	if !strings.Contains(err.Error(), m.Name) {
+		t.Errorf("error %q must cite the colliding name %q", err, m.Name)
+	}
+}
+
 // TestLoaderFailsFastOnTierMisconfiguration pins the fatal-fast tier
 // validation (owner resolution #3): an unknown tier — and the reserved
 // tier "a", which is first-party-only via RegisterPlugin — is an operator

@@ -127,7 +127,19 @@ var (
 	// trusted key its key id names — the package was tampered with after
 	// signing, or was never signed by that key.
 	ErrInvalidSignature = errors.New("packagefmt: invalid package signature")
+	// ErrEntryTooLarge means a container entry exceeds MaxEntrySize — the
+	// read is refused before any of its content is materialized, so a
+	// hostile-but-unsigned container cannot be a zip bomb that makes Decode
+	// allocate unbounded memory (Decode reads every entry in full before
+	// the signature gate).
+	ErrEntryTooLarge = errors.New("packagefmt: container entry exceeds MaxEntrySize")
 )
+
+// MaxEntrySize caps a single container entry (manifest, checksums,
+// signature, or payload file) at 64 MiB. Legitimate payloads — JSON
+// preset/bundle artifacts, wasm modules — are far below this; the cap
+// exists to bound memory during the pre-signature integrity pass.
+const MaxEntrySize = 64 << 20
 
 const (
 	manifestEntry = "manifest.json"

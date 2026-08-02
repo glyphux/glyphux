@@ -194,7 +194,7 @@ func TestBrokerNetworkAllowlistEnvCrossesProcessBoundary(t *testing.T) {
 	declared := testManifest() // network: [allowed-host.example]
 	declared.Permissions = []sdk.Permission{{Name: "network", Args: []string{"a.example", "b.example"}}}
 	granted := []sdk.Permission{{Name: "network", Args: []string{"a.example"}}}
-	filtered := sdk.FilterManifest(declared, granted)
+	filtered := sdk.FilterManifest(declared, granted, nil)
 
 	host := newHostAPI(t, filtered)
 	b, err := rpc.Launch(rpc.Config{
@@ -243,7 +243,7 @@ func TestBrokerNetworkAllowlistEmptyIsExplicitDenyAll(t *testing.T) {
 	// present) GLYPHUX_NETWORK_ALLOWLIST — the subprocess can distinguish
 	// "deny all outbound" from a launcher that never set the variable.
 	declared := testManifest()
-	filtered := sdk.FilterManifest(declared, nil)
+	filtered := sdk.FilterManifest(declared, nil, nil)
 	host := newHostAPI(t, filtered)
 
 	b, err := rpc.Launch(rpc.Config{
@@ -343,7 +343,6 @@ func TestBrokerProxyEnvAbsentLeavesProxyVarsUnset(t *testing.T) {
 	}
 }
 
-
 func TestBrokerDetectsCrashBeforeReady(t *testing.T) {
 	api := newHostAPI(t, testManifest())
 	b, err := rpc.Launch(rpc.Config{
@@ -423,4 +422,3 @@ func TestBrokerDetectsCrashDuringCall(t *testing.T) {
 		t.Fatalf("second broker State() = %v, want StateRunning (host must survive the first plugin's crash)", got)
 	}
 }
-
