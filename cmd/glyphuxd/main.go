@@ -162,28 +162,47 @@ func buildFullHandler(cfg config.Config, log *slog.Logger) bootstrap.BuildFullHa
 		presetStore := preset.NewStore(database)
 		bundleStore := bundle.NewStore(database)
 
-		// Tier-A capability plugins (Ticket T5 / gap 3): the five
-		// first-party capabilities register through the in-process registrar,
-		// which owns the shared KernelDeps every plugin host is built from —
-		// the daemon's four domain stores plus the shared blocks registry
-		// above (plugin-registered Layer-2 blocks and the layout transport
-		// must see the same set), with the process-lifetime Bus/KV defaults
-		// plugin.New creates (T6 swaps KV for the pluginstore DB backend).
-		// Registering all five before activating keeps a duplicate/empty name
-		// a fatal-fast startup error, matching firstparty.RegisterAll's style:
-		// a first-party invariant violation, not an operator mistake.
-		capReg := plugin.New(sdk.KernelDeps{
+		// Install-time consent (gap 2 / Ticket T4): the consent engine over
+		// the real database, with an audit logger wired in so every decision
+		// is recorded (audit is strictly additive — an engine built without
+		// WithAudit would still persist decisions). The T6 loader builds the
+		// wasm/rpc consent adapter from this same engine; the adapter ships
+		// in internal/plugin with its own suite (no AlwaysConsent anywhere
+		// in the daemon path).
+		auditLogger := audit.NewLogger(database)
+		consentEngine := consent.NewEngine(database, consent.WithAudit(auditLogger))
+
+		// Plugin loading (Ticket T6 / gap 1): the 3-tier loader generalizes
+		// the T5 registrar. Tier A first-party capabilities register through
+		// the loader's RegisterPlugin (unchanged); tier B wasm and tier C
+		// rpc plugins come from config (plugins[]{name,tier,source} +
+		// GLYPHUX_PLUGINS_DIR), each consent-gated at load: an unconsented
+		// plugin is refused before any host is built, logged, and the daemon
+		// continues; invariant violations (duplicate names, tier
+		// misconfiguration) fail the boot fast. Every loaded plugin's
+		// Store() is backed by the durable pluginstore KV (T1) — the shared
+		// KernelDeps also carries the daemon's domain stores and block
+		// registry, so all three tiers see the same world.
+		capLoader := plugin.NewLoader(sdk.KernelDeps{
 			Compositions: compositions,
 			Content:      contentAPI,
 			Media:        mediaAPI,
 			Identities:   identities,
+			KV:           pluginstore.NewStore(database),
 			Blocks:       blockRegistry,
-		})
+		}, consentEngine)
 		for _, p := range firstPartyPlugins() {
-			if err := capReg.RegisterPlugin(p); err != nil {
+			if err := capLoader.RegisterPlugin(p); err != nil {
 				return nil, err
 			}
 		}
+		if err := capLoader.Load(context.Background(), plugin.LoadConfig{
+			Dir:     cfg.Plugins.Dir,
+			Plugins: configuredPlugins(cfg.Plugins.Plugins),
+		}); err != nil {
+			return nil, err
+		}
+
 		// Activation is deferred on a virgin install: the wizard writes the
 		// initial composition on first-run submission, and the first-party
 		// plugins' Register calls (forms/commerce/membership define content
@@ -199,28 +218,18 @@ func buildFullHandler(cfg config.Config, log *slog.Logger) bootstrap.BuildFullHa
 			return nil, fmt.Errorf("check composition: %w", err)
 		}
 		if compsExist {
-			if err := capReg.Activate(context.Background()); err != nil {
+			if err := capLoader.Activate(context.Background()); err != nil {
 				return nil, err
 			}
 		} else {
 			log.Info("first-party capability plugins deferred until setup completes")
 		}
 
-		// Install-time consent (gap 2 / Ticket T4): the consent engine over
-		// the real database, with an audit logger wired in so every decision
-		// is recorded (audit is strictly additive — an engine built without
-		// WithAudit would still persist decisions). The T6 loader will build
-		// the wasm/rpc consent adapter from this same engine + the registrar's
-		// Registered() set; the adapter itself ships in internal/plugin with
-		// its own suite (no AlwaysConsent anywhere in the daemon path).
-		auditLogger := audit.NewLogger(database)
-		consentEngine := consent.NewEngine(database, consent.WithAudit(auditLogger))
-
 		apiOpts := []api.Option{
 			api.TrustProxyHeaders(cfg.TrustProxyHeaders),
 			api.WithLayouts(layoutStore, blockRegistry),
 			api.WithPresets(presetStore, bundleStore),
-			api.WithConsent(consentEngine, capReg.Registered()),
+			api.WithConsent(consentEngine, capLoader.Registered()),
 		}
 		// AI authoring (Ticket T5 / gap 3): opt-in via ai.provider. Unknown
 		// providers fail fast here, at boot, naming the valid adapter set;
@@ -268,6 +277,23 @@ func firstPartyPlugins() []sdk.Plugin {
 		membership.New(nil),
 		notifications.New(notifications.NewMemoryMailerAdapter()),
 	}
+}
+
+// configuredPlugins translates the operator-facing config entries into the
+// loader's plugin configs. The manifest is carried through as configured
+// (the interim carrier until T8's package containers ship it); a plugin
+// without one is refused at load (deny-by-default) and the daemon continues.
+func configuredPlugins(cfgPlugins []config.PluginConfig) []plugin.PluginConfig {
+	out := make([]plugin.PluginConfig, 0, len(cfgPlugins))
+	for _, p := range cfgPlugins {
+		out = append(out, plugin.PluginConfig{
+			Name:     p.Name,
+			Tier:     p.Tier,
+			Source:   p.Source,
+			Manifest: p.Manifest,
+		})
+	}
+	return out
 }
 
 // aiAdapterSet is the real adapter set in capabilities/ai — the constructors

@@ -490,3 +490,87 @@ func TestDaemonVirginInstallBootsAndDefersPluginActivationUntilComposition(t *te
 		}
 	}
 }
+
+// --- Ticket T6 (gap 1) daemon-level wiring ---
+
+// TestDaemonBootsWithUnconsentedConfiguredWasmPluginRefusedAndContinues is
+// the T6 wiring seam + default-policy proof at the daemon level: with a
+// plugins dir and one tier-b entry configured via cfg.Plugins but no
+// consent decision on file, the daemon must boot — the unconsented plugin
+// is refused before a host is built and the daemon continues (the
+// acceptance criterion's own "booted" reading of the no-decision policy) —
+// and keep serving the first-party surface.
+func TestDaemonBootsWithUnconsentedConfiguredWasmPluginRefusedAndContinues(t *testing.T) {
+	cfg := config.Default()
+	cfg.DataDir = t.TempDir()
+	cfg.Plugins = config.PluginsConfig{
+		Dir: filepath.Join("..", "..", "pkg", "runtime", "wasm", "testdata"),
+		Plugins: []config.PluginConfig{
+			{Name: "kv-plugin", Tier: "b", Source: "kv_guest.wasm"},
+		},
+	}
+	h, _ := bootDaemon(t, cfg)
+	sess := loginAdmin(t, h)
+
+	rec := doJSON(t, h, http.MethodGet, "/api/v0/plugins", sess, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /plugins = %d, body %s", rec.Code, rec.Body.String())
+	}
+	plugins, _ := decodeBody(t, rec)["plugins"].([]any)
+	found := false
+	for _, p := range plugins {
+		if pm, ok := p.(map[string]any); ok && pm["name"] == "forms" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("first-party forms must remain registered when an unconsented wasm plugin is refused")
+	}
+}
+
+// TestDaemonFailsFastOnMisconfiguredPluginEntry pins the T6 fatal-fast
+// invariant at the daemon boundary: an unknown tier in cfg.Plugins is an
+// operator misconfiguration buildFullHandler rejects — the daemon never
+// starts (same fail-fast style as an unknown ai.provider, and the loader
+// contract's tier validation).
+func TestDaemonFailsFastOnMisconfiguredPluginEntry(t *testing.T) {
+	cfg := config.Default()
+	cfg.DataDir = t.TempDir()
+	cfg.Plugins = config.PluginsConfig{
+		Plugins: []config.PluginConfig{
+			{Name: "mystery", Tier: "x", Source: "anything"},
+		},
+	}
+
+	// Drive buildFullHandler the same way bootstrap would (real stores) and
+	// require the error, exactly as TestDaemonUnknownAIProviderFailsFast.
+	ctx := context.Background()
+	d, err := db.OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+	if err := d.Migrate(ctx, composition.Migrations); err != nil {
+		t.Fatal(err)
+	}
+	comps := composition.NewStore(d)
+	if err := comps.Save(ctx, nil, &contract.Composition{
+		ContractVersion: contract.ContentCompositionV0,
+		Site:            contract.Site{Name: "Test"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ids := identity.NewService(d)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	wizard, err := setup.New(ctx, comps, ids, d, log, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = buildFullHandler(cfg, log)(d, comps, ids, wizard)
+	if err == nil {
+		t.Fatal("expected boot to fail on a misconfigured plugin entry")
+	}
+	if !strings.Contains(err.Error(), "mystery") || !strings.Contains(err.Error(), "tier") {
+		t.Errorf("fail-fast error %q must name the plugin and the tier", err)
+	}
+}

@@ -2,6 +2,8 @@ package config_test
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -157,5 +159,73 @@ func TestAIConfigAPIKeyNeverSerialized(t *testing.T) {
 	}
 	if got := string(encoded); strings.Contains(got, "hunter2") || strings.Contains(got, "sk-") {
 		t.Fatalf("serialized config leaks the api key: %s", got)
+	}
+}
+
+// --- Ticket T6 (gap 1): plugins section ---
+
+// TestPluginsConfigDefaultsEmpty proves the plugins section is opt-in: with
+// no plugins_dir and no plugins entries configured, Plugins is empty — the
+// daemon's default posture is first-party-only (the T5 path).
+func TestPluginsConfigDefaultsEmpty(t *testing.T) {
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Plugins.Dir != "" {
+		t.Errorf("Plugins.Dir = %q, want empty by default", cfg.Plugins.Dir)
+	}
+	if len(cfg.Plugins.Plugins) != 0 {
+		t.Errorf("Plugins.Plugins = %v, want empty by default", cfg.Plugins.Plugins)
+	}
+}
+
+// TestPluginsDirFromEnv proves GLYPHUX_PLUGINS_DIR is the environment
+// surface for the tier-B plugins directory — the same precedence the rest
+// of Load applies (defaults, then JSON file, then GLYPHUX_* env).
+func TestPluginsDirFromEnv(t *testing.T) {
+	t.Setenv("GLYPHUX_PLUGINS_DIR", "/srv/glyphux/plugins")
+
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Plugins.Dir != "/srv/glyphux/plugins" {
+		t.Errorf("Plugins.Dir = %q, want /srv/glyphux/plugins", cfg.Plugins.Dir)
+	}
+}
+
+// TestPluginsSectionFromJSONFile proves the config-file surface for the
+// plugins section: plugins_dir plus a plugins[]{name,tier,source} list (the
+// Ticket T6 wire shape) parse from a JSON config file.
+func TestPluginsSectionFromJSONFile(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "glyphux.json")
+	if err := os.WriteFile(p, []byte(`{
+		"plugins_dir": "/srv/glyphux/plugins",
+		"plugins": [
+			{"name": "kv", "tier": "b", "source": "kv_guest.wasm"},
+			{"name": "rpc-tool", "tier": "c", "source": "/usr/local/bin/rpc-tool"}
+		]
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Plugins.Dir != "/srv/glyphux/plugins" {
+		t.Errorf("Plugins.Dir = %q", cfg.Plugins.Dir)
+	}
+	if len(cfg.Plugins.Plugins) != 2 {
+		t.Fatalf("Plugins.Plugins = %v, want 2 entries", cfg.Plugins.Plugins)
+	}
+	first := cfg.Plugins.Plugins[0]
+	if first.Name != "kv" || first.Tier != "b" || first.Source != "kv_guest.wasm" {
+		t.Errorf("entry[0] = %+v, want {kv b kv_guest.wasm}", first)
+	}
+	second := cfg.Plugins.Plugins[1]
+	if second.Name != "rpc-tool" || second.Tier != "c" || second.Source != "/usr/local/bin/rpc-tool" {
+		t.Errorf("entry[1] = %+v, want {rpc-tool c /usr/local/bin/rpc-tool}", second)
 	}
 }
