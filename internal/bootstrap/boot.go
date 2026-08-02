@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/glyphux/glyphux/internal/audit"
 	"github.com/glyphux/glyphux/internal/composition"
 	"github.com/glyphux/glyphux/internal/config"
 	"github.com/glyphux/glyphux/internal/db"
@@ -111,7 +112,11 @@ func Boot(ctx context.Context, opts Options) (*Result, error) {
 	}
 
 	compositions := composition.NewStore(database)
-	identities := identity.NewService(database)
+	// Identity is bootstrap-owned (buildFullHandler receives it as a
+	// parameter), so its item-level audit wiring (Ticket T7 / gap 4) happens
+	// here — every daemon boot path constructs the service with the shared
+	// audit_records table behind it.
+	identities := identity.NewService(database, identity.WithAudit(audit.NewLogger(database)))
 	wizard, err := setup.New(ctx, compositions, identities, database, opts.Log, opts.TrustProxyHeaders)
 	if err != nil {
 		database.Close()
@@ -160,7 +165,7 @@ func finishBoot(ctx context.Context, opts Options, database *db.DB, driver, dsnE
 		return nil, err
 	}
 	compositions := composition.NewStore(database)
-	identities := identity.NewService(database)
+	identities := identity.NewService(database, identity.WithAudit(audit.NewLogger(database)))
 	wizard, err := setup.New(ctx, compositions, identities, database, opts.Log, opts.TrustProxyHeaders)
 	if err != nil {
 		database.Close()

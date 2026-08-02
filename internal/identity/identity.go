@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/glyphux/glyphux/internal/audit"
 	"github.com/glyphux/glyphux/internal/db"
 	"github.com/glyphux/glyphux/internal/permission"
 )
@@ -55,12 +56,41 @@ const (
 
 // Service is the kernel identity engine.
 type Service struct {
-	db *db.DB
+	db    *db.DB
+	audit *audit.Logger // nil unless WithAudit wired (Ticket T7)
+}
+
+// Option configures optional Service behavior beyond the required database.
+type Option func(*Service)
+
+// WithAudit wires an audit logger so every identity write (create user /
+// role change / deactivate / reactivate) records one row via the user
+// recorder (Ticket T7 / gap 4). Nil — the zero value — is a byte-identical
+// no-op: no rows, no behavior change, no panic. Reads are deliberately
+// un-audited.
+func WithAudit(logger *audit.Logger) Option {
+	return func(s *Service) { s.audit = logger }
 }
 
 // NewService wires identity to the database abstraction.
-func NewService(database *db.DB) *Service {
-	return &Service{db: database}
+func NewService(database *db.DB, opts ...Option) *Service {
+	s := &Service{db: database}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+// auditUser best-effort logs one identity write. A nil logger is a no-op; a
+// logging failure never masks the write itself. CreateUser has no principal
+// (setup/self-service path), so its actor is fully empty — Actor.ID is
+// always "" at this layer (owner-confirmed: HTTP-layer actor enrichment is
+// out of scope this round).
+func (s *Service) auditUser(ctx context.Context, action string, principal *permission.Principal, userID int64) {
+	if s.audit == nil {
+		return
+	}
+	_ = s.audit.RecordUser(ctx, action, audit.Actor{Role: permission.RoleOf(principal)}, userID)
 }
 
 // ErrInvalidCredentials is returned for unknown users or wrong passwords —
@@ -96,7 +126,12 @@ func (s *Service) CreateUser(ctx context.Context, email, password, role string) 
 	if !permission.ValidRole(role) {
 		return nil, fmt.Errorf("unknown role %q", role)
 	}
-	return s.createAccountWith(ctx, s.db, email, password, role)
+	u, err := s.createAccountWith(ctx, s.db, email, password, role)
+	if err != nil {
+		return nil, err
+	}
+	s.auditUser(ctx, audit.ActionUserCreated, nil, u.ID)
+	return u, nil
 }
 
 func (s *Service) createAccountWith(ctx context.Context, q db.Queryer, email, password, role string) (*User, error) {

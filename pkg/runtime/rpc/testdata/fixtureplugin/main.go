@@ -27,6 +27,10 @@
 //     since this fixture doesn't know the manifest's declared scopes).
 //   - "network-check": calls HostAPI.AllowsNetworkHost for a fixed host and
 //     logs the answer.
+//   - "env-allowlist": echoes GLYPHUX_NETWORK_ALLOWLIST (log[0]) — the
+//     subprocess's own view of its outbound policy, set by the broker.
+//   - "env-proxy": echoes HTTP_PROXY (log[0]) and HTTPS_PROXY (log[1]) —
+//     the operator egress proxy the broker injected, if any.
 //   - "crash": calls os.Exit(1) from inside the RPC handler, before ever
 //     responding — simulates a plugin crashing mid-operation. The host's
 //     Register call will observe a transport error; separately, the
@@ -148,6 +152,12 @@ func (f *fixture) Register(ctx context.Context, req *rpcpb.RegisterRequest) (*rp
 			return &rpcpb.RegisterResponse{Ok: false, Error: err.Error()}, nil
 		}
 		return &rpcpb.RegisterResponse{Ok: resp.GetAllowed(), Log: []string{fmt.Sprintf("allowed=%v", resp.GetAllowed())}}, nil
+
+	case "env-allowlist":
+		return &rpcpb.RegisterResponse{Ok: true, Log: []string{os.Getenv("GLYPHUX_NETWORK_ALLOWLIST")}}, nil
+
+	case "env-proxy":
+		return &rpcpb.RegisterResponse{Ok: true, Log: []string{os.Getenv("HTTP_PROXY"), os.Getenv("HTTPS_PROXY")}}, nil
 
 	default:
 		return &rpcpb.RegisterResponse{Ok: false, Error: "unknown mode: " + req.GetMode()}, nil

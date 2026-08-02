@@ -18,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/glyphux/glyphux/pkg/sdk"
 )
 
 // Config is the fully-resolved daemon configuration.
@@ -62,6 +64,158 @@ type Config struct {
 	// (slice 1.9): no wildcard support, on purpose — every allowed origin
 	// must be named explicitly.
 	AllowedOrigins []string `json:"allowed_origins"`
+
+	// RPCOutboundProxyURL, when set, is injected as HTTP_PROXY and
+	// HTTPS_PROXY into every Tier-C plugin subprocess the RPC broker
+	// launches — the operator egress choke point for out-of-process
+	// plugins' own outbound connections, which the host cannot intercept
+	// for them (Ticket T3 / gap 5). Empty (default) leaves the
+	// subprocess's proxy environment inherited from the daemon's own
+	// environment.
+	RPCOutboundProxyURL string `json:"rpc_outbound_proxy_url"`
+
+	// AI configures the AI authoring transport (POST /api/v0/ai/compose,
+	// PRD §14.1 Surface 2): which provider adapter to use, the operator's
+	// declared default model, an optional base URL for self-hosted
+	// openai-compatible endpoints, and an optional calls/minute rate cap.
+	// AI is opt-in: an empty Provider leaves the compose endpoint 404ing
+	// and requires no API key. The API key itself is never part of this
+	// struct's serialized form — see AIConfig.APIKey.
+	AI AIConfig `json:"ai"`
+
+	// Plugins configures Tier B/C plugin loading (Ticket T6 / gap 1): the
+	// tier-b plugins directory (GLYPHUX_PLUGINS_DIR) plus the
+	// plugins[]{name,tier,source} entries the loader materializes. Empty by
+	// default — first-party-only (the T5 path). The config-file shape is
+	// flat top-level "plugins_dir"/"plugins" keys, parsed in Load() (the
+	// struct tag here is json:"-" so the plain field pass never collides
+	// with the plugins array).
+	Plugins PluginsConfig `json:"-"`
+
+	// Marketplace configures the marketplace surface (Ticket T8 / gap 8):
+	// the key-ID-aware package trust set (trusted_keys[] — the replacement
+	// for the old scalar marketplace.public_key), the trust mode, and an
+	// optional operator catalog file that EXTENDS the embedded sample
+	// catalog (never replaces it).
+	Marketplace MarketplaceConfig `json:"marketplace"`
+}
+
+// MarketplaceConfig is the operator-facing marketplace section. It is
+// nested under "marketplace" in the config file (the natural home for a
+// record-shaped section; the old scalar marketplace.public_key is gone).
+//
+// Trust semantics (locked T8 decisions): trust is key-ID-aware and
+// ADDITIVE by default — operator keys join the embedded dev root, they do
+// not replace it. Setting TrustMode to "custom-only" opts into full
+// replacement: only the operator's declared keys are trusted. (Edge case,
+// documented: json merge semantics keep the embedded seed when a
+// custom-only file omits trusted_keys entirely — a custom-only operator
+// should always list their keys explicitly.)
+type MarketplaceConfig struct {
+	// TrustedKeys is the trust set package signatures resolve against.
+	TrustedKeys []TrustedKey `json:"trusted_keys"`
+	// TrustMode is "" (additive — embedded dev root + operator keys) or
+	// "custom-only" (full replacement — operator keys only).
+	TrustMode string `json:"trust_mode"`
+	// CatalogFile is an optional operator JSON file of catalog entries that
+	// EXTENDS the embedded sample catalog at boot (never replaces it).
+	CatalogFile string `json:"catalog_file"`
+}
+
+// TrustModeCustomOnly opts the trust set into full replacement: only the
+// operator-declared trusted_keys are trusted — the embedded dev root is
+// dropped.
+const TrustModeCustomOnly = "custom-only"
+
+// TrustedKey is one package-signing trust record: a named public key with
+// its declared purpose(s), issuer, and lifecycle status. The status field
+// (active|deprecated|revoked|expired) is descriptive today — T8 does not
+// branch on it, but it is the documented hook the future era/prod-root
+// split (T10) and key rotation hang off.
+type TrustedKey struct {
+	ID        string     `json:"id"`
+	Algorithm string     `json:"algorithm"`
+	PublicKey string     `json:"public_key"`
+	Purpose   []string   `json:"purpose"`
+	Issuer    string     `json:"issuer"`
+	Status    string     `json:"status"`
+	NotBefore time.Time  `json:"not_before"`
+	NotAfter  *time.Time `json:"not_after"`
+}
+
+// DevRootKeyID is the id of the embedded default trust anchor — the dev
+// root. Its public key is DevRootPublicKey below; the matching PRIVATE key
+// exists only in the fixture-generation tooling (it is never embedded, and
+// never in the daemon).
+const DevRootKeyID = "glyphux-dev-2026-01"
+
+// DevRootPublicKey is the pinned dev root public key (hex) — the one
+// embedded default trust anchor, per the locked T8 decision. An era/prod
+// root split is deferred to T10 (the trust model's status/trust_mode
+// fields make it a config change later).
+const DevRootPublicKey = "a0919864e1e100024db888a7a4e4f9f85113fa2457eba83fc070bdb239b59b67"
+
+// embeddedDevRoot is the Default() seed record — the one key every host
+// trusts unless the operator opts into custom-only.
+func embeddedDevRoot() TrustedKey {
+	return TrustedKey{
+		ID:        DevRootKeyID,
+		Algorithm: "ed25519",
+		PublicKey: DevRootPublicKey,
+		Purpose:   []string{"package-signing"},
+		Issuer:    "glyphux",
+		Status:    "active",
+	}
+}
+
+// PluginsConfig is the operator-facing plugin section: a directory to read
+// tier-b .wasm files from and the list of configured plugins.
+type PluginsConfig struct {
+	// Dir is the tier-b plugins directory (GLYPHUX_PLUGINS_DIR).
+	Dir string `json:"plugins_dir"`
+	// Plugins is the configured plugin list, each naming a tier and source.
+	Plugins []PluginConfig `json:"plugins"`
+}
+
+// PluginConfig names one configured plugin. Tier "a" is first-party-only
+// (registered in-process via internal/plugin's RegisterPlugin — never via
+// config); config tiers are "b" (wasm) and "c" (rpc subprocess). Manifest
+// is the declared trust surface the loader consents and filters against —
+// the interim carrier until T8's package containers ship it; it is optional
+// at parse time, and a plugin without one is refused at load
+// (deny-by-default) while the daemon continues.
+type PluginConfig struct {
+	Name     string       `json:"name"`
+	Tier     string       `json:"tier"`
+	Source   string       `json:"source"`
+	Manifest sdk.Manifest `json:"manifest"`
+}
+
+// AIConfig holds the operator's AI settings. APIKey is resolved at load
+// time exclusively through the package's secret() seam (GLYPHUX_AI_API_KEY)
+// and carries json:"-" so no serialized form of Config — config-file dumps,
+// diagnostics, anything embedding Config — can ever contain it.
+//
+// Valid Provider values are the adapter set in capabilities/ai:
+// claude | openai | gemini | openai-compatible (unknown providers are a
+// daemon-side fail-fast, reported by cmd/glyphuxd at boot).
+type AIConfig struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+
+	// BaseURL overrides the provider's default endpoint; required by the
+	// claude, gemini and openai-compatible adapters, ignored by openai
+	// (which always talks to https://api.openai.com).
+	BaseURL string `json:"base_url"`
+
+	// RateLimit caps every AI operation (generate/embed/classify) at this
+	// many calls per minute. Zero (default) leaves the service's
+	// DefaultLimits in place.
+	RateLimit int `json:"rate_limit"`
+
+	// APIKey is the provider credential, loaded only via secret(); it is
+	// never serialized (json:"-") and never written to any config file.
+	APIKey string `json:"-"`
 }
 
 // OAuthConfig holds one provider's registered app credentials. Only GitHub
@@ -93,6 +247,9 @@ func Default() Config {
 		Database:        DatabaseConfig{Driver: "sqlite"},
 		ShutdownTimeout: 10 * time.Second,
 		OpenBrowser:     false,
+		Marketplace: MarketplaceConfig{
+			TrustedKeys: []TrustedKey{embeddedDevRoot()},
+		},
 	}
 }
 
@@ -108,6 +265,42 @@ func Load(path string) (Config, error) {
 		}
 		if err := json.Unmarshal(raw, &cfg); err != nil {
 			return cfg, fmt.Errorf("parse config %s: %w", path, err)
+		}
+		// The plugins section has a flat config-file shape — top-level
+		// "plugins_dir" and "plugins" (array) keys (pinned by the T6 config
+		// tests) — so it is parsed here rather than via a Config-level
+		// UnmarshalJSON (which would clobber the Default() seed for every
+		// field the document omits). The Plugins field itself carries
+		// json:"-", keeping the plain pass above from colliding with the
+		// plugins array.
+		var flat struct {
+			Dir     string         `json:"plugins_dir"`
+			Plugins []PluginConfig `json:"plugins"`
+		}
+		if err := json.Unmarshal(raw, &flat); err != nil {
+			return cfg, fmt.Errorf("parse config %s: plugins section: %w", path, err)
+		}
+		cfg.Plugins = PluginsConfig{Dir: flat.Dir, Plugins: flat.Plugins}
+
+		// Marketplace trust (Ticket T8 / gap 8): trust is additive by
+		// default — operator trusted_keys[] join the embedded dev root.
+		// trust_mode="custom-only" opts into full replacement. The merge
+		// runs AFTER the plain unmarshal because that pass replaces
+		// cfg.Marketplace.TrustedKeys wholesale when the file declares the
+		// key; the seed must then be re-appended (unless custom-only).
+		if cfg.Marketplace.TrustMode != TrustModeCustomOnly {
+			for _, def := range Default().Marketplace.TrustedKeys {
+				present := false
+				for _, k := range cfg.Marketplace.TrustedKeys {
+					if k.ID == def.ID {
+						present = true
+						break
+					}
+				}
+				if !present {
+					cfg.Marketplace.TrustedKeys = append(cfg.Marketplace.TrustedKeys, def)
+				}
+			}
 		}
 	}
 
@@ -176,6 +369,46 @@ func Load(path string) (Config, error) {
 		}
 		cfg.AllowedOrigins = origins
 	}
+	if v := os.Getenv("GLYPHUX_RPC_OUTBOUND_PROXY_URL"); v != "" {
+		cfg.RPCOutboundProxyURL = v
+	}
+	// AI (Ticket T5 / gap 3). The API key is the one secret field and goes
+	// through the package's single secrets seam — never a bare Getenv — so
+	// the redaction guarantee (json:"-") and the "this is where secrets
+	// come from" documentation hold in the same place.
+	if v := os.Getenv("GLYPHUX_AI_PROVIDER"); v != "" {
+		cfg.AI.Provider = v
+	}
+	if v := os.Getenv("GLYPHUX_AI_MODEL"); v != "" {
+		cfg.AI.Model = v
+	}
+	if v := os.Getenv("GLYPHUX_AI_BASE_URL"); v != "" {
+		cfg.AI.BaseURL = v
+	}
+	if v := os.Getenv("GLYPHUX_AI_RATE_LIMIT"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return cfg, fmt.Errorf("GLYPHUX_AI_RATE_LIMIT: %w", err)
+		}
+		cfg.AI.RateLimit = n
+	}
+	if v, ok := secret("GLYPHUX_AI_API_KEY"); ok && v != "" {
+		cfg.AI.APIKey = v
+	}
+	// Plugins (Ticket T6 / gap 1): the tier-b plugins directory. The
+	// plugins[] list itself is config-file-only (no env carrier for JSON).
+	if v := os.Getenv("GLYPHUX_PLUGINS_DIR"); v != "" {
+		cfg.Plugins.Dir = v
+	}
+	// Marketplace (Ticket T8 / gap 8): the scalar knobs have env carriers;
+	// the trusted_keys[] records are JSON-shaped and therefore
+	// config-file-only (same reasoning as the plugins[] list).
+	if v := os.Getenv("GLYPHUX_MARKETPLACE_TRUST_MODE"); v != "" {
+		cfg.Marketplace.TrustMode = v
+	}
+	if v := os.Getenv("GLYPHUX_MARKETPLACE_CATALOG_FILE"); v != "" {
+		cfg.Marketplace.CatalogFile = v
+	}
 
 	if err := cfg.validate(); err != nil {
 		return cfg, err
@@ -197,6 +430,14 @@ func (c *Config) validate() error {
 	}
 	if c.Addr == "" {
 		return fmt.Errorf("addr must not be empty")
+	}
+	if c.AI.RateLimit < 0 {
+		return fmt.Errorf("ai.rate_limit must not be negative")
+	}
+	switch c.Marketplace.TrustMode {
+	case "", TrustModeCustomOnly:
+	default:
+		return fmt.Errorf("unknown marketplace.trust_mode %q (want %q for full replacement, or unset for additive)", c.Marketplace.TrustMode, TrustModeCustomOnly)
 	}
 	return nil
 }

@@ -11,6 +11,7 @@ func TestAdminHoldsEveryCapability(t *testing.T) {
 		permission.ContentRead, permission.ContentReadDrafts, permission.ContentWrite,
 		permission.ContentPublish, permission.MediaWrite, permission.UsersManage,
 		permission.ContentTypesManage, permission.LayoutsManage, permission.PresetsManage,
+		permission.PluginsManage,
 	} {
 		if !permission.Allows(permission.RoleAdmin, c) {
 			t.Errorf("admin should hold %s", c)
@@ -36,12 +37,16 @@ func TestOnlyAdminHoldsLayoutsManage(t *testing.T) {
 	}
 }
 
-func TestOnlyAdminHoldsPresetsManage(t *testing.T) {
-	if permission.Allows(permission.RoleEditor, permission.PresetsManage) {
-		t.Error("editor should not hold presets:manage")
+func TestOnlyAdminHoldsPluginsManage(t *testing.T) {
+	// plugins:manage gates the consent surface (Ticket T4 / gap 2): an
+	// install-time consent decision changes the trust boundary of the whole
+	// site, so it is admin-only, matching the ContentTypesManage/LayoutsManage
+	// "structural, site-wide change" precedent.
+	if permission.Allows(permission.RoleEditor, permission.PluginsManage) {
+		t.Error("editor should not hold plugins:manage")
 	}
-	if permission.Allows(permission.RoleViewer, permission.PresetsManage) {
-		t.Error("viewer should not hold presets:manage")
+	if permission.Allows(permission.RoleViewer, permission.PluginsManage) {
+		t.Error("viewer should not hold plugins:manage")
 	}
 }
 

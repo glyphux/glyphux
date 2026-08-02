@@ -15,3 +15,11 @@ glyphuxd
 
 # Agent worktrees (background-agent isolation scratch space)
 /.claude/
+/.pi/
+
+# Internal-only docs — not for public distribution. Kept on disk locally
+# for agent/internal context; deliberately not tracked in this public repo.
+/docs/glyphux-prd.md
+/ai-docs/
+extensions/
+justfile

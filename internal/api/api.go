@@ -12,15 +12,19 @@ import (
 	"strconv"
 
 	"github.com/glyphux/glyphux/capabilities/ai"
+	"github.com/glyphux/glyphux/internal/audit"
 	"github.com/glyphux/glyphux/internal/bundle"
 	"github.com/glyphux/glyphux/internal/composition"
+	"github.com/glyphux/glyphux/internal/consent"
 	"github.com/glyphux/glyphux/internal/content"
 	"github.com/glyphux/glyphux/internal/identity"
 	"github.com/glyphux/glyphux/internal/layout"
+	"github.com/glyphux/glyphux/internal/marketplace"
 	"github.com/glyphux/glyphux/internal/media"
 	"github.com/glyphux/glyphux/internal/permission"
 	"github.com/glyphux/glyphux/internal/preset"
 	"github.com/glyphux/glyphux/pkg/blocks"
+	"github.com/glyphux/glyphux/pkg/sdk"
 )
 
 // Server exposes the API surface. It is a client of the domain APIs — it holds
@@ -38,6 +42,10 @@ type Server struct {
 	presets           *preset.Store
 	bundles           *bundle.Store
 	ai                *ai.Service
+	consent           *consent.Engine
+	audit             *audit.Logger        // nil unless WithAuditLogger wired (T7)
+	marketplace       *marketplace.Manager // nil unless WithMarketplace wired (T8)
+	pluginManifests   []sdk.Manifest
 	log               *slog.Logger
 	loginLimiter      *loginLimiter
 	trustProxyHeaders bool
@@ -145,6 +153,25 @@ func WithAI(service *ai.Service) Option {
 	return func(s *Server) { s.ai = service }
 }
 
+// WithConsent wires the install-time consent engine (Ticket T4 / gap 2): it
+// registers the plugin consent routes (GET /api/v0/plugins, GET
+// /api/v0/plugins/consent-requests, POST
+// /api/v0/plugins/consent-requests/{plugin}/decide), all admin-only
+// (plugins:manage; the decide mutation also requires CSRF). plugins is the
+// set of registered plugins whose manifests are the consent subjects — the
+// daemon passes the T5 registrar's Registered() set. Omitting this option
+// (the zero value) leaves the consent routes returning 404, exactly like
+// the other opt-in transports.
+func WithConsent(engine *consent.Engine, plugins []sdk.Plugin) Option {
+	return func(s *Server) {
+		s.consent = engine
+		s.pluginManifests = make([]sdk.Manifest, 0, len(plugins))
+		for _, p := range plugins {
+			s.pluginManifests = append(s.pluginManifests, p.Manifest())
+		}
+	}
+}
+
 // New builds the API transport over the given domain APIs.
 func New(comps *composition.Store, contentAPI *content.API, mediaAPI *media.API, identities *identity.Service, sessions *identity.Sessions, log *slog.Logger, opts ...Option) *Server {
 	s := &Server{
@@ -216,6 +243,37 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	// itself — accepting a proposed fragment reuses POST /api/v0/presets
 	// then POST /api/v0/presets/{id}/import unchanged.
 	mux.HandleFunc("POST /api/v0/ai/compose", s.requireCSRF(s.requireCapability(permission.LayoutsManage, s.requireCapability(permission.PresetsManage, s.handleAICompose))))
+
+	// Plugin consent (Ticket T4 / gap 2): install-time consent decisions
+	// change the site's trust boundary, so the whole surface is admin-only
+	// (plugins:manage) — listing plugins and reading pending requests
+	// exposes each plugin's full requested permission surface, and the
+	// decide mutation is CSRF-protected like every other state-changing
+	// route. 404s if WithConsent wasn't configured (handlers check
+	// s.consent == nil), matching the other opt-in transports.
+	mux.HandleFunc("GET /api/v0/plugins", s.requireCapability(permission.PluginsManage, s.handlePluginsList))
+	mux.HandleFunc("GET /api/v0/plugins/consent-requests", s.requireCapability(permission.PluginsManage, s.handleConsentRequestsList))
+	mux.HandleFunc("POST /api/v0/plugins/consent-requests/{plugin}/decide", s.requireCSRF(s.requireCapability(permission.PluginsManage, s.handleConsentDecide)))
+
+	// Audit trail (gap 4 / Ticket T7): admin-only, gated on plugins:manage
+	// like the consent surface — the audit log exposes every plugin boundary
+	// decision and item-level write, so it is operator-only infrastructure.
+	// The ?plugin= query parameter is required (ListByPlugin is the only
+	// accessor). 404s if WithAuditLogger wasn't configured, matching the
+	// other opt-in transports.
+	mux.HandleFunc("GET /api/v0/audit", s.requireCapability(permission.PluginsManage, s.handleAuditList))
+
+	// Marketplace (gap 8 / Ticket T8): the catalog read, the install
+	// mutation, and the entitlement registration/list. The whole surface is
+	// admin-only (plugins:manage) — the catalog lists what the host would
+	// install and the mutations change the host's installed surface — and
+	// mutations get requireCSRF like every other state-changing route. 404s
+	// if WithMarketplace wasn't configured, matching the other opt-in
+	// transports.
+	mux.HandleFunc("GET /api/v0/marketplace/catalog", s.requireCapability(permission.PluginsManage, s.handleMarketplaceCatalog))
+	mux.HandleFunc("POST /api/v0/marketplace/packages/{id}/install", s.requireCSRF(s.requireCapability(permission.PluginsManage, s.handleMarketplaceInstall)))
+	mux.HandleFunc("GET /api/v0/marketplace/entitlements", s.requireCapability(permission.PluginsManage, s.handleMarketplaceEntitlementsList))
+	mux.HandleFunc("POST /api/v0/marketplace/entitlements", s.requireCSRF(s.requireCapability(permission.PluginsManage, s.handleMarketplaceEntitlementsRegister)))
 
 	// Authentication (slice 1.7). Login has no session cookie yet on a
 	// fresh visit, so requireCSRF is a no-op there; it still protects an

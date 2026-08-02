@@ -296,6 +296,27 @@ func (e *Engine) IsConsented(ctx context.Context, m sdk.Manifest) (Decision, boo
 	return d, true, nil
 }
 
+// Latest returns the most recent decision recorded against m's exact shape
+// (name, version, fingerprint), regardless of whether it is live — ok is
+// true whenever a decision exists at all, even a denied one. This is the
+// read the consent screen's status column needs: it distinguishes "no
+// decision ever recorded" (ok=false) from "explicitly denied" (ok=true,
+// Status=StatusDenied), which IsConsented deliberately collapses into
+// "not consented". The fingerprint rule is identical to IsConsented's: a
+// manifest whose API/Permissions axis changed since the decision was
+// recorded never matches (ok=false), so the UI re-asks.
+func (e *Engine) Latest(ctx context.Context, m sdk.Manifest) (Decision, bool, error) {
+	fp := fingerprintOf(m.API, m.Permissions)
+	d, err := latest(ctx, e.db, m.Name, m.Version, fp)
+	if errors.Is(err, ErrNotFound) {
+		return Decision{}, false, nil
+	}
+	if err != nil {
+		return Decision{}, false, err
+	}
+	return d, true, nil
+}
+
 // statusFor classifies a grant relative to the full request: Approved if it
 // equals the request, Denied if it grants nothing, Partial otherwise.
 func statusFor(req ConsentRequest, grantedAPI []sdk.APIScope, grantedPermissions []sdk.Permission) Status {

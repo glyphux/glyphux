@@ -14,23 +14,36 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/glyphux/glyphux/blocks/firstparty"
+	"github.com/glyphux/glyphux/capabilities/ai"
+	"github.com/glyphux/glyphux/capabilities/commerce"
+	"github.com/glyphux/glyphux/capabilities/forms"
+	"github.com/glyphux/glyphux/capabilities/membership"
+	"github.com/glyphux/glyphux/capabilities/notifications"
+	"github.com/glyphux/glyphux/capabilities/seo"
 	"github.com/glyphux/glyphux/internal/api"
+	"github.com/glyphux/glyphux/internal/audit"
 	"github.com/glyphux/glyphux/internal/bootstrap"
 	"github.com/glyphux/glyphux/internal/bundle"
 	"github.com/glyphux/glyphux/internal/composition"
 	"github.com/glyphux/glyphux/internal/config"
+	"github.com/glyphux/glyphux/internal/consent"
 	"github.com/glyphux/glyphux/internal/content"
 	"github.com/glyphux/glyphux/internal/db"
 	"github.com/glyphux/glyphux/internal/graphql"
 	"github.com/glyphux/glyphux/internal/identity"
 	"github.com/glyphux/glyphux/internal/layout"
+	"github.com/glyphux/glyphux/internal/marketplace"
 	"github.com/glyphux/glyphux/internal/media"
+	"github.com/glyphux/glyphux/internal/plugin"
+	"github.com/glyphux/glyphux/internal/pluginstore"
 	"github.com/glyphux/glyphux/internal/preset"
 	"github.com/glyphux/glyphux/internal/server"
 	"github.com/glyphux/glyphux/internal/setup"
 	"github.com/glyphux/glyphux/pkg/blocks"
+	"github.com/glyphux/glyphux/pkg/sdk"
 )
 
 // version is overridden at release-build time via
@@ -74,6 +87,18 @@ func run() error {
 	migrations = append(migrations, layout.Migrations...)
 	migrations = append(migrations, preset.Migrations...)
 	migrations = append(migrations, bundle.Migrations...)
+	// Plugin KV persistence (gap 6 / Ticket T1): the durable backend every
+	// loaded plugin's Store() writes to — a fresh boot creates plugin_kv.
+	migrations = append(migrations, pluginstore.Migrations...)
+	// Install-time consent (gap 2 / Ticket T4): consent_decisions (14) and
+	// audit_records (15). Migration-list ownership for these two versions
+	// belongs to T4 — no other ticket adds a migration here (single-owner
+	// rule).
+	migrations = append(migrations, audit.Migrations...)
+	migrations = append(migrations, consent.Migrations...)
+	// Marketplace (gap 8 / Ticket T8): marketplace_entitlements (20) — the
+	// entitlement-token registry the marketplace surface reports against.
+	migrations = append(migrations, marketplace.Migrations...)
 
 	boot, err := bootstrap.Boot(ctx, bootstrap.Options{
 		DataDir:           cfg.DataDir,
@@ -121,8 +146,14 @@ func databaseExplicit(cfg config.Config) bool {
 func buildFullHandler(cfg config.Config, log *slog.Logger) bootstrap.BuildFullHandlerFunc {
 	return func(database *db.DB, compositions *composition.Store, identities *identity.Service, wizard *setup.Wizard) (http.Handler, error) {
 		sessions := identity.NewSessions(database)
-		contentAPI := content.NewAPI(compositions, content.NewStore(database))
-		mediaAPI := media.NewAPI(media.NewStore(database), filepath.Join(cfg.DataDir, "media"))
+		// Audit trail (gap 4 / Ticket T7): one logger for the whole daemon —
+		// it backs the consent engine's decision records (T4), the item-level
+		// content/media recorders below, and KernelDeps.Audit so every loaded
+		// plugin's boundary gates log. Migration 15 (audit_records) is in the
+		// list appended at main.go's migration block.
+		auditLogger := audit.NewLogger(database)
+		contentAPI := content.NewAPI(compositions, content.NewStore(database), content.WithAudit(auditLogger))
+		mediaAPI := media.NewAPI(media.NewStore(database), filepath.Join(cfg.DataDir, "media"), media.WithAudit(auditLogger))
 
 		// Layer-2 block/layout transport (slice 4.4a). The registry is
 		// populated with the first-party blocks at construction time — this
@@ -141,10 +172,110 @@ func buildFullHandler(cfg config.Config, log *slog.Logger) bootstrap.BuildFullHa
 		presetStore := preset.NewStore(database)
 		bundleStore := bundle.NewStore(database)
 
+		// Install-time consent (gap 2 / Ticket T4): the consent engine over
+		// the real database, with the shared audit logger wired in so every
+		// decision is recorded (audit is strictly additive — an engine built
+		// without WithAudit would still persist decisions). The T6 loader
+		// builds the wasm/rpc consent adapter from this same engine; the
+		// adapter ships in internal/plugin with its own suite (no
+		// AlwaysConsent anywhere in the daemon path).
+		consentEngine := consent.NewEngine(database, consent.WithAudit(auditLogger))
+
+		// Plugin loading (Ticket T6 / gap 1): the 3-tier loader generalizes
+		// the T5 registrar. Tier A first-party capabilities register through
+		// the loader's RegisterPlugin (unchanged); tier B wasm and tier C
+		// rpc plugins come from config (plugins[]{name,tier,source} +
+		// GLYPHUX_PLUGINS_DIR), each consent-gated at load: an unconsented
+		// plugin is refused before any host is built, logged, and the daemon
+		// continues; invariant violations (duplicate names, tier
+		// misconfiguration) fail the boot fast. Every loaded plugin's
+		// Store() is backed by the durable pluginstore KV (T1) — the shared
+		// KernelDeps also carries the daemon's domain stores and block
+		// registry, so all three tiers see the same world.
+		capLoader := plugin.NewLoader(sdk.KernelDeps{
+			Compositions: compositions,
+			Content:      contentAPI,
+			Media:        mediaAPI,
+			Identities:   identities,
+			KV:           pluginstore.NewStore(database),
+			Blocks:       blockRegistry,
+			Audit:        auditLogger,
+		}, consentEngine)
+		for _, p := range firstPartyPlugins() {
+			if err := capLoader.RegisterPlugin(p); err != nil {
+				return nil, err
+			}
+		}
+		if err := capLoader.Load(context.Background(), plugin.LoadConfig{
+			Dir:     cfg.Plugins.Dir,
+			Plugins: configuredPlugins(cfg.Plugins.Plugins),
+		}); err != nil {
+			return nil, err
+		}
+
+		// Activation is deferred on a virgin install: the wizard writes the
+		// initial composition on first-run submission, and the first-party
+		// plugins' Register calls (forms/commerce/membership define content
+		// types) genuinely require it — RegisterContentType ->
+		// DefineContentType fails with composition.ErrNotFound otherwise.
+		// The wizard committer rebuilds this handler immediately after
+		// committing, so plugins come up with the app on setup completion
+		// (and an activation failure then fails the submission, never a
+		// half-booted app); on every provisioned boot the composition
+		// already exists and activation happens here, fail-fast.
+		compsExist, err := compositions.Exists(context.Background())
+		if err != nil {
+			return nil, fmt.Errorf("check composition: %w", err)
+		}
+		if compsExist {
+			if err := capLoader.Activate(context.Background()); err != nil {
+				return nil, err
+			}
+		} else {
+			log.Info("first-party capability plugins deferred until setup completes")
+		}
+
 		apiOpts := []api.Option{
 			api.TrustProxyHeaders(cfg.TrustProxyHeaders),
 			api.WithLayouts(layoutStore, blockRegistry),
 			api.WithPresets(presetStore, bundleStore),
+			api.WithConsent(consentEngine, capLoader.Registered()),
+			api.WithAuditLogger(auditLogger),
+		}
+		// Marketplace (gap 8 / Ticket T8): the resolved catalog (embedded
+		// sample + optional operator catalog file — the file only ever
+		// extends), the entitlement registry, and the key-ID-aware trust set
+		// decoded from the config's trusted_keys records. A broken operator
+		// catalog file or trust record fails the boot fast (fail-fast
+		// convention); the embedded dev root default means every default
+		// boot trusts exactly one key.
+		catalog, err := marketplace.BuildCatalog(cfg.Marketplace.CatalogFile)
+		if err != nil {
+			return nil, fmt.Errorf("build marketplace catalog: %w", err)
+		}
+		trustKeys, err := marketplace.DecodeTrustedKeys(cfg.Marketplace.TrustedKeys)
+		if err != nil {
+			return nil, fmt.Errorf("decode marketplace trust set: %w", err)
+		}
+		apiOpts = append(apiOpts, api.WithMarketplace(marketplace.NewManager(catalog, marketplace.NewStore(database), trustKeys)))
+		// AI authoring (Ticket T5 / gap 3): opt-in via ai.provider. Unknown
+		// providers fail fast here, at boot, naming the valid adapter set;
+		// an unset provider leaves POST /api/v0/ai/compose 404ing (the
+		// endpoint's default when WithAI is absent) and requires no key.
+		if cfg.AI.Provider != "" {
+			adapter, err := buildAIAdapter(cfg.AI)
+			if err != nil {
+				return nil, err
+			}
+			svc := ai.NewService(adapter)
+			if cfg.AI.RateLimit > 0 {
+				// rate_limit is a single calls/minute knob applied uniformly
+				// to every operation the Service rate-limits (spec: "rate_limit
+				// maps to Service.Limits").
+				lim := ai.RateLimit{MaxCalls: cfg.AI.RateLimit, Window: time.Minute}
+				svc.Limits = ai.Limits{Generate: lim, Embed: lim, Classify: lim}
+			}
+			apiOpts = append(apiOpts, api.WithAI(svc))
 		}
 		if oauthMgr := githubOAuthManager(cfg); oauthMgr != nil {
 			apiOpts = append(apiOpts, api.WithOAuth(oauthMgr, publicURL(cfg)))
@@ -156,6 +287,64 @@ func buildFullHandler(cfg config.Config, log *slog.Logger) bootstrap.BuildFullHa
 		graphqlResolver := graphql.NewResolver(compositions, contentAPI, mediaAPI, identities, sessions, log)
 		graphqlHandler := graphql.NewHandler(graphqlResolver)
 		return server.Handler(apiServer, wizard, server.WithGraphQL(graphqlHandler), server.WithCORS(cfg.AllowedOrigins)), nil
+	}
+}
+
+// firstPartyPlugins returns the five first-party capability plugins the
+// daemon registers at boot, in registration order. commerce and membership
+// get nil gateways (no payment processor configured — their manifests then
+// declare no network permission); notifications gets the documented memory
+// mailer placeholder, the daemon's default mailer until a real one is
+// configured.
+func firstPartyPlugins() []sdk.Plugin {
+	return []sdk.Plugin{
+		forms.New(),
+		seo.New(),
+		commerce.New(nil),
+		membership.New(nil),
+		notifications.New(notifications.NewMemoryMailerAdapter()),
+	}
+}
+
+// configuredPlugins translates the operator-facing config entries into the
+// loader's plugin configs. The manifest is carried through as configured
+// (the interim carrier until T8's package containers ship it); a plugin
+// without one is refused at load (deny-by-default) and the daemon continues.
+func configuredPlugins(cfgPlugins []config.PluginConfig) []plugin.PluginConfig {
+	out := make([]plugin.PluginConfig, 0, len(cfgPlugins))
+	for _, p := range cfgPlugins {
+		out = append(out, plugin.PluginConfig{
+			Name:     p.Name,
+			Tier:     p.Tier,
+			Source:   p.Source,
+			Manifest: p.Manifest,
+		})
+	}
+	return out
+}
+
+// aiAdapterSet is the real adapter set in capabilities/ai — the constructors
+// at capabilities/ai/claude.go:36, openai.go:43, gemini.go:31 and
+// openai.go:56. An unknown provider is a startup error naming exactly this
+// set (spec's accepted "claude|openai|gemini|openai-compatible").
+const aiAdapterSet = "claude|openai|gemini|openai-compatible"
+
+// buildAIAdapter constructs the provider adapter for cfg.AI.Provider. Base
+// URL is required by claude/gemini/openai-compatible (their constructors
+// reject an empty one — that error surfaces here as a fail-fast boot
+// error); openai always talks to https://api.openai.com and ignores it.
+func buildAIAdapter(cfg config.AIConfig) (ai.Adapter, error) {
+	switch cfg.Provider {
+	case "claude":
+		return ai.NewClaudeAdapter(cfg.APIKey, cfg.BaseURL)
+	case "openai":
+		return ai.NewOpenAIAdapter(cfg.APIKey)
+	case "gemini":
+		return ai.NewGeminiAdapter(cfg.APIKey, cfg.BaseURL)
+	case "openai-compatible":
+		return ai.NewOpenAICompatibleAdapter(cfg.BaseURL, cfg.APIKey)
+	default:
+		return nil, fmt.Errorf("unknown ai.provider %q (want %s)", cfg.Provider, aiAdapterSet)
 	}
 }
 

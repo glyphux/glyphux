@@ -47,3 +47,33 @@ jobs:
         with:
           name: glyphux-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/
+
+  # Admin SPA freshness (Ticket T9 / gap 9 (c)): internal/adminui/dist is
+  # committed (so `go build` works without Node), but it must not drift from
+  # what admin-ui/ actually builds. This job rebuilds it from source with
+  # the same commands as the justfile admin-ui-rebuild target and fails if
+  # the committed tree differs in any way (modified, added, or removed
+  # files). Node is pinned to the same version release.yml uses so rebuilds
+  # are byte-identical; if a rebuild produces a different tree, commit the
+  # freshly-built dist (via `just admin-ui-rebuild`) rather than relaxing
+  # this check.
+  admin-ui-dist-freshness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Rebuild sdk-js + admin-ui from source
+        run: |
+          npm --prefix sdk-js ci
+          npm --prefix sdk-js run build
+          npm --prefix admin-ui ci
+          npm --prefix admin-ui run build
+      - name: Fail if committed dist is stale
+        run: |
+          if ! git diff --quiet -- internal/adminui/dist || [ -n "$(git status --porcelain -- internal/adminui/dist)" ]; then
+            echo "internal/adminui/dist is stale: run \`just admin-ui-rebuild\` and commit the result"
+            git status --porcelain -- internal/adminui/dist
+            exit 1
+          fi

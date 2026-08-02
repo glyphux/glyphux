@@ -177,9 +177,171 @@ func TestBrokerAllowsNetworkHostReflectsManifestAllowlist(t *testing.T) {
 	}
 }
 
-// --- Behavior 4: crash isolation — a subprocess that exits before it ever
-// signals readiness is detected by Launch without hanging or taking down
-// the host (this test process). ---
+// --- Behavior 6: network-policy enforcement crosses the process boundary. ---
+//
+// The broker launches the subprocess with GLYPHUX_NETWORK_ALLOWLIST set to
+// the exact granted host list (comma-joined), and the fixture plugin — which
+// makes its OWN outbound decisions from that env, independent of the host's
+// HostAPI — must see exactly the granted hosts. The host side of the chain
+// is the filtered manifest (sdk.FilterManifest over the granted subset), so
+// this proves the whole enforcement path end to end: declared [a,b], granted
+// [a] => the subprocess is told a.example and nothing else.
+
+func TestBrokerNetworkAllowlistEnvCrossesProcessBoundary(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	declared := testManifest() // network: [allowed-host.example]
+	declared.Permissions = []sdk.Permission{{Name: "network", Args: []string{"a.example", "b.example"}}}
+	granted := []sdk.Permission{{Name: "network", Args: []string{"a.example"}}}
+	filtered := sdk.FilterManifest(declared, granted, nil)
+
+	host := newHostAPI(t, filtered)
+	b, err := rpc.Launch(rpc.Config{
+		Command:          fixtureBinPath,
+		HostAPI:          host,
+		NetworkAllowlist: []string{"a.example"},
+		ReadyTimeout:     10 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Launch: %v (stderr: %s)", err, b.Stderr())
+	}
+	t.Cleanup(func() { b.Close() })
+
+	// The subprocess's own view of its outbound policy: exactly a.example.
+	resp, err := b.Register(ctx, "env-allowlist")
+	if err != nil {
+		t.Fatalf("Register(env-allowlist): %v", err)
+	}
+	if !resp.GetOk() || len(resp.GetLog()) != 1 {
+		t.Fatalf("env-allowlist: ok=%v log=%v, want ok with exactly one value", resp.GetOk(), resp.GetLog())
+	}
+	if got := resp.GetLog()[0]; got != "a.example" {
+		t.Fatalf("GLYPHUX_NETWORK_ALLOWLIST in subprocess env = %q, want exactly %q", got, "a.example")
+	}
+
+	// And the fixture's query of the host's filtered HostAPI agrees: granted
+	// host allowed, everything else denied.
+	if resp, err := b.Register(ctx, "network-check", "a.example"); err != nil {
+		t.Fatalf("Register(network-check, a.example): %v", err)
+	} else if !resp.GetOk() {
+		t.Fatalf("a.example was granted; fixture reported denial: %v", resp.GetLog())
+	}
+	if resp, err := b.Register(ctx, "network-check", "b.example"); err != nil {
+		t.Fatalf("Register(network-check, b.example): %v", err)
+	} else if resp.GetOk() {
+		t.Fatalf("b.example was declared but NOT granted; fixture reported allowed")
+	}
+}
+
+func TestBrokerNetworkAllowlistEmptyIsExplicitDenyAll(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Consent dropped the network permission: filtered manifest denies
+	// every host, and the broker communicates that as an EMPTY (but
+	// present) GLYPHUX_NETWORK_ALLOWLIST — the subprocess can distinguish
+	// "deny all outbound" from a launcher that never set the variable.
+	declared := testManifest()
+	filtered := sdk.FilterManifest(declared, nil, nil)
+	host := newHostAPI(t, filtered)
+
+	b, err := rpc.Launch(rpc.Config{
+		Command:      fixtureBinPath,
+		HostAPI:      host,
+		ReadyTimeout: 10 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Launch: %v (stderr: %s)", err, b.Stderr())
+	}
+	t.Cleanup(func() { b.Close() })
+
+	resp, err := b.Register(ctx, "env-allowlist")
+	if err != nil {
+		t.Fatalf("Register(env-allowlist): %v", err)
+	}
+	if !resp.GetOk() || len(resp.GetLog()) != 1 {
+		t.Fatalf("env-allowlist: ok=%v log=%v, want ok with exactly one value", resp.GetOk(), resp.GetLog())
+	}
+	if got := resp.GetLog()[0]; got != "" {
+		t.Fatalf("GLYPHUX_NETWORK_ALLOWLIST with no grant = %q, want the empty string (explicit deny-all)", got)
+	}
+
+	if resp, err := b.Register(ctx, "network-check", "a.example"); err != nil {
+		t.Fatalf("Register(network-check): %v", err)
+	} else if resp.GetOk() {
+		t.Fatalf("no network grant; fixture reported allowed")
+	}
+}
+
+// --- Behavior 7: operator egress proxy — rpc_outbound_proxy_url becomes
+// HTTP_PROXY/HTTPS_PROXY in the subprocess env (the Tier-C egress choke
+// point); absent config leaves those vars alone. ---
+
+func TestBrokerProxyEnvFromConfig(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	b, err := rpc.Launch(rpc.Config{
+		Command:          fixtureBinPath,
+		HostAPI:          newHostAPI(t, testManifest()),
+		OutboundProxyURL: "http://proxy.internal:3128",
+		ReadyTimeout:     10 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Launch: %v (stderr: %s)", err, b.Stderr())
+	}
+	t.Cleanup(func() { b.Close() })
+
+	resp, err := b.Register(ctx, "env-proxy")
+	if err != nil {
+		t.Fatalf("Register(env-proxy): %v", err)
+	}
+	if !resp.GetOk() || len(resp.GetLog()) != 2 {
+		t.Fatalf("env-proxy: ok=%v log=%v, want ok with two values (HTTP_PROXY, HTTPS_PROXY)", resp.GetOk(), resp.GetLog())
+	}
+	want := "http://proxy.internal:3128"
+	if got := resp.GetLog()[0]; got != want {
+		t.Fatalf("subprocess HTTP_PROXY = %q, want %q", got, want)
+	}
+	if got := resp.GetLog()[1]; got != want {
+		t.Fatalf("subprocess HTTPS_PROXY = %q, want %q", got, want)
+	}
+}
+
+func TestBrokerProxyEnvAbsentLeavesProxyVarsUnset(t *testing.T) {
+	// Neutralize any proxy vars this test process inherited so the assertion
+	// is about the broker's behavior, not the environment it ran in.
+	t.Setenv("HTTP_PROXY", "")
+	t.Setenv("HTTPS_PROXY", "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	b, err := rpc.Launch(rpc.Config{
+		Command:      fixtureBinPath,
+		HostAPI:      newHostAPI(t, testManifest()),
+		ReadyTimeout: 10 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Launch: %v (stderr: %s)", err, b.Stderr())
+	}
+	t.Cleanup(func() { b.Close() })
+
+	resp, err := b.Register(ctx, "env-proxy")
+	if err != nil {
+		t.Fatalf("Register(env-proxy): %v", err)
+	}
+	if !resp.GetOk() || len(resp.GetLog()) != 2 {
+		t.Fatalf("env-proxy: ok=%v log=%v, want ok with two values", resp.GetOk(), resp.GetLog())
+	}
+	if got := resp.GetLog()[0]; got != "" {
+		t.Fatalf("subprocess HTTP_PROXY with no rpc_outbound_proxy_url = %q, want unset/empty", got)
+	}
+	if got := resp.GetLog()[1]; got != "" {
+		t.Fatalf("subprocess HTTPS_PROXY with no rpc_outbound_proxy_url = %q, want unset/empty", got)
+	}
+}
 
 func TestBrokerDetectsCrashBeforeReady(t *testing.T) {
 	api := newHostAPI(t, testManifest())
@@ -260,4 +422,3 @@ func TestBrokerDetectsCrashDuringCall(t *testing.T) {
 		t.Fatalf("second broker State() = %v, want StateRunning (host must survive the first plugin's crash)", got)
 	}
 }
-

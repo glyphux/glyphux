@@ -12,6 +12,7 @@ import (
 	"github.com/glyphux/glyphux/internal/db"
 	"github.com/glyphux/glyphux/internal/identity"
 	"github.com/glyphux/glyphux/internal/media"
+	"github.com/glyphux/glyphux/internal/pluginstore"
 	"github.com/glyphux/glyphux/pkg/blocks"
 	"github.com/glyphux/glyphux/pkg/contract"
 	"github.com/glyphux/glyphux/pkg/kernel"
@@ -300,6 +301,92 @@ func TestHostAPIStoreRoundTripsAValue(t *testing.T) {
 	}
 	if !ok || string(got) != "hello" {
 		t.Fatalf("got (%q, %v), want (\"hello\", true)", got, ok)
+	}
+}
+
+// TestHostAPIStoreMemoryBackendRegression pins the gap-6 contract that
+// the exported KVBackend surface (Ticket T1) must not change what a
+// plugin experiences through HostAPI.Store() when the backend is the
+// default in-memory one: a plugin writes Store().Set("token", v) and
+// reads it back, byte-identical to pre-T1 behavior.
+func TestHostAPIStoreMemoryBackendRegression(t *testing.T) {
+	// Explicit MemoryKVBackend via KernelDeps.KV — the shape every existing
+	// test (and the pre-T1 host.go) used.
+	explicit, err := sdk.NewHostAPI(validManifest(), sdk.KernelDeps{KV: sdk.NewMemoryKVBackend()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// KernelDeps.KV nil — NewHostAPI must still hand the HostAPI its own
+	// private MemoryKVBackend, exactly as before the interface change.
+	defaulted, err := sdk.NewHostAPI(validManifest(), sdk.KernelDeps{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for name, host := range map[string]sdk.HostAPI{"explicit": explicit, "nil-default": defaulted} {
+		store := host.Store()
+		if err := store.Set(context.Background(), "token", []byte("v")); err != nil {
+			t.Fatalf("%s: set: %v", name, err)
+		}
+		got, ok, err := store.Get(context.Background(), "token")
+		if err != nil {
+			t.Fatalf("%s: get: %v", name, err)
+		}
+		if !ok || string(got) != "v" {
+			t.Fatalf("%s: got (%q, %v), want (\"v\", true)", name, got, ok)
+		}
+		if err := store.Delete(context.Background(), "token"); err != nil {
+			t.Fatalf("%s: delete: %v", name, err)
+		}
+		if _, ok, err := store.Get(context.Background(), "token"); err != nil || ok {
+			t.Fatalf("%s: get after delete = (ok=%v, err=%v), want (false, nil)", name, ok, err)
+		}
+	}
+}
+
+// TestHostAPIStoreSurvivesReopenWithPluginstoreBackend is the gap-6 proof
+// at the HostAPI layer itself: a plugin's Store().Set("token", v) through
+// a KernelDeps.KV backed by internal/pluginstore (the durable backend a
+// running daemon hands its plugins) must survive closing and reopening the
+// same SQLite file — the exact acceptance criterion "daemon restarts
+// against same SQLite; Get returns value".
+func TestHostAPIStoreSurvivesReopenWithPluginstoreBackend(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "kv.db")
+
+	d1, err := db.OpenSQLite(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d1.Migrate(ctx, pluginstore.Migrations); err != nil {
+		t.Fatalf("migrate pluginstore: %v", err)
+	}
+	host1, err := sdk.NewHostAPI(validManifest(), sdk.KernelDeps{KV: pluginstore.NewStore(d1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host1.Store().Set(ctx, "token", []byte("v")); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if err := d1.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	d2, err := db.OpenSQLite(dbPath) // same file — a "restart"
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d2.Close()
+	host2, err := sdk.NewHostAPI(validManifest(), sdk.KernelDeps{KV: pluginstore.NewStore(d2)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := host2.Store().Get(ctx, "token")
+	if err != nil {
+		t.Fatalf("get after reopen: %v", err)
+	}
+	if !ok || string(got) != "v" {
+		t.Fatalf("get after reopen = (%q, %v), want (\"v\", true)", got, ok)
 	}
 }
 

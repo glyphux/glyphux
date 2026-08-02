@@ -70,8 +70,10 @@ type KernelDeps struct {
 	// the same KernelDeps (e.g. every plugin loaded by one running daemon),
 	// which is what makes the namespacing real rather than accidental.
 	// Left nil (the common case — e.g. in most tests), NewHostAPI gives
-	// that single HostAPI its own private backend.
-	KV *MemoryKVBackend
+	// that single HostAPI its own private MemoryKVBackend (the
+	// process-lifetime default; a running daemon instead hands the shared
+	// KernelDeps a durable internal/pluginstore.Store — gap 6 / Ticket T1).
+	KV KVBackend
 
 	// Bus backs every plugin's On/Emit from this KernelDeps — the real,
 	// cross-plugin event bus (PRD §8.4, slice 2.2). Shared across every
@@ -197,11 +199,35 @@ var sensitiveEvents = map[string]sensitiveEventRule{
 	"membership.expired": {Capability: "membership"},
 }
 
-// MemoryKVBackend is an in-memory ScopedKV backing, namespaced per plugin
+// KVBackend is the namespaced key-value persistence surface underlying
+// every HostAPI.Store() built from the same KernelDeps (PRD §8.3: a
+// plugin's store is "namespaced per plugin"). Namespace is the plugin's
+// manifest name and is part of every call, so one backend shared across
+// many plugins keeps each plugin's keys strictly to itself.
+//
+// Implementations may be process-lifetime (MemoryKVBackend, the default
+// when KernelDeps.KV is nil) or durable (internal/pluginstore.Store, a
+// SQL-backed backend over internal/db.Queryer that survives daemon
+// restarts — gap 6 / Ticket T1). The shape is deliberately minimal —
+// Get/Set/Delete, never a raw database handle — matching exactly the
+// operations HostAPI.Store() exposes.
+//
+// Get returns (value, true, nil) when namespace has a value for key and
+// (nil, false, nil) when it does not; Set upserts (the latest write wins);
+// Delete removes (deleting a missing key is not an error).
+type KVBackend interface {
+	Get(ctx context.Context, namespace, key string) ([]byte, bool, error)
+	Set(ctx context.Context, namespace, key string, value []byte) error
+	Delete(ctx context.Context, namespace, key string) error
+}
+
+// MemoryKVBackend is an in-memory KVBackend, namespaced per plugin
 // internally so multiple plugins can share one backend without colliding.
-// Process-lifetime only — persisting plugin state to a real table is
-// deferred (see this slice's tracking doc); the shape here (Get/Set/Delete
-// mediated, never a raw handle) is what later slices extend, not replace.
+// Process-lifetime only — persisting plugin state to a real table is the
+// job of internal/pluginstore (gap 6 / Ticket T1); MemoryKVBackend remains
+// the default backend a HostAPI gets when KernelDeps.KV is nil, so every
+// existing test (and every plugin that predates SQL-backed KV) behaves
+// byte-identically.
 type MemoryKVBackend struct {
 	mu   sync.Mutex
 	data map[string][]byte
@@ -214,23 +240,31 @@ func NewMemoryKVBackend() *MemoryKVBackend {
 
 func namespacedKey(namespace, key string) string { return namespace + "\x00" + key }
 
-func (b *MemoryKVBackend) get(namespace, key string) ([]byte, bool) {
+// Get returns the value namespace stored under key. found is false (and
+// value nil) when namespace has never written key.
+func (b *MemoryKVBackend) Get(ctx context.Context, namespace, key string) ([]byte, bool, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	v, ok := b.data[namespacedKey(namespace, key)]
-	return v, ok
+	return v, ok, nil
 }
 
-func (b *MemoryKVBackend) set(namespace, key string, value []byte) {
+// Set stores value under namespace/key, copying so later caller mutation
+// of value cannot corrupt the stored bytes. Upsert semantics: a second Set
+// on the same key replaces the first.
+func (b *MemoryKVBackend) Set(ctx context.Context, namespace, key string, value []byte) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.data[namespacedKey(namespace, key)] = append([]byte(nil), value...)
+	return nil
 }
 
-func (b *MemoryKVBackend) delete(namespace, key string) {
+// Delete removes namespace's key; a missing key is a no-op, not an error.
+func (b *MemoryKVBackend) Delete(ctx context.Context, namespace, key string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.data, namespacedKey(namespace, key))
+	return nil
 }
 
 // ScopedKV is a plugin's namespaced key-value persistence (PRD §8.3) —
@@ -242,23 +276,20 @@ type ScopedKV interface {
 }
 
 type scopedKV struct {
-	backend   *MemoryKVBackend
+	backend   KVBackend
 	namespace string
 }
 
 func (s *scopedKV) Get(ctx context.Context, key string) ([]byte, bool, error) {
-	v, ok := s.backend.get(s.namespace, key)
-	return v, ok, nil
+	return s.backend.Get(ctx, s.namespace, key)
 }
 
 func (s *scopedKV) Set(ctx context.Context, key string, value []byte) error {
-	s.backend.set(s.namespace, key, value)
-	return nil
+	return s.backend.Set(ctx, s.namespace, key, value)
 }
 
 func (s *scopedKV) Delete(ctx context.Context, key string) error {
-	s.backend.delete(s.namespace, key)
-	return nil
+	return s.backend.Delete(ctx, s.namespace, key)
 }
 
 // HostAPI is the only surface a plugin can reach (PRD §8.3) — capability-
@@ -359,7 +390,7 @@ type hostAPI struct {
 	adminPages  []AdminPageDef
 	jobs        []JobDef
 	bus         *EventBus
-	kv          *MemoryKVBackend
+	kv          KVBackend
 	blocks      *blocks.Registry
 }
 

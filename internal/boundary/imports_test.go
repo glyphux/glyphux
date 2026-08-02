@@ -29,7 +29,7 @@ func TestNoRawSQLOutsideDBPackage(t *testing.T) {
 		}
 		if d.IsDir() {
 			switch d.Name() {
-			case ".git", "vendor", "node_modules", ".claude":
+			case ".git", "vendor", "node_modules", ".claude", ".worktrees":
 				return filepath.SkipDir
 			}
 			return nil
