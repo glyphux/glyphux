@@ -3,6 +3,16 @@ export { GlyphuxApiError } from "./errors.js";
 export type { LayoutPreview } from "./layouts.js";
 export type { AIComposeRequest } from "./ai.js";
 export type {
+  ConsentDecision,
+  ConsentDecisionInput,
+  ConsentDecisionKind,
+  ConsentGrant,
+  ConsentPermission,
+  ConsentRequestInfo,
+  ConsentScope,
+  PluginConsentStatus,
+} from "./plugins.js";
+export type {
   AIComposeResult,
   AuthenticatedSession,
   BlockDefinition,

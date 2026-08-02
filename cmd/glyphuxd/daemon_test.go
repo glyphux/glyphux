@@ -13,8 +13,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/glyphux/glyphux/internal/audit"
 	"github.com/glyphux/glyphux/internal/composition"
 	"github.com/glyphux/glyphux/internal/config"
+	"github.com/glyphux/glyphux/internal/consent"
 	"github.com/glyphux/glyphux/internal/content"
 	"github.com/glyphux/glyphux/internal/db"
 	"github.com/glyphux/glyphux/internal/identity"
@@ -32,11 +34,42 @@ import (
 // setup wizard. This is the daemon-level httptest the T5 acceptance
 // criteria call for — no mocks anywhere except the fake AI provider each
 // AI test stands up itself.
-func bootDaemon(t *testing.T, cfg config.Config) http.Handler {
+func bootDaemon(t *testing.T, cfg config.Config) (http.Handler, *db.DB) {
+	t.Helper()
+	return bootDaemonAt(t, cfg, filepath.Join(t.TempDir(), "test.db"), true)
+}
+
+// bootDaemonAt is bootDaemon over an explicit SQLite path — the restart-
+// persistence seam (a decision made on one boot must survive a daemon
+// restart onto the same database file). seed=false skips the first-run
+// seeding (composition save + admin account) for a restart onto an already
+// provisioned database.
+func bootDaemonAt(t *testing.T, cfg config.Config, dbPath string, seed bool) (http.Handler, *db.DB) {
+	t.Helper()
+	p := bootDaemonParts(t, cfg, dbPath, seed)
+	return p.h, p.d
+}
+
+// daemonParts is what a daemon boot builds: the full handler plus the
+// domain pieces a test needs to drive the post-setup handler rebuild — the
+// wizard committer's gateway switch — from a virgin boot.
+type daemonParts struct {
+	h      http.Handler
+	d      *db.DB
+	comps  *composition.Store
+	ids    *identity.Service
+	wizard *setup.Wizard
+}
+
+// bootDaemonParts is bootDaemonAt returning every daemon piece instead of
+// just the handler. seed=false skips the first-run seeding for a restart
+// onto an already provisioned database — and, for the virgin-install
+// regression test, boots the daemon with no composition stored at all.
+func bootDaemonParts(t *testing.T, cfg config.Config, dbPath string, seed bool) daemonParts {
 	t.Helper()
 	ctx := context.Background()
 
-	d, err := db.OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
+	d, err := db.OpenSQLite(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,20 +81,26 @@ func bootDaemon(t *testing.T, cfg config.Config) http.Handler {
 	migs = append(migs, layout.Migrations...)
 	migs = append(migs, preset.Migrations...)
 	migs = append(migs, pluginstore.Migrations...)
+	migs = append(migs, audit.Migrations...)
+	migs = append(migs, consent.Migrations...)
 	if err := d.Migrate(ctx, migs); err != nil {
 		t.Fatal(err)
 	}
 
 	comps := composition.NewStore(d)
-	if err := comps.Save(ctx, nil, &contract.Composition{
-		ContractVersion: contract.ContentCompositionV0,
-		Site:            contract.Site{Name: "Test"},
-	}); err != nil {
-		t.Fatal(err)
+	if seed {
+		if err := comps.Save(ctx, nil, &contract.Composition{
+			ContractVersion: contract.ContentCompositionV0,
+			Site:            contract.Site{Name: "Test"},
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	ids := identity.NewService(d)
-	if err := ids.CreateAdmin(ctx, "admin@example.com", "correct horse battery"); err != nil {
-		t.Fatal(err)
+	if seed {
+		if err := ids.CreateAdmin(ctx, "admin@example.com", "correct horse battery"); err != nil {
+			t.Fatal(err)
+		}
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	wizard, err := setup.New(ctx, comps, ids, d, log, false)
@@ -73,7 +112,7 @@ func bootDaemon(t *testing.T, cfg config.Config) http.Handler {
 	if err != nil {
 		t.Fatalf("buildFullHandler: %v", err)
 	}
-	return h
+	return daemonParts{h: h, d: d, comps: comps, ids: ids, wizard: wizard}
 }
 
 // daemonSession carries the two cookies a real admin browser holds after
@@ -184,7 +223,7 @@ const validFragmentJSON = `{
 func TestDaemonRegistersFirstPartyCapabilities(t *testing.T) {
 	cfg := config.Default()
 	cfg.DataDir = t.TempDir()
-	h := bootDaemon(t, cfg)
+	h, _ := bootDaemon(t, cfg)
 
 	rec := doJSON(t, h, http.MethodGet, "/api/v0/content-types", daemonSession{}, nil)
 	if rec.Code != http.StatusOK {
@@ -244,7 +283,7 @@ func TestDaemonAIComposeLiveWhenConfigured(t *testing.T) {
 		BaseURL:  provider.URL,
 		APIKey:   "sk-test",
 	}
-	h := bootDaemon(t, cfg)
+	h, _ := bootDaemon(t, cfg)
 	sess := loginAdmin(t, h)
 
 	rec := doJSON(t, h, http.MethodPost, "/api/v0/ai/compose", sess, map[string]any{
@@ -266,7 +305,7 @@ func TestDaemonAIComposeLiveWhenConfigured(t *testing.T) {
 func TestDaemonAICompose404sWhenUnset(t *testing.T) {
 	cfg := config.Default()
 	cfg.DataDir = t.TempDir()
-	h := bootDaemon(t, cfg)
+	h, _ := bootDaemon(t, cfg)
 	sess := loginAdmin(t, h)
 
 	rec := doJSON(t, h, http.MethodPost, "/api/v0/ai/compose", sess, map[string]any{
@@ -316,6 +355,138 @@ func TestDaemonUnknownAIProviderFailsFast(t *testing.T) {
 	for _, want := range []string{"claude", "openai", "gemini", "openai-compatible"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("fail-fast error %q does not name valid provider %q", err, want)
+		}
+	}
+}
+
+// TestDaemonConsentPersistsAcrossRestart is the acceptance criterion
+// "decision made in UI; daemon restarts (real SQLite); decision persists":
+// an admin makes a partial consent decision on one boot of the real daemon,
+// the database is closed and re-opened on the same file, and a fresh boot
+// serves the same granted subset — plus, a denied plugin surfaces re-consent
+// as pending on the restarted daemon.
+func TestDaemonConsentPersistsAcrossRestart(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "glyphux.db")
+	cfg := config.Default()
+	cfg.DataDir = t.TempDir()
+
+	// Boot 1: deny commerce (so it surfaces as pending re-consent), then
+	// partially approve forms (content:read only).
+	h1, d1 := bootDaemonAt(t, cfg, dbPath, true)
+	sess1 := loginAdmin(t, h1)
+
+	rec := doJSON(t, h1, http.MethodPost, "/api/v0/plugins/consent-requests/commerce/decide", sess1, map[string]any{
+		"decision": "denied",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("boot1 decide deny commerce = %d, body %s", rec.Code, rec.Body.String())
+	}
+	rec = doJSON(t, h1, http.MethodPost, "/api/v0/plugins/consent-requests/forms/decide", sess1, map[string]any{
+		"decision":    "partial",
+		"granted_api": []any{map[string]any{"capability": "content", "scopes": []string{"read"}}},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("boot1 decide partial forms = %d, body %s", rec.Code, rec.Body.String())
+	}
+	d1.Close() // the daemon "restarts": same file, new handle
+
+	// Boot 2: the decisions must have persisted.
+	h2, _ := bootDaemonAt(t, cfg, dbPath, false)
+	sess2 := loginAdmin(t, h2)
+
+	rec = doJSON(t, h2, http.MethodGet, "/api/v0/plugins", sess2, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("boot2 GET /plugins = %d, body %s", rec.Code, rec.Body.String())
+	}
+	plugins, _ := decodeBody(t, rec)["plugins"].([]any)
+	for _, p := range plugins {
+		pm := p.(map[string]any)
+		switch pm["name"] {
+		case "forms":
+			if pm["status"] != "partial" {
+				t.Errorf("restarted daemon: forms status = %v, want partial (decision persisted)", pm["status"])
+			}
+		case "commerce":
+			if pm["status"] != "denied" {
+				t.Errorf("restarted daemon: commerce status = %v, want denied (decision persisted)", pm["status"])
+			}
+		}
+	}
+
+	// Denied commerce surfaces as pending re-consent on the restarted daemon.
+	rec = doJSON(t, h2, http.MethodGet, "/api/v0/plugins/consent-requests", sess2, nil)
+	reqs, _ := decodeBody(t, rec)["requests"].([]any)
+	found := false
+	for _, r := range reqs {
+		if rm, ok := r.(map[string]any); ok && rm["name"] == "commerce" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("restarted daemon: denied commerce must surface as a pending re-consent request")
+	}
+}
+
+// --- T4 review regression, daemon-level ---
+
+// TestDaemonVirginInstallBootsAndDefersPluginActivationUntilComposition is
+// the regression test for the T4 review finding: on a virgin install (no
+// composition stored) the daemon must boot successfully and defer first-
+// party capability plugin activation until the setup flow commits the
+// initial composition. Pre-fix, buildFullHandler activated unconditionally
+// and forms/commerce/membership define content types through the host —
+// DefineContentType requires the composition document, so activation died
+// with "no composition stored" and the daemon never came up. The fixed
+// contract: virgin boot succeeds with activation deferred (the content-type
+// surface reports setup incomplete, not a crash), and once the composition
+// is committed the rebuilt handler (the setup committer's gateway switch)
+// activates the five first-party capabilities.
+func TestDaemonVirginInstallBootsAndDefersPluginActivationUntilComposition(t *testing.T) {
+	cfg := config.Default()
+	cfg.DataDir = t.TempDir()
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+
+	// GIVEN a virgin install (no composition stored, no admin account)
+	// WHEN the daemon boots THEN boot succeeds — bootDaemonParts fails the
+	// test if buildFullHandler returns the pre-fix activation error
+	// ("activate plugin forms: no composition stored").
+	p := bootDaemonParts(t, cfg, dbPath, false)
+
+	// AND plugin activation is deferred: the content-type surface reports
+	// setup incomplete instead of serving a half-activated plugin set.
+	rec := doJSON(t, p.h, http.MethodGet, "/api/v0/content-types", daemonSession{}, nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("virgin boot GET /content-types = %d, want 409 (setup not completed), body %s", rec.Code, rec.Body.String())
+	}
+
+	// GIVEN the setup wizard commits the initial composition (the same write
+	// the bootstrap committer performs: composition + admin account) WHEN
+	// the daemon rebuilds its handler, as the committer's gateway switch
+	// does THEN activation completes and the five first-party content types
+	// become available via GET /api/v0/content-types.
+	if err := p.comps.Save(context.Background(), nil, &contract.Composition{
+		ContractVersion: contract.ContentCompositionV0,
+		Site:            contract.Site{Name: "Test"},
+	}); err != nil {
+		t.Fatalf("commit composition: %v", err)
+	}
+	if err := p.ids.CreateAdmin(context.Background(), "admin@example.com", "correct horse battery"); err != nil {
+		t.Fatalf("commit admin: %v", err)
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h2, err := buildFullHandler(cfg, log)(p.d, p.comps, p.ids, p.wizard)
+	if err != nil {
+		t.Fatalf("rebuild handler after composition commit: %v", err)
+	}
+
+	rec = doJSON(t, h2, http.MethodGet, "/api/v0/content-types", daemonSession{}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("post-setup GET /content-types = %d, body %s", rec.Code, rec.Body.String())
+	}
+	types, _ := decodeBody(t, rec)["content_types"].(map[string]any)
+	for _, want := range []string{"form_submission", "product", "order", "membership_tier", "membership_subscription"} {
+		if _, ok := types[want]; !ok {
+			t.Errorf("post-setup content_types missing %q (got %v)", want, keysOf(types))
 		}
 	}
 }

@@ -138,6 +138,52 @@ func TestDeny_ThenIsConsented_ReportsNotConsented(t *testing.T) {
 	}
 }
 
+// TestLatest_DistinguishesDeniedFromNeverAsked is the read the consent
+// screen's status column needs: Latest reports the most recent decision
+// (ok=true) even when it is denied, so the UI can show "denied" distinctly
+// from "undecided" (ok=false, no decision ever recorded) — while a stale
+// fingerprint still reports ok=false (must be re-asked).
+func TestLatest_DistinguishesDeniedFromNeverAsked(t *testing.T) {
+	ctx := context.Background()
+	e := newTestEngine(t)
+	m := commerceManifest()
+
+	// No decision ever recorded.
+	if _, ok, err := e.Latest(ctx, m); err != nil || ok {
+		t.Fatalf("Latest on undecided manifest = ok %v, err %v; want ok=false", ok, err)
+	}
+
+	req, err := e.Request(m)
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if _, err := e.Deny(ctx, req, 42); err != nil {
+		t.Fatalf("Deny: %v", err)
+	}
+
+	// A denied decision exists and is reported as such.
+	dec, ok, err := e.Latest(ctx, m)
+	if err != nil {
+		t.Fatalf("Latest: %v", err)
+	}
+	if !ok {
+		t.Fatal("Latest after Deny = ok false; want the denied decision")
+	}
+	if dec.Status != consent.StatusDenied {
+		t.Fatalf("Latest status = %s, want %s", dec.Status, consent.StatusDenied)
+	}
+
+	// A manifest that gained a scope (new fingerprint) at the same version
+	// must not match the old decision — the plugin is pending again.
+	gained := m
+	gained.API = []sdk.APIScope{
+		{Capability: "payments", Scopes: []string{"charge", "refund", "settle"}},
+	}
+	if _, ok, err := e.Latest(ctx, gained); err != nil || ok {
+		t.Fatalf("Latest on stale-fingerprint manifest = ok %v, err %v; want ok=false", ok, err)
+	}
+}
+
 func TestIsConsented_UnknownPlugin_ReportsNotConsented(t *testing.T) {
 	ctx := context.Background()
 	e := newTestEngine(t)

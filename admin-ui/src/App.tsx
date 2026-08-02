@@ -12,6 +12,7 @@ import { ContentListPage } from "@/pages/content/ContentListPage";
 import { ContentFormPage } from "@/pages/content/ContentFormPage";
 import { MediaLibraryPage } from "@/pages/media/MediaLibraryPage";
 import { UsersPage } from "@/pages/users/UsersPage";
+import { PluginsPage } from "@/pages/plugins/PluginsPage";
 import { DesignSystemPage } from "@/pages/design-system/DesignSystemPage";
 import { BuilderPage } from "@/pages/builder/BuilderPage";
 
@@ -38,6 +39,7 @@ function App() {
                   <Route path="builder/*" element={<BuilderPage />} />
                   <Route path="media" element={<MediaLibraryPage />} />
                   <Route path="users" element={<UsersPage />} />
+                  <Route path="plugins" element={<PluginsPage />} />
                   <Route path="design-system" element={<DesignSystemPage />} />
                 </Route>
               </Route>
