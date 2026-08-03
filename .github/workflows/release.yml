@@ -58,17 +58,24 @@ jobs:
           cd admin-ui
           npm ci
           npm run build
+      - name: Derive bare semver from the tag (strip the leading v)
+        # Tag pushes are v0.2.0, but release binaries must report BARE
+        # MAJOR.MINOR.PATCH — the pkg/kernel.Version invariant and
+        # scripts/release/build.sh's fail-closed guard both require bare
+        # semver, and cmd/glyphux-release names the packaged zips from the
+        # bare repo-root VERSION file. One clean VERSION for every later
+        # step and the ldflags (never inject github.ref_name verbatim).
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
       - name: Cross-compile glyphuxd + glyphux
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
-          VERSION: ${{ github.ref_name }}
         run: |
           ext=""
           [ "$GOOS" = "windows" ] && ext=".exe"
           mkdir -p dist
-          ldflags="-s -w -X main.version=${VERSION}"
+          ldflags="-s -w -X main.version=${VERSION} -X github.com/glyphux/glyphux/pkg/kernel.Version=${VERSION}"
           go build -trimpath -ldflags "$ldflags" -o "dist/glyphuxd-$GOOS-$GOARCH$ext" ./cmd/glyphuxd
           go build -trimpath -ldflags "$ldflags" -o "dist/glyphux-$GOOS-$GOARCH$ext" ./cmd/glyphux
       - uses: actions/upload-artifact@v4
@@ -96,12 +103,39 @@ jobs:
           path: dist
           pattern: glyphux-*
           merge-multiple: true
-      - name: "Package release artifacts (T10c: deterministic zips + VERSION + SHA256SUMS)"
+      - name: Import release signing key (only when configured)
+        # Signing is opt-in and never hardcoded: when the secrets below are
+        # configured the manifest is signed (fail-closed if gpg is missing
+        # or the key is absent); when they are unset the env vars are empty
+        # and the packager runs in dev mode (manifest emitted, no .sig).
+        env:
+          GLYPHUX_RELEASE_GPG_KEY: ${{ secrets.GLYPHUX_RELEASE_GPG_KEY }}
+          GLYPHUX_RELEASE_GPG_PRIVATE_KEY: ${{ secrets.GLYPHUX_RELEASE_GPG_PRIVATE_KEY }}
+        run: |
+          if [ -n "${GLYPHUX_RELEASE_GPG_KEY:-}" ] && [ -n "${GLYPHUX_RELEASE_GPG_PRIVATE_KEY:-}" ]; then
+            printf '%s\n' "$GLYPHUX_RELEASE_GPG_PRIVATE_KEY" | gpg --batch --import
+            echo "imported release signing key ${GLYPHUX_RELEASE_GPG_KEY}"
+          elif [ -n "${GLYPHUX_RELEASE_GPG_KEY:-}" ] || [ -n "${GLYPHUX_RELEASE_GPG_PRIVATE_KEY:-}" ]; then
+            # CORE-MED-1: signing needs BOTH secrets. One without the other
+            # would silently fall into dev mode below and publish an
+            # UNSIGNED manifest while the operator believes releases are
+            # signed — fail closed instead.
+            echo "::error::partial signing configuration: GLYPHUX_RELEASE_GPG_KEY and GLYPHUX_RELEASE_GPG_PRIVATE_KEY must be set together (one alone would silently publish an unsigned manifest)"
+            exit 1
+          else
+            echo "no signing key configured — release-manifest emitted unsigned (dev mode)"
+          fi
+      - name: "Package release artifacts (T10c+I4: deterministic zips + VERSION + SHA256SUMS + signed release-manifest)"
+        env:
+          GLYPHUX_RELEASE_GPG_KEY: ${{ secrets.GLYPHUX_RELEASE_GPG_KEY }}
+          GLYPHUX_RELEASE_GPG_HOME: ${{ secrets.GLYPHUX_RELEASE_GPG_HOME }}
         run: go run ./cmd/glyphux-release
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ github.ref_name }}" dist/*.zip dist/SHA256SUMS \
+          assets=(dist/*.zip dist/SHA256SUMS dist/release-manifest.json)
+          [ -f dist/release-manifest.json.sig ] && assets+=(dist/release-manifest.json.sig)
+          gh release create "${{ github.ref_name }}" "${assets[@]}" \
             --title "${{ github.ref_name }}" \
             --generate-notes
