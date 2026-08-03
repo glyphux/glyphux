@@ -1,10 +1,15 @@
 // Command glyphux-release builds the release artifact contract (Ticket
-// T10c): deterministic per-platform archives (binaries + VERSION) plus a
-// SHA256SUMS listing, driven by .github/workflows/release.yml on version
-// tag push. It consumes the binaries the workflow's build-matrix job
-// cross-compiles (ci.yml's own GOOS/GOARCH set, ci-style flat names
-// glyphux-<goos>-<goarch>[.exe] / glyphuxd-<goos>-<goarch>[.exe]) and
-// packages them; it does not build anything itself.
+// T10c, I4): deterministic per-platform archives (binaries + VERSION) plus
+// a SHA256SUMS listing plus a release-manifest.json — and, when a signing
+// key is configured (the -sign flag, or GLYPHUX_RELEASE_GPG_KEY /
+// GLYPHUX_RELEASE_GPG_HOME), a detached ASCII-armored
+// release-manifest.json.sig sealing the exact manifest bytes. The
+// installer verifies that signature before trusting the manifest's hashes.
+// Driven by .github/workflows/release.yml on version tag push. It consumes
+// the binaries the workflow's build-matrix job cross-compiles (ci.yml's
+// own GOOS/GOARCH set, ci-style flat names glyphux-<goos>-<goarch>[.exe] /
+// glyphuxd-<goos>-<goarch>[.exe]) and packages them; it does not build
+// anything itself.
 package main
 
 import (
@@ -15,6 +20,7 @@ import (
 	"path/filepath"
 
 	"github.com/glyphux/glyphux/internal/release"
+	"github.com/glyphux/glyphux/internal/sign"
 )
 
 // matrix mirrors .github/workflows/ci.yml's build matrix — a release build
@@ -36,18 +42,35 @@ func main() {
 
 func run(args []string) error {
 	fs := flag.NewFlagSet("glyphux-release", flag.ContinueOnError)
-	dist := fs.String("dist", "dist", "directory with the cross-compiled binaries; archives + SHA256SUMS are written here too")
+	dist := fs.String("dist", "dist", "directory with the cross-compiled binaries; archives + SHA256SUMS + release-manifest are written here too")
 	versionFile := fs.String("version-file", "VERSION", "repo-root VERSION file (single source of the version)")
+	channel := fs.String("channel", "stable", "release channel recorded in release-manifest.json")
+	signFlag := fs.Bool("sign", false, "sign release-manifest.json with gpg (also enabled by GLYPHUX_RELEASE_GPG_KEY / GLYPHUX_RELEASE_GPG_HOME)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	return build(context.Background(), *dist, *versionFile)
+	return build(context.Background(), *dist, *versionFile, *channel, resolveSigner(*signFlag))
 }
 
-// build packages every matrix platform into a deterministic zip and writes
-// the SHA256SUMS listing. Fail-fast: a missing VERSION file or any missing
-// binary aborts the whole run before any archive is published.
-func build(ctx context.Context, dist, versionFile string) error {
+// resolveSigner returns the signing backend when one is configured: the
+// -sign flag or either env var (GLYPHUX_RELEASE_GPG_KEY = gpg key id/email,
+// GLYPHUX_RELEASE_GPG_HOME = GNUPGHOME). With none set it returns nil —
+// dev mode: the manifest is still emitted, but unsigned (no .sig file).
+func resolveSigner(signFlag bool) sign.Signer {
+	key := os.Getenv("GLYPHUX_RELEASE_GPG_KEY")
+	home := os.Getenv("GLYPHUX_RELEASE_GPG_HOME")
+	if !signFlag && key == "" && home == "" {
+		return nil
+	}
+	return sign.GPG{Key: key, HomeDir: home}
+}
+
+// build packages every matrix platform into a deterministic zip, writes
+// the SHA256SUMS listing, then emits the release manifest (signed when a
+// signer is configured). Fail-fast: a missing VERSION file, any missing
+// binary, or any manifest/SHA256SUMS divergence aborts the whole run
+// before anything is published.
+func build(ctx context.Context, dist, versionFile, channel string, signer sign.Signer) error {
 	if _, err := os.Stat(versionFile); err != nil {
 		return fmt.Errorf("read VERSION file %s: %w", versionFile, err)
 	}
@@ -77,5 +100,18 @@ func build(ctx context.Context, dist, versionFile string) error {
 		return err
 	}
 	fmt.Printf("wrote %s (%d archives)\n", filepath.Base(sums), len(matrix))
+	manifest, sig, err := release.WriteReleaseManifest(ctx, release.ManifestOptions{
+		OutDir:      dist,
+		VersionFile: versionFile,
+		Channel:     channel,
+		Signer:      signer,
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("wrote %s\n", filepath.Base(manifest))
+	if sig != "" {
+		fmt.Printf("wrote %s\n", filepath.Base(sig))
+	}
 	return nil
 }

@@ -53,6 +53,66 @@ func reviewSHA256Hex(t *testing.T, path string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// CORE-MED-1 REVIEW (behavior-first): the release workflow's signing-key
+// import must FAIL CLOSED on a PARTIAL signing configuration. Signing needs
+// BOTH GLYPHUX_RELEASE_GPG_KEY (the key id) and
+// GLYPHUX_RELEASE_GPG_PRIVATE_KEY (the armored secret). If only one of the
+// two is configured, a two-way branch would silently fall into dev mode
+// ("no signing key configured") and PUBLISH AN UNSIGNED manifest while the
+// operator believes releases are signed. This static scan asserts release.yml
+// carries an explicit partial-config guard (elif ... || ...; exit 1;
+// ::error::) placed BETWEEN the both-set import branch and the none-set
+// dev-mode fallback.
+func TestReviewReleaseWorkflowSigningFailsClosedOnPartialConfig(t *testing.T) {
+	path := filepath.Join("..", "..", ".github", "workflows", "release.yml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	text := string(raw)
+	// Scope the scan to the import step (between its heading and the next
+	// step) so "exit 1" / "::error::" matches cannot come from elsewhere.
+	stepStart := strings.Index(text, "Import release signing key")
+	stepEnd := strings.Index(text, "Package release artifacts")
+	if stepStart < 0 || stepEnd < 0 || stepEnd <= stepStart {
+		t.Fatalf("release.yml: cannot locate the signing-key import step region (%d..%d)", stepStart, stepEnd)
+	}
+	step := text[stepStart:stepEnd]
+	t.Logf("Given %s (canonical release path), import step region", path)
+	t.Logf("When  only GLYPHUX_RELEASE_GPG_KEY or only GLYPHUX_RELEASE_GPG_PRIVATE_KEY is configured")
+
+	both := `[ -n "${GLYPHUX_RELEASE_GPG_KEY:-}" ] && [ -n "${GLYPHUX_RELEASE_GPG_PRIVATE_KEY:-}" ]`
+	partialA := `[ -n "${GLYPHUX_RELEASE_GPG_KEY:-}" ] || [ -n "${GLYPHUX_RELEASE_GPG_PRIVATE_KEY:-}" ]`
+	partialB := `[ -n "${GLYPHUX_RELEASE_GPG_PRIVATE_KEY:-}" ] || [ -n "${GLYPHUX_RELEASE_GPG_KEY:-}" ]`
+	if !strings.Contains(step, both) {
+		t.Errorf("FAIL: import step has no both-set guard (want `[ -n KEY ] && [ -n PRIVATE ]` importing the key)")
+	} else {
+		t.Logf("  evidence: both-set guard imports the key (&&)")
+	}
+	if !strings.Contains(step, partialA) && !strings.Contains(step, partialB) {
+		t.Errorf("FAIL: import step has NO partial-config guard (want an elif `[ -n KEY ] || [ -n PRIVATE ]` that fails the run) — exactly-one-secret-set would silently fall through to dev mode and publish an unsigned manifest")
+	} else {
+		t.Logf("  evidence: partial-config guard rejects exactly-one-set (||) with exit 1")
+	}
+	if !strings.Contains(step, "exit 1") {
+		t.Errorf("FAIL: partial-config branch does not fail the run (no `exit 1`)")
+	}
+	if !strings.Contains(step, "::error::") {
+		t.Errorf("FAIL: partial-config branch does not annotate the failure (no `::error::`)")
+	}
+	iBoth := strings.Index(step, both)
+	iPartial := strings.Index(step, partialA)
+	if iPartial < 0 {
+		iPartial = strings.Index(step, partialB)
+	}
+	iDev := strings.Index(step, "no signing key configured")
+	if iBoth < 0 || iPartial < 0 || iDev < 0 || !(iBoth < iPartial && iPartial < iDev) {
+		t.Errorf("FAIL: import-step branch order is wrong — want both-set guard < partial-config guard < dev-mode fallback (got indexes %d, %d, %d)", iBoth, iPartial, iDev)
+	} else {
+		t.Logf("PASS: both-set -> partial-config -> dev-mode fallback (fail-closed on partial config)")
+	}
+}
+
 // matrix mirrors cmd/glyphux-release's platform set.
 var reviewMatrix = []struct{ goos, goarch string }{
 	{"linux", "amd64"},
