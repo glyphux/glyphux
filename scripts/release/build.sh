@@ -8,13 +8,19 @@
 # not from whatever the last committer's local `npm run build` produced.
 #
 # Usage:
-#   VERSION=v0.1.0 scripts/release/build.sh
+#   VERSION=0.1.0 scripts/release/build.sh
+#   VERSION=v0.1.0 scripts/release/build.sh   (a leading v is normalized away)
 #
-# VERSION defaults to `git describe --tags --always --dirty` if unset, so a
-# local run off an untagged commit still produces a distinguishable
-# (non-"dev") version string rather than silently reusing the source
-# default. The single ldflags line below injects VERSION into BOTH the
-# glyphuxd display version (main.version) and the kernel's own version
+# VERSION defaults to the repo-root VERSION file (the release contract's
+# single source) when unset — a bare MAJOR.MINOR.PATCH with no v prefix, no
+# -dirty, no -NN-gHASH suffix. An explicit VERSION may be a bare semver or a
+# v-prefixed git tag; a single leading v is stripped before the fail-closed
+# guard, so the injected value is ALWAYS bare. If the VERSION file is
+# missing or empty (e.g. a tarball checkout with no tags), fall back to
+# `git describe` output stripped of the leading v and of the
+# -NN-gHASH/-dirty suffixes so the injected value always matches
+# ^\d+\.\d+\.\d+$. The single ldflags line below injects VERSION into BOTH
+# the glyphuxd display version (main.version) and the kernel's own version
 # (pkg/kernel.Version — the value plugin requires.core constraints are
 # checked against; Ticket T9 / gap 9 (a)).
 #
@@ -25,7 +31,21 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 repo_root="$(pwd)"
 
-VERSION="${VERSION:-$(git describe --tags --always --dirty)}"
+if [ -z "${VERSION:-}" ]; then
+	if [ -s VERSION ]; then
+		VERSION="$(tr -d '[:space:]' < VERSION)"
+	else
+		VERSION="$(git describe --tags --always --dirty 2>/dev/null | sed -E 's/^v//; s/-[0-9]+-g[0-9a-f]+$//; s/-dirty$//' || true)"
+	fi
+fi
+# Normalize: a caller may pass the git-tag shape VERSION=v0.2.0; the injected
+# value must be BARE MAJOR.MINOR.PATCH (the pkg/kernel.Version invariant), so
+# strip a single leading v before the fail-closed guard below.
+VERSION="${VERSION#v}"
+if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+	echo "error: VERSION='${VERSION}' is not a bare MAJOR.MINOR.PATCH (release artifacts must report a semver kernel.Version)" >&2
+	exit 1
+fi
 echo "==> Building glyphux release ${VERSION}"
 
 echo "==> Rebuilding sdk-js (admin-ui depends on it via file:../sdk-js)"

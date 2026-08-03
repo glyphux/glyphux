@@ -58,17 +58,24 @@ jobs:
           cd admin-ui
           npm ci
           npm run build
+      - name: Derive bare semver from the tag (strip the leading v)
+        # Tag pushes are v0.2.0, but release binaries must report BARE
+        # MAJOR.MINOR.PATCH — the pkg/kernel.Version invariant and
+        # scripts/release/build.sh's fail-closed guard both require bare
+        # semver, and cmd/glyphux-release names the packaged zips from the
+        # bare repo-root VERSION file. One clean VERSION for every later
+        # step and the ldflags (never inject github.ref_name verbatim).
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
       - name: Cross-compile glyphuxd + glyphux
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
-          VERSION: ${{ github.ref_name }}
         run: |
           ext=""
           [ "$GOOS" = "windows" ] && ext=".exe"
           mkdir -p dist
-          ldflags="-s -w -X main.version=${VERSION}"
+          ldflags="-s -w -X main.version=${VERSION} -X github.com/glyphux/glyphux/pkg/kernel.Version=${VERSION}"
           go build -trimpath -ldflags "$ldflags" -o "dist/glyphuxd-$GOOS-$GOARCH$ext" ./cmd/glyphuxd
           go build -trimpath -ldflags "$ldflags" -o "dist/glyphux-$GOOS-$GOARCH$ext" ./cmd/glyphux
       - uses: actions/upload-artifact@v4
