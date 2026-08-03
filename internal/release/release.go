@@ -1,8 +1,10 @@
-// Package release builds the release artifact contract (Ticket T10c): the
-// portable per-platform archives the installer consumes. Each archive is a
-// deterministic zip containing the platform's binaries (glyphux, glyphuxd —
-// .exe on Windows) and a VERSION file whose content is single-sourced from
-// the repo-root VERSION file; a SHA256SUMS listing sits next to the
+// Package release builds the release artifact contract (Ticket T10c, I4):
+// the portable per-platform archives the installer consumes. Each archive
+// is a deterministic zip containing the platform's binaries (glyphux,
+// glyphuxd — .exe on Windows) and a VERSION file whose content is
+// single-sourced from the repo-root VERSION file; a SHA256SUMS listing and
+// a release-manifest.json (see manifest.go — the signed release metadata
+// the installer verifies before trusting any hash) sit next to the
 // archives. Determinism mirrors pkg/packagefmt: fixed entry order, no
 // timestamps — byte-identical archives across runs.
 package release
